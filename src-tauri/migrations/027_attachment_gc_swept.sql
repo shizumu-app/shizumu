@@ -1,0 +1,21 @@
+-- "The user asked for these bytes to be gone from THIS device."
+--
+-- `attachment_gc` deletes the blob and sets `has_local = 0`, leaving
+-- `sync = 1` and `object_key` intact — which is exactly the shape
+-- `attachments::backfill::pending_object_fetch` selects. Before the
+-- out-of-band move nothing fetched on a tick, so GC worked. Once the
+-- worker started fetching, "free up space" became a no-op for every
+-- synced attachment plus a full re-download of the user's attachment
+-- set within 30 seconds.
+--
+-- `sync = 0` would have been the wrong lever: that is the user's
+-- consent for the RELAY copy, and clearing it would delete the object
+-- and retract the reference for every other device. Freeing local disk
+-- says nothing about whether the file should exist on the account.
+--
+-- 1 means "swept by an explicit GC". Only rows GC actually swept carry
+-- it, and GC only ever sweeps blobs no page references any more — so a
+-- swept row is an orphan the user chose to drop, not something the app
+-- is about to need. Cleared when the same file is added back
+-- (`insert_attachment`), which is the user asking for it again.
+ALTER TABLE attachments ADD COLUMN gc_swept INTEGER NOT NULL DEFAULT 0;

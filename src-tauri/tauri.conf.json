@@ -1,0 +1,80 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "shizumu",
+  "version": "0.6.0",
+  "identifier": "app.shizumu.Shizumu",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "shizumu",
+        "width": 1200,
+        "height": 820,
+        "minWidth": 360,
+        "minHeight": 480,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/images/*",
+          "$APPDATA/images/**",
+          "$APPDATA/blobs/*",
+          "$APPDATA/blobs/**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "macOS": {
+      "signingIdentity": null
+    },
+    "iOS": {
+      "developmentTeam": null,
+      "minimumSystemVersion": "14.0"
+    },
+    "android": {
+      "minSdkVersion": 24
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/256x256.png",
+      "icons/512x512.png",
+      "icons/icon.png",
+      "icons/icon.svg",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "deb": {
+        "desktopTemplate": "resources/app.shizumu.Shizumu.desktop",
+        "section": "text",
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"],
+        "recommends": ["libappindicator3-1"],
+        "postInstallScript": "resources/postinstall.sh"
+      },
+      "rpm": {
+        "desktopTemplate": "resources/app.shizumu.Shizumu.desktop",
+        "postInstallScript": "resources/postinstall.sh"
+      }
+    },
+    "resources": [
+      "resources/app.shizumu.Shizumu.metainfo.xml"
+    ]
+  }
+}

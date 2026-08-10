@@ -1,0 +1,16 @@
+pkgname=shizumu
+pkgver=0.5.0
+pkgrel=1
+pkgdesc="write to think. pin what matters. the rest sinks. a private thinking space — no tags, no folders, no prompts."
+arch=('x86_64')
+url="https://shizumu.app"
+license=('AGPL-3.0-or-later')
+depends=('webkit2gtk-4.1' 'gtk3')
+source=("https://shizumu.app/downloads/shizumu-0.1.21-linux-x86_64.tar.gz")
+sha256sums=('d771bd69b537ebbe35749eb8bf9988caec5d14c541cef654bc009954a12c1d9c')
+
+package() {
+  install -Dm755 "${srcdir}/${pkgname}" "${pkgdir}/usr/bin/${pkgname}"
+  install -Dm644 "${srcdir}/${pkgname}.desktop" "${pkgdir}/usr/share/applications/${pkgname}.desktop"
+  install -Dm644 "${srcdir}/icon.png" "${pkgdir}/usr/share/pixmaps/${pkgname}.png"
+}

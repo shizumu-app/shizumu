@@ -1,0 +1,10 @@
+# Pinned Playwright image for reproducible Tier-1 VR baselines.
+# Digest is the manifest-list (index) digest for the tag matching the installed
+# @playwright/test version (1.61.1), captured WITHOUT a full pull via:
+#   docker buildx imagetools inspect mcr.microsoft.com/playwright:v1.61.1-noble
+# Pinning by digest (not tag) makes baselines byte-stable across machines.
+# The repo is bind-mounted at runtime (see the test:vr:docker* scripts in
+# package.json); nothing is COPYed in, so the build context is intentionally
+# empty (see .dockerignore). This image only supplies the browser+OS toolchain.
+FROM mcr.microsoft.com/playwright@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48
+WORKDIR /app

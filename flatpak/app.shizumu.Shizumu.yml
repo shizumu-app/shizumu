@@ -1,0 +1,112 @@
+app-id: app.shizumu.Shizumu
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+# Built from source: rust-stable compiles src-tauri, node24 builds the frontend.
+# node24 (not node20/22) because a transitive dev dependency declares
+# `engines: { node: >= 24 }`; older extensions build but warn on every install.
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.node24
+command: shizumu
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  # system tray (gnome appindicator, kde statusnotifier)
+  - --talk-name=org.kde.StatusNotifierItem
+  - --talk-name=com.canonical.AppMenu.Registrar
+  # Tray icon visibility on the host. Tauri's tray-icon plugin writes
+  # the PNG to $XDG_RUNTIME_DIR/tray-icon/ and broadcasts that path via
+  # the SNI IconName property. In flatpak each app has a private
+  # xdg-run, so gnome-shell / kded (outside the sandbox) can't read
+  # the broadcast path. Bind-mount the host's $XDG_RUNTIME_DIR/tray-icon
+  # into the sandbox at the same name so the broadcast resolves
+  # identically on both sides.
+  - --filesystem=xdg-run/tray-icon:create
+modules:
+  - shared-modules/libayatana-appindicator/libayatana-appindicator-gtk3.json
+
+  - name: shizumu
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/node24/bin
+      env:
+        # Cargo vendor dir laid down by cargo-sources.json. The path is
+        # /run/build/<module-name>/cargo — keep it in sync with `name:` above.
+        CARGO_HOME: /run/build/shizumu/cargo
+        CARGO_NET_OFFLINE: 'true'
+        # npm offline cache laid down by node-sources.json, same rule.
+        XDG_CACHE_HOME: /run/build/shizumu/flatpak-node/cache
+        npm_config_cache: /run/build/shizumu/flatpak-node/npm-cache
+        npm_config_offline: 'true'
+        # @playwright/test is a devDependency, and devDependencies are needed
+        # here (vite and svelte build the frontend). But playwright's five
+        # browser archives — chromium, headless-shell, firefox, webkit,
+        # ffmpeg — are ~400-500MB that only the VR suite uses and that never
+        # ship in the app. scripts/gen-flatpak-sources.sh prunes them from
+        # node-sources.json; this stops npm ci from going to look for them.
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    build-commands:
+      # 1. Frontend. `cargo build` does not run tauri.conf.json's
+      #    beforeBuildCommand (only `tauri build` does), so the frontend is
+      #    built explicitly here. It must land in dist/ before the Rust build,
+      #    because tauri-build resolves frontendDist at compile time.
+      - npm ci --offline
+      - npm run build
+
+      # 2. Backend. Deliberately NOT `tauri build` — its bundler emits
+      #    deb/rpm/AppImage artifacts that are meaningless inside a flatpak.
+      #    --bin twice so op_log_audit (a debugging tool) is neither built
+      #    nor shipped.
+      - cargo --offline fetch --manifest-path src-tauri/Cargo.toml
+      - cargo build --offline --release --manifest-path src-tauri/Cargo.toml
+        --bin shizumu --bin shizumu-cli
+      - install -Dm755 src-tauri/target/release/shizumu ${FLATPAK_DEST}/bin/shizumu
+      - install -Dm755 src-tauri/target/release/shizumu-cli ${FLATPAK_DEST}/bin/shizumu-cli
+
+      # 3. Desktop integration.
+      # Strip the native-install env wrapper from the .desktop's Exec line.
+      # Flatpak's exporter takes the first word of Exec= as the --command for
+      # `flatpak run`, so leaving "env GDK_BACKEND=x11" in place rewrites the
+      # exported launcher to "flatpak run --command=env … GDK_BACKEND=x11
+      # shizumu", which forces x11 inside the sandbox. With finish-args
+      # `--socket=fallback-x11`, no X11 socket is provided on Wayland
+      # sessions, so the desktop-icon launch fails silently while CLI launch
+      # (which uses the manifest's `command: shizumu` directly with no env
+      # override) works. Native rpm/deb keep the env wrapper for the v0.2.1
+      # webkit Wayland-input fix.
+      # desktop-file-edit, not sed — this is what flathub review settled on
+      # (flathub commit b61d94e). Keep it.
+      - desktop-file-edit --set-key=Exec --set-value=shizumu
+        src-tauri/resources/app.shizumu.Shizumu.desktop
+      - install -Dm644 src-tauri/resources/app.shizumu.Shizumu.desktop
+        ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+      - install -Dm644 src-tauri/resources/app.shizumu.Shizumu.metainfo.xml
+        ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
+      - install -Dm644 src-tauri/icons/32x32.png
+        ${FLATPAK_DEST}/share/icons/hicolor/32x32/apps/${FLATPAK_ID}.png
+      - install -Dm644 src-tauri/icons/128x128.png
+        ${FLATPAK_DEST}/share/icons/hicolor/128x128/apps/${FLATPAK_ID}.png
+      - install -Dm644 src-tauri/icons/256x256.png
+        ${FLATPAK_DEST}/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png
+      - install -Dm644 src-tauri/icons/512x512.png
+        ${FLATPAK_DEST}/share/icons/hicolor/512x512/apps/${FLATPAK_ID}.png
+    sources:
+      # Source build from the public github mirror. `commit` must name a tag
+      # that the mirror job pushes and never deletes — the job force-pushes
+      # main, so a branch-only reference would be garbage-collected out from
+      # under flathub at the next release.
+      - type: git
+        url: https://github.com/shizumu-app/shizumu.git
+        tag: PLACEHOLDER_TAG
+        commit: PLACEHOLDER_COMMIT
+        x-checker-data:
+          type: git
+          tag-pattern: '^v([\d.]+)$'
+      # Offline dependency trees. Both are lockfile-derived and MUST be
+      # regenerated whenever Cargo.lock or package-lock.json changes —
+      # see scripts/update-manifests.sh.
+      - cargo-sources.json
+      - node-sources.json

@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=app.shizumu.Shizumu
+Exec=/usr/bin/shizumu --dbus-service

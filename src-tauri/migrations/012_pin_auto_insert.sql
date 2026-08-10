@@ -1,0 +1,1 @@
+ALTER TABLE shared_objects ADD COLUMN auto_insert INTEGER NOT NULL DEFAULT 0;

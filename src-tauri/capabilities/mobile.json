@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "permissions for android + ios builds",
+  "platforms": [
+    "android",
+    "iOS"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-focus",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-is-visible",
+    "notification:default",
+    "dialog:default",
+    "opener:default",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-write-html"
+  ]
+}

@@ -1,0 +1,4 @@
+# The VR Docker image (Dockerfile.vr) COPYs nothing — the repo is bind-mounted
+# at runtime. Excluding everything keeps the build context tiny so `docker build`
+# doesn't tar the 7.5GB src-tauri/target, node_modules, or .git.
+*

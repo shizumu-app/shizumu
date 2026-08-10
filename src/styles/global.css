@@ -1,0 +1,986 @@
+/* Font faces — embedded, no network requests */
+@font-face {
+  font-family: "Lora";
+  src: url("/fonts/Lora-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Lora";
+  src: url("/fonts/Lora-Italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "DM Mono";
+  src: url("/fonts/DMMono-Light.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/Inter-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: block;
+}
+
+/* ═══ Canvas Font ═══ */
+/* Canvas-only — interface labels stay in Inter regardless of choice. */
+:root {
+  --canvas-font-family: "Lora", serif;
+
+  /* Interface scale — single knob that scales every rem-based dimension
+     in the design system. Settings exposes three presets:
+       small  → 0.875
+       medium → 1.0   (default)
+       large  → 1.125
+     Editor body has its own --editor-font-size, intentionally independent. */
+  --ui-scale: 1;
+
+  /* Responsive breakpoint canon (Phase 11). CSS uses raw @media queries
+     against these values; JS-driven affordances (block handle, mobile
+     action bar) use the matching predicates in src/lib/responsive.js.
+       --bp-phone   ≤ 480px   one-handed phone reach
+       --bp-tablet  ≤ 768px   below this we hide desktop chrome
+       --bp-desktop ≤ 1024px  full desktop layout above
+     Custom-property values aren't usable inside @media (yet), so the
+     numbers below are documentation; the queries inline the literal. */
+  --bp-phone: 480px;
+  --bp-tablet: 768px;
+  --bp-desktop: 1024px;
+
+  /* === Motion tokens (mobile UI overhaul phase A) =================== */
+  --motion-fast: 120ms ease-out;
+  --motion-normal: 200ms cubic-bezier(0.2, 0, 0, 1);
+  --motion-sheet-open: 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-sheet-close: 160ms cubic-bezier(0.3, 0, 1, 1);
+  --motion-swipe-commit: 220ms cubic-bezier(0.2, 0, 0, 1);
+  --motion-swipe-cancel: 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* === Structural tokens (P1 primitives + theme refresh) ============ */
+  /* Touch floor: coarse-pointer rules use max(var(--touch-target), 44px)
+     so the floor holds even at --ui-scale: 0.875. */
+  --touch-target: 2.75rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 1rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+
+  /* === System insets ================================================
+     The ONLY place env(safe-area-inset-*) is read. Everything else uses
+     var(--safe-*).
+
+     Two reasons. It gives one obvious answer to "who reserves the status
+     bar?" — .app-shell does, once, and a surface inside it that reserves
+     it again is double-counting (memory did exactly that, and the list
+     started ~50px lower than it should have). And it gives automation a
+     seam: a notch is a device condition Playwright cannot produce, so
+     inset bugs were invisible to CI and only ever found by hand. With the
+     indirection, the VR harness overrides these below and a
+     double-counted inset becomes a failing screenshot.
+
+     If you find yourself writing env(safe-area-inset-*) anywhere else,
+     what you want is var(--safe-*). */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+
+  /* How much room the fixed MobileActionBar occupies at the bottom of a
+     phone screen. Surfaces that must not sit underneath it reserve THIS,
+     not a hand-picked number.
+
+     They used to guess: .page reserved 3rem and memory 4rem against a bar
+     that is 86px tall, so "what settled" ran 18px underneath it. The
+     comment on that padding even claimed it cleared the bar.
+
+     Mirrors the bar's own box in MobileActionBar.svelte — space-2 above
+     the row, ~3.125rem of icon+label, and its bottom padding, which
+     already contains the safe-area inset. Do not add --safe-bottom on top
+     of this; it is in here. */
+  --mobile-bar-h: calc(var(--space-2) + 3.125rem + max(var(--safe-bottom), 1.75rem));
+}
+
+/* VR only: simulate a notched handset so inset regressions are visible to
+   the screenshot suite. Set by the VR bootstrap from ?inset=notch; the
+   attribute never exists in a production build. Values are a Pixel-class
+   status bar and gesture bar. */
+:root[data-vr-inset="notch"] {
+  --safe-top: 44px;
+  --safe-bottom: 34px;
+}
+[data-font-family="lora"]          { --canvas-font-family: "Lora", serif; }
+[data-font-family="inter"]         { --canvas-font-family: "Inter", sans-serif; }
+[data-font-family="dm-mono"]       { --canvas-font-family: "DM Mono", monospace; }
+[data-font-family="system-serif"]  { --canvas-font-family: ui-serif, Georgia, serif; }
+
+/* ═══ Canvas Tones ═══ */
+
+:root,
+[data-tone="cream"] {
+  --editor-font-size: 16px;
+  --editor-line-height: 1.6;
+  --canvas-bg: #f5f0e8;
+  --surface: #f0ebe2;
+  --margin-bg: #f0ebe2;
+  --ink: #2c2420;
+  --ink-soft: #5c5248;
+  --horizon: #d8d0c4;
+  --warm-accent: #c44d28;
+  --warm-accent-soft: rgba(196, 77, 40, 0.08);
+  --ink-primary: 1.0;
+  --ink-secondary: 0.6;
+  --ink-tertiary: 0.35;
+  --card-shadow: rgba(44, 36, 32, 0.08);
+  --card-shadow-hover: rgba(44, 36, 32, 0.16);
+  --card-border: rgba(216, 208, 196, 0.5);
+}
+
+[data-tone="white"] {
+  --canvas-bg: #ffffff;
+  --surface: #f7f6f3;
+  --margin-bg: #ffffff;
+  --ink: #37352f;
+  --ink-soft: #787774;
+  --horizon: #e3e2e0;
+  --warm-accent: #c44d28;
+  --warm-accent-soft: rgba(196, 77, 40, 0.06);
+  --ink-primary: 1.0;
+  --ink-secondary: 0.55;
+  --ink-tertiary: 0.3;
+  --card-shadow: rgba(15, 15, 15, 0.06);
+  --card-shadow-hover: rgba(15, 15, 15, 0.12);
+  --card-border: rgba(55, 53, 47, 0.09);
+}
+
+[data-tone="dark"] {
+  --canvas-bg: #181614;
+  --surface: #252220;
+  --margin-bg: #121110;
+  --ink: #e0d8c8;
+  --ink-soft: #8a8070;
+  --horizon: rgba(224, 216, 200, 0.1);
+  --warm-accent: #e07050;
+  --warm-accent-soft: rgba(224, 112, 80, 0.08);
+  --ink-primary: 1.0;
+  --ink-secondary: 0.6;
+  --ink-tertiary: 0.35;
+  --card-shadow: rgba(0, 0, 0, 0.2);
+  --card-shadow-hover: rgba(0, 0, 0, 0.4);
+  --card-border: rgba(224, 216, 200, 0.08);
+}
+
+/* ═══ Reset ═══ */
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Root font-size drives every rem in the design system. The editor body
+   sets its own 17px (below) so canvas reading size is unchanged; rem
+   refers to <html>, not the parent. */
+html {
+  font-size: calc(16px * var(--ui-scale));
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--canvas-bg);
+  color: var(--ink);
+  font-family: var(--canvas-font-family, "Lora", serif);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-size: 17px;
+}
+
+/* Prevent text selection drag in desktop app */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Allow text selection only in writing areas */
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Interface labels */
+.label {
+  font-family: "Inter", sans-serif;
+  font-weight: 400;
+  font-size: 12px;
+  letter-spacing: -0.01em;
+}
+
+/* Date separator — continuous trail view */
+.date-separator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 0 12px;
+  user-select: none;
+  pointer-events: none;
+}
+.date-separator-line {
+  flex: 1;
+  height: 1px;
+  background: var(--ink);
+  opacity: 0.08;
+}
+.date-separator-text {
+  font-family: "Inter", sans-serif;
+  font-size: 11px;
+  color: var(--ink);
+  opacity: 0.25;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+/* Q&A block — inherits the shared tool-card frame from TipTapEditor.svelte
+   (.block-shell). The inner .qa-block is just a content container
+   without its own chrome. */
+.block-shell[data-board="qaBlock"] > .qa-block {
+  border: none; padding: 0; margin: 0;
+}
+/* Each Q/A pair sits as its own qaPair child. Pairs after the first get a
+   margin-top so consecutive Q/A reads as a sequence rather than a wall. */
+.qa-pair {
+  position: relative;
+  padding-left: 1.5rem;
+}
+.qa-pair + .qa-pair {
+  margin-top: 0.75rem;
+}
+/* Q reads in upright Lora at 500 (calm, not loud). A reads in italic
+   Lora at 400, slightly muted, so the response feels softer than the
+   question. No frame, no divider — just typography. */
+.qa-pair > p:first-child {
+  font-family: var(--canvas-font-family, "Lora", Georgia, serif);
+  font-style: normal;
+  font-weight: 500;
+  font-size: var(--editor-font-size, 16px);
+  line-height: 1.6;
+  color: var(--ink);
+  opacity: 0.92;
+  position: relative;
+  min-height: 1.4em;
+  margin: 0;
+}
+.qa-pair > p:nth-child(2) {
+  font-family: var(--canvas-font-family, "Lora", Georgia, serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: var(--editor-font-size, 16px);
+  line-height: 1.6;
+  color: var(--ink);
+  opacity: 0.75;
+  position: relative;
+  min-height: 1.4em;
+  margin: 0;
+}
+/* "Q:" / "A:" prefixes render as ink-color labels via ::before (Q
+   upright semi-bold, A italic) so the content paragraphs stay
+   text-pure and Backspace at offset 0 reaches the qa-pair keymap. */
+.qa-pair > p:first-child::before {
+  content: "Q:";
+  position: absolute;
+  left: -1.5rem;
+  top: 0;
+  font-family: var(--canvas-font-family, "Lora", Georgia, serif);
+  font-style: normal;
+  font-weight: 600;
+  color: var(--ink);
+  opacity: 0.92;
+  user-select: none;
+  pointer-events: none;
+  line-height: 1.6;
+}
+.qa-pair > p:nth-child(2)::before {
+  content: "A:";
+  position: absolute;
+  left: -1.5rem;
+  top: 0;
+  font-family: var(--canvas-font-family, "Lora", Georgia, serif);
+  font-style: italic;
+  font-weight: 400;
+  color: var(--ink);
+  opacity: 0.55;
+  user-select: none;
+  pointer-events: none;
+  line-height: 1.6;
+}
+
+/* Local images inserted by the editor */
+.local-image-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.local-image-wrap[data-display="block"] {
+  display: block;
+  margin: 8px 0;
+}
+
+.local-image-wrap[data-display="inline"] {
+  display: inline-block;
+  vertical-align: baseline;
+  margin: 0 2px;
+}
+
+/* When the image is collapsed to a chip, the wrapper should flow as plain
+   inline content — even if the image was inserted with display="block" and
+   the user later hit the collapse button. The chip is just a name in the
+   sentence; nothing about it warrants a block-level box. */
+.local-image-wrap[data-collapsed="true"] {
+  display: inline;
+  margin: 0;
+}
+
+/* Unified list — single container with marker-driven items. The container
+   never shows a native marker; each <li> renders its own glyph via
+   ::before (bullet / ordered) or via the embedded checkbox label (task).
+   Counter advances only on ordered items so bullet / task / plain siblings
+   don't break numbering. Lives in global.css (not scoped to .tiptap-editor)
+   so the pin-panel artifact modal — whose editor mounts under .modal-editor —
+   inherits the same rendering. Without these globally, browser default
+   `<ul> { list-style: disc }` would show alongside our NodeView checkbox. */
+.ProseMirror ul[data-list] {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0;
+  counter-reset: list-counter;
+}
+
+.ProseMirror ul[data-list] > li {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  align-items: baseline;
+  column-gap: 8px;
+  margin: 2px 0;
+  line-height: 1.6;
+  font-size: 0.9375em;
+}
+
+.ProseMirror ul[data-list] > li > div {
+  min-width: 0;
+  min-height: 1.5em;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Bullet marker */
+.ProseMirror ul[data-list] > li[data-marker="bullet"]::before {
+  content: "•";
+  font-family: "DM Mono", monospace;
+  color: var(--ink);
+  opacity: 0.65;
+  text-align: center;
+}
+
+/* Ordered marker — counter advances only on ordered items */
+.ProseMirror ul[data-list] > li[data-marker="ordered"] {
+  counter-increment: list-counter;
+}
+.ProseMirror ul[data-list] > li[data-marker="ordered"]::before {
+  content: counter(list-counter) ".";
+  font-family: "DM Mono", monospace;
+  font-size: 0.85em;
+  color: var(--ink);
+  opacity: 0.65;
+  text-align: right;
+  padding-right: 2px;
+}
+
+/* Plain marker — pseudo-element occupies the marker column with no glyph,
+   keeping the content column aligned with siblings. */
+.ProseMirror ul[data-list] > li[data-marker="plain"]::before {
+  content: "";
+}
+
+/* Task marker — the <label><input type=checkbox></label> chrome built by
+   the ListItem NodeView occupies the marker column. */
+.ProseMirror ul[data-list] > li[data-marker="task"] > label {
+  user-select: none;
+  -webkit-user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ProseMirror ul[data-list] > li[data-marker="task"] > label input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--warm-accent);
+}
+.ProseMirror ul[data-list] > li[data-marker="task"][data-checked="true"] > div > p {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+/* Modal-editor specific: suppress the BlockTitle inline title slot inside
+   the artifact-modal editor. The modal already shows the pin's title in
+   its header input; rendering the same string a second time inside the
+   editor body via the `+ title` slot is pure duplication. */
+.modal-editor .board-title-slot {
+  display: none;
+}
+
+.ProseMirror img {
+  max-width: 100%;
+  border-radius: 4px;
+  display: block;
+}
+
+/* Block-title slot — rendered as an <input> inside the BlockTitle NodeView
+   wrapper. Visibility logic: `filled || hovered || focused`. When empty AND
+   not hovered AND not focused, the slot collapses to zero height so the
+   board looks identical to today's untitled boards. The slot lives INSIDE
+   the wrapper's bordered region; it never extends above the wrapper's top
+   edge, so it cannot collide with the `+` block-handle that appears
+   between blocks. The input is used (rather than a contenteditable div) so
+   focus reliably lands on the slot — nested contenteditable in WebKit /
+   webkit2gtk silently keeps focus on the outer .ProseMirror editor. */
+.ProseMirror .board-title-slot {
+  /* Reset native input chrome */
+  border: none;
+  background: transparent;
+  padding: 0;
+  width: 100%;
+  box-sizing: border-box;
+  /* block (not the input default inline-block) — an inline input sits in a
+     line box that reserves the shell's full line-height even at 0 height,
+     leaving a gap above the content when the title is collapsed. */
+  display: block;
+  /* Small inline metadata label — kept deliberately compact so the title
+     reads as a quiet caption above the block, not a heading. */
+  font-family: var(--canvas-font-family, "Lora", serif);
+  font-style: italic;
+  font-size: 0.78em;
+  line-height: 1.9;
+  letter-spacing: 0.01em;
+  color: var(--warm-accent);
+  outline: none;
+  /* The title is quiet pin metadata — collapsed by default (filled OR empty),
+     it reveals on hover of the block (or on focus) with a sleek fade + slide.
+     Animate max-height, not height:auto (which can't transition), so the
+     reveal/collapse is smooth on the app's standard easing curve.
+     min-height:0 is required — an <input> carries a UA min-height that
+     otherwise wins over max-height and keeps the collapsed title reserving
+     space (a tall hairline + a gap above the content). */
+  min-height: 0;
+  max-height: 0;
+  opacity: 0;
+  margin: 0;
+  transform: translateY(-3px);
+  overflow: hidden;
+  transition: max-height 200ms cubic-bezier(0.2, 0, 0, 1),
+              opacity 200ms cubic-bezier(0.2, 0, 0, 1),
+              margin 200ms cubic-bezier(0.2, 0, 0, 1),
+              transform 200ms cubic-bezier(0.2, 0, 0, 1);
+  /* D-6 (QA sweep, touch-only): collapsed (max-height:0/overflow:hidden)
+     still leaves the <input> hit-testable on touch — mobile browsers
+     extend a form control's effective tap target beyond its rendered box,
+     so the FIRST tap into a fresh board silently focused this invisible
+     title slot instead of the block content below it (typed text landed
+     as the title, not as Q/given content, with no visual cue it happened).
+     Gate pointer-events to the same collapsed/revealed state as the visual
+     reveal below — untappable until hover or focus actually reveals it. */
+  pointer-events: none;
+}
+/* Reveal on hover of the block, or when the title itself is focused
+   (keyboard nav / slash-insert both focus it). Filled and empty behave
+   identically.
+   NOT a `:hover` + `@media (hover: hover)` CSS rule (that was the D-6 fix's
+   original approach, and the history is worth keeping): matchMedia
+   reliably detecting a real mouse turned out to be a bad assumption. The
+   real webkit2gtk engine (this app's actual webview on Linux) was
+   reproduced reporting `(hover: hover): false` under its GDK X11 backend
+   even with a genuine mouse and zero touch hardware — silently killing
+   hover-reveal for X11-backed desktop users, while Chromium/Playwright-
+   WebKit both correctly report hover:hover=true in the same scenario, so
+   browser-based dev testing never caught the regression. See
+   .superpowers/hover-title-fix-report.md.
+   `.block-mouse-hovered` is instead stamped by TipTapEditor.svelte's real
+   mousemove tracking (handleEditorMouseMove -> hoveredMouseBlock), gated
+   by a last-touch timestamp (isTrustedMouseHover, block-hover-guard.js) —
+   not by what the engine's interaction media features report. */
+.ProseMirror .block-shell.block-mouse-hovered > .board-title-slot,
+.ProseMirror .code-block-wrap.block-mouse-hovered > .board-title-slot {
+  max-height: 2.6em;
+  opacity: 0.85;
+  margin: 0.125rem 0 0.25rem;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+/* D-6 (QA sweep, touch-only): the hover-reveal above used to be scoped to
+   `(hover: hover)` because real touch devices report `(hover: none)` even
+   though Chromium still synthesizes a `:hover` match on tap (the
+   well-known mobile "sticky hover" behavior) — the FIRST tap into a fresh
+   board would itself trigger the hover-reveal, expanding the (until-then
+   zero-height) title into 2.6em and pushing the board's real content down
+   by that amount mid-tap, so the tap coordinate (resolved against the
+   pre-reveal layout) landed on the now-larger, now-pointer-events:auto
+   title instead of the content below it. Now that the reveal is
+   class-driven instead of `:hover`-driven, the SAME protection lives in
+   JS: `.block-mouse-hovered` is only stamped when isTrustedMouseHover()
+   says the mousemove landed more than TOUCH_COMPAT_GUARD_MS after the most
+   recent real touch pointerdown — so touch's only path to this slot stays
+   a deliberate focus (keyboard nav, slash-insert's pendingFocusPos), never
+   a same-tap hover/compat-mousemove side effect. */
+.ProseMirror .board-title-slot:focus {
+  max-height: 2.6em;
+  opacity: 0.85;
+  margin: 0.125rem 0 0.25rem;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+/* Coordinator branch-review fix (item 2): touch users need a deliberate
+   path to an EXISTING block's title, not just new-insert's
+   pendingFocusPos or a hardware keyboard's ArrowUp. Tapping a block's
+   left-margin zone already reveals its block-handles (+/pin/copy/delete)
+   via TipTapEditor.svelte's touch pointerdown path; that same reveal now
+   also stamps `.block-active-touch` on the block (see the $effect in
+   TipTapEditor.svelte mirroring handleVisible + hoveredBlock). Scoped to
+   `(hover: none)` so it never fires on hover-capable devices (redundant
+   with the hover rule above there) and, critically, is driven by the
+   deliberate margin-tap gesture rather than any tap inside the block
+   body — the first-tap-steals-focus bug (D-6) stays fixed. */
+@media (hover: none) {
+  .ProseMirror .block-shell.block-active-touch > .board-title-slot,
+  .ProseMirror .code-block-wrap.block-active-touch > .board-title-slot {
+    max-height: 2.6em;
+    opacity: 0.85;
+    margin: 0.125rem 0 0.25rem;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+}
+.ProseMirror .board-title-slot::placeholder {
+  font-style: italic;
+  color: inherit;
+  opacity: 1;
+}
+
+/* When settings is open on a phone the MobileActionBar stays pinned over the
+   full-screen settings sheet (so the settings tab is toggleable). Clear its
+   height from the bottom of the settings content so the last row isn't
+   hidden behind the bar. */
+@media (max-width: 768px), (orientation: landscape) and (max-height: 480px) {
+  body.shizumu-settings-open .modal {
+    padding-bottom: calc(max(1rem, env(safe-area-inset-bottom)) + 4rem);
+  }
+}
+
+/* Table fallback — table is intentionally not NodeView-wrapped, so we keep
+   the original CSS pseudo-element render for tables that carry a blockTitle. */
+.ProseMirror table[data-block-title]::before {
+  content: attr(data-block-title);
+  display: block;
+  font-family: var(--canvas-font-family, "Lora", serif);
+  font-style: italic;
+  /* Match the shared block-shell title caption (small, warm-accent). */
+  font-size: 0.78em;
+  letter-spacing: 0.01em;
+  color: var(--warm-accent, #c0613a);
+  opacity: 0.85;
+  margin: 0 0 4px;
+}
+/* Inside the editor the ShellTableView renders a real `.table-title-caption`
+   element above the table (reliable, unlike `::before` on a <table>), so
+   suppress the pseudo-element there. The `::before` rule above stays as the
+   static-render fallback (generateHTML does not run NodeViews). */
+.ProseMirror .tableWrapper table[data-block-title]::before {
+  content: none;
+}
+.ProseMirror .tableWrapper .table-title-caption {
+  font-family: var(--canvas-font-family, "Lora", serif);
+  font-style: italic;
+  font-size: 0.78em;
+  letter-spacing: 0.01em;
+  color: var(--warm-accent, #c0613a);
+  /* Collapsed by default; reveals on hover with the same sleek fade + slide. */
+  max-height: 0;
+  opacity: 0;
+  margin: 0;
+  transform: translateY(-3px);
+  overflow: hidden;
+  transition: max-height 200ms cubic-bezier(0.2, 0, 0, 1),
+              opacity 200ms cubic-bezier(0.2, 0, 0, 1),
+              margin 200ms cubic-bezier(0.2, 0, 0, 1),
+              transform 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+.ProseMirror .tableWrapper:hover .table-title-caption {
+  max-height: 2em;
+  opacity: 0.85;
+  margin: 0 0 2px;
+  transform: translateY(0);
+}
+
+.local-image-wrap[data-display="inline"] img {
+  display: inline-block;
+  vertical-align: baseline;
+  max-height: 1.5em;
+}
+
+.local-image-wrap[data-display="block"] img {
+  max-height: 360px;
+  object-fit: contain;
+  margin: 0;
+}
+
+/* Corner resize handle — appears on hover */
+.local-image-resize-handle {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 14px;
+  height: 14px;
+  background: var(--warm-accent);
+  border: 2px solid var(--canvas-bg);
+  border-radius: 50%;
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  z-index: 3;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.local-image-wrap:hover .local-image-resize-handle {
+  opacity: 0.85;
+}
+
+/* On coarse pointers (touch), there's no hover — the handle is always
+   visible at a softer opacity so the affordance is discoverable. */
+@media (pointer: coarse) {
+  .local-image-resize-handle {
+    opacity: 0.55;
+  }
+}
+
+/* Collapse button (top-right of a full image) */
+.local-image-collapse-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--canvas-bg) 85%, transparent);
+  color: var(--ink);
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  border-radius: 50%;
+  cursor: pointer;
+  font-family: "Inter", sans-serif;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  z-index: 3;
+}
+
+.local-image-wrap:hover .local-image-collapse-btn {
+  opacity: 0.85;
+}
+
+@media (pointer: coarse) {
+  .local-image-collapse-btn {
+    opacity: 0.55;
+  }
+}
+
+.local-image-collapse-btn:hover {
+  opacity: 1;
+  background: var(--canvas-bg);
+  color: var(--warm-accent);
+  border-color: var(--warm-accent);
+}
+
+/* Sync/remove overlay — attachment-backed images only. A localImage had
+   nowhere to put a per-file sync decision; an attachment does, so the
+   toggle rides top-left opposite the collapse button, on the same
+   hover-reveal timing as the rest of the image chrome. */
+.attachment-image-actions {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--canvas-bg) 85%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  opacity: 0;
+  transition: opacity 150ms ease;
+  z-index: 3;
+}
+
+.local-image-wrap:hover .attachment-image-actions {
+  opacity: 0.85;
+}
+
+.attachment-image-actions:hover {
+  opacity: 1;
+}
+
+@media (pointer: coarse) {
+  .attachment-image-actions {
+    opacity: 0.55;
+  }
+}
+
+/* The blob isn't on this device — the row survived a GC sweep or hasn't
+   arrived from another device yet. Says so instead of showing a broken
+   image icon. */
+.local-image-missing {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  opacity: 0.6;
+  font-size: 13px;
+}
+
+/* Chip form — collapsed image renders as a highlighted-text reference in
+   line with the surrounding canvas type. Click to preview, double-click to
+   expand the full image back into the doc. No icon or expand button — the
+   filename itself is the affordance. */
+.local-image-chip {
+  display: inline;
+  cursor: pointer;
+  font-family: var(--canvas-font-family, "Lora", serif);
+  font-style: italic;
+  color: var(--warm-accent);
+  background: var(--warm-accent-soft, rgba(196, 77, 40, 0.06));
+  padding: 0 4px;
+  border-radius: 3px;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--warm-accent) 30%, transparent);
+  text-underline-offset: 2px;
+  transition: background 120ms ease, text-decoration-color 120ms ease;
+}
+
+.local-image-chip:hover {
+  background: color-mix(in srgb, var(--warm-accent) 12%, transparent);
+  text-decoration-color: var(--warm-accent);
+}
+
+/* Click-to-preview modal — rendered as <dialog> in TipTapEditor so the
+   element lives in the browser top layer and escapes every stacking
+   context. The backdrop is the ::backdrop pseudo; ESC-to-close is handled
+   by the browser. All layout / cursor / fixed-positioning rules are scoped
+   under [open] so the closed dialog stays at UA `display: none` and
+   doesn't intercept clicks across the whole viewport. */
+.image-preview-modal {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.image-preview-modal[open] {
+  position: fixed;
+  inset: 0;
+  max-width: none;
+  max-height: none;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  animation: image-preview-fade 140ms ease forwards;
+}
+
+.image-preview-modal::backdrop {
+  background: color-mix(in srgb, var(--margin-bg) 85%, transparent);
+  animation: image-preview-fade 140ms ease forwards;
+}
+
+.image-preview-modal img {
+  max-width: 92vw;
+  max-height: 92vh;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 8px 40px color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+@keyframes image-preview-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Scrollbar — thin and themed */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--horizon) transparent;
+}
+
+/* Hide scrollbar on narrow panels only */
+.hide-scrollbar {
+  scrollbar-width: none !important;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none !important;
+}
+
+/* ── Mobile editor canvas containment ──────────────────────────────────
+   On touch viewports, stop pull-to-refresh + horizontal bounce from
+   firing on the editor canvas (the gesture should belong to the
+   editor, not the OS). pan-x pan-y also prevents pinch-zoom from
+   shrinking the canvas at random zoom factors — the user picks font
+   size via settings, not via gesture. */
+@media (pointer: coarse) {
+  .tiptap-editor-wrapper {
+    overscroll-behavior: contain;
+    touch-action: pan-x pan-y;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms linear;
+    --motion-normal: 0ms linear;
+    --motion-sheet-open: 0ms linear;
+    --motion-sheet-close: 0ms linear;
+    --motion-swipe-commit: 0ms linear;
+    --motion-swipe-cancel: 0ms linear;
+  }
+}
+
+/* ── Slash-command menu (the LIVE menu — src/lib/slash-commands.js) ────
+   Plain-DOM floating menu (no Svelte component; built by createMenu() /
+   renderItems() in slash-commands.js), positioned via inline top/left/
+   z-index/display since those are computed dynamically per caret
+   position. Everything else — the floating-chrome look — lives here so
+   it carries the same control language as CommandPalette.svelte's
+   .palette (surface bg, card-border hairline, elevated shadow, radius-md)
+   instead of the ad hoc hardcoded colors it used to inline.
+   (src/components/SlashMenu.svelte, a fully-styled but never-imported
+   sibling, was retired in favor of restyling this one — the one the app
+   actually renders.) */
+.slash-command-menu {
+  background: var(--surface);
+  border: 1px solid var(--card-border);
+  box-shadow: 0 0.5rem 1.5rem var(--card-shadow-hover);
+  border-radius: var(--radius-md);
+  padding: 0.25rem 0;
+  min-width: 13.75rem;
+  max-height: 20rem;
+  overflow-y: auto;
+}
+.slash-section-header {
+  font-family: "DM Mono", monospace;
+  font-size: 0.625rem;
+  color: var(--ink);
+  opacity: 0.35;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.625rem 0.75rem 0.25rem;
+}
+.slash-command-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.4375rem 1rem;
+  text-align: left;
+  transition: background var(--motion-fast);
+}
+.slash-command-row:hover,
+.slash-command-row.selected {
+  background: var(--warm-accent-soft);
+}
+.slash-command-row:focus-visible {
+  outline: 2px solid var(--warm-accent);
+  outline-offset: -2px;
+}
+.slash-command-row-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.slash-command-title {
+  font-family: "Lora", serif;
+  font-size: 0.9375rem;
+  color: var(--ink);
+  opacity: 0.8;
+}
+.slash-command-row.selected .slash-command-title {
+  color: var(--warm-accent);
+  opacity: 1;
+}
+.slash-command-desc {
+  font-family: "Inter", sans-serif;
+  font-weight: 400;
+  font-size: 0.6875rem;
+  color: var(--ink);
+  opacity: 0.35;
+}
+.slash-shortcut {
+  font-family: "DM Mono", monospace;
+  font-size: 0.6875rem;
+  color: var(--ink);
+  opacity: 0.5;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  border: 1px solid var(--card-border);
+  padding: 0.125rem 0.4375rem;
+  border-radius: 0.25rem;
+  flex-shrink: 0;
+}
+.slash-command-menu-empty {
+  padding: 0.5rem 1rem;
+  opacity: 0.4;
+  font-family: "Inter", sans-serif;
+  font-size: 0.75rem;
+}
+/* Touch: comfy row height + wider menu, same treatment SlashMenu.svelte
+   (the retired sibling) already had for its coarse-pointer variant. */
+@media (pointer: coarse) {
+  .slash-command-menu {
+    min-width: 16rem;
+    max-width: calc(100vw - 1rem);
+    padding: 0.375rem 0;
+  }
+  .slash-command-row {
+    padding: 0.875rem 1rem;
+    min-height: 3rem;
+    gap: 0.625rem;
+  }
+  .slash-command-title {
+    font-size: 1rem;
+  }
+  .slash-command-desc {
+    font-size: 0.8125rem;
+    opacity: 0.55;
+  }
+}

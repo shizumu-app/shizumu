@@ -1,0 +1,22 @@
+-- Stop re-sending an attachment that keeps failing, every single tick.
+--
+-- `pending_object_upload` matched on state alone, so a failing upload
+-- was retried every 30 seconds forever. For an attachment near the
+-- 100 MB ceiling on a slow uplink that is an invisible, permanent
+-- bandwidth drain — and each attempt seals under a fresh per-object
+-- UUID, so any PUT the relay committed before the client gave up
+-- leaves a DISTINCT orphan. The relay's `gc_orphan_blobs` bails out
+-- ("requires ObjectStore.list_keys"), so nothing ever reclaims them.
+--
+-- The sweep also runs before `upload::run_pass` and `pull::run_pass`
+-- on the worker's tick, so N attachments failing slowly held up all
+-- page and op sync behind them.
+--
+-- `upload_attempts` counts consecutive failures and resets to 0 the
+-- moment an upload is recorded. `upload_retry_at_ms` is wall-clock ms
+-- since the epoch; a row is not a candidate until then. Both default
+-- to 0, which means "never failed, try now" — every existing row is
+-- immediately eligible, which is the correct migration behaviour for
+-- attachments that have been waiting.
+ALTER TABLE attachments ADD COLUMN upload_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE attachments ADD COLUMN upload_retry_at_ms INTEGER NOT NULL DEFAULT 0;

@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Shizumu
+Name[fr]=Shizumu
+GenericName=Writing Space
+GenericName[fr]=Espace d'ecriture
+Comment=write to think · pin what matters · the rest sinks
+Comment[fr]=écrire pour penser · épingler · le reste se dépose
+Exec=env GDK_BACKEND=x11 shizumu %U
+Icon=app.shizumu.Shizumu
+Terminal=false
+Categories=Office;TextEditor;
+Keywords=writing;notebook;journal;diary;notes;notetaking;note-taking;daily;writer;thoughts;ideas;text-editor;local-first;offline;encrypted;private;minimal;
+Keywords[fr]=ecriture;carnet;journal;notes;prise-de-notes;quotidien;prive;hors-ligne;chiffre;minimal;
+MimeType=text/plain;
+StartupWMClass=shizumu
+StartupNotify=true

@@ -1,0 +1,1 @@
+ALTER TABLE shared_objects ADD COLUMN diverged INTEGER NOT NULL DEFAULT 0;

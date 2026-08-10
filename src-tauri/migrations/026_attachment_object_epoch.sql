@@ -1,0 +1,21 @@
+-- Which key epoch an attachment object was SEALED under.
+--
+-- The object body is `envelope::encrypt_op(content_key_for(epoch), …)`.
+-- Before this column existed the sealing key was always
+-- `user_keys.content_master_key` — the epoch-0, phrase-derived key —
+-- no matter how many rotations had happened. Rotation exists to cut a
+-- revoked device off; a device revoked at epoch N still holds the
+-- epoch-0 key, so it could decrypt every attachment uploaded AFTER its
+-- revocation. Ops never had this hole (`sync/upload.rs` resolves
+-- `content_master_key_for_epoch(op.epoch)`); attachment objects did.
+--
+-- NULL means "not recorded". That is not a fallback and not a guess:
+-- the only rows that can carry NULL alongside a non-NULL `object_key`
+-- were uploaded by a build that sealed under epoch 0, so opening them
+-- with the epoch-0 key is exactly right. Absent → 0 is a statement
+-- about history, not a default.
+--
+-- Written and cleared in lockstep with `object_key` (migration 025):
+-- an object address without the epoch it was sealed under cannot be
+-- opened, and an epoch without an address has nothing to open.
+ALTER TABLE attachments ADD COLUMN object_epoch INTEGER;

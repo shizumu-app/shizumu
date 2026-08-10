@@ -1,0 +1,16 @@
+-- Attachments moved out of band: the bytes no longer ride inside the
+-- `attachment_blob` op, they live in their own relay object at
+-- PUT/GET/DELETE /v1/users/<uid>/attachments/<object_key>.
+--
+-- Two different addresses are unavoidable, so the row carries both:
+--   blob_hash  (PK)  = sha256(PLAINTEXT)   — the local content address,
+--                      what the blob store and every page node use.
+--   object_key       = blake3(CIPHERTEXT)  — what the relay enforces the
+--                      body against, and therefore the only thing that
+--                      can appear in the URL.
+--
+-- NULL means "no object on the relay for this row": never uploaded, an
+-- inline legacy op, or a reference op from a client that predates the
+-- object key. Those rows are simply not fetchable — see
+-- attachments::backfill::pending_object_fetch.
+ALTER TABLE attachments ADD COLUMN object_key TEXT;

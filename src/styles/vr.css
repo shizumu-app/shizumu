@@ -1,0 +1,10 @@
+/* VR capture mode: kill animations/transitions so frames are byte-stable.
+   Activated by data-vr on <html> (set by bootstrapVR). */
+[data-vr] *,
+[data-vr] *::before,
+[data-vr] *::after {
+  transition: none !important;
+  animation: none !important;
+  caret-color: transparent !important;
+  scroll-behavior: auto !important;
+}

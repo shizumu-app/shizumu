@@ -1,0 +1,120 @@
+[package]
+name = "shizumu"
+version = "0.6.0"
+description = "write to think. pin what matters. the rest sinks."
+authors = []
+license = "AGPL-3.0-or-later"
+edition = "2021"
+rust-version = "1.77.2"
+default-run = "shizumu"
+
+[lib]
+name = "shizumu_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+log = "0.4"
+# `tray-icon` is a desktop-only Tauri feature; on mobile it's a no-op
+# but compiles fine. Leaving it in the shared deps avoids two separate
+# tauri specs.
+tauri = { version = "2.10.3", features = ["protocol-asset", "tray-icon", "image-png", "devtools"] }
+tauri-plugin-log = "2"
+tauri-plugin-notification = "2"
+rusqlite = { version = "0.34", features = ["bundled-sqlcipher-vendored-openssl"] }
+tokio = { version = "1", features = ["rt", "sync"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+zeroize = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Phase 14 (sync engine): client-side cryptography. The relay's spec
+# §4 lists Ed25519 + X25519 + BLAKE3 + age + BIP-39 + HMAC as the
+# required client primitives. Only key material + derivation lives in
+# 14.1; age / blake3 / hmac arrive with envelope encryption in 14.3,
+# and reqwest / eventsource-client come with the wire client in 14.5+.
+ed25519-dalek = { version = "2", features = ["rand_core", "zeroize"] }
+x25519-dalek = { version = "2", features = ["zeroize", "static_secrets"] }
+# Phase 14.15: pairing wraps the key bundle in age, encrypted to the
+# new device's ephemeral X25519 pubkey. The bundle plaintext is small
+# (~256 bytes) and lives ephemerally during pairing — we don't depend
+# on age's armoring or streaming features. The `bech32` dep is used
+# to encode raw X25519 bytes into age's `age1...` recipient strings;
+# age::x25519::Recipient does not expose a from-bytes constructor.
+age = "0.10"
+bech32 = "0.9"
+# Phase 14.16: Y-CRDT for collaborative-ish merge on continuous-trail
+# yjs updates. Receive-side primitive only for v0.4 — the emit side
+# (continuous-trail editor) still flushes via save_page_content. When
+# the editor migrates to yjs deltas, the merge handler in
+# sync::merge::merge_yjs picks up automatically.
+yrs = "0.20"
+bip39 = "2"
+hkdf = "0.12"
+sha2 = "0.10"
+hmac = "0.12"
+blake3 = "1"
+chacha20poly1305 = { version = "0.10", features = ["alloc"] }
+base64 = "0.22"
+hex = "0.4"
+rand_core = { version = "0.6", features = ["getrandom"] }
+# Phase 14.5: blocking HTTP client for the wire pipeline. Enrollment +
+# op upload + blob upload are one-shot non-latency-critical calls; the
+# blocking client keeps call sites simple. SSE in 14.7 may need a
+# separate async path; revisit then.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
+# Clipboard WRITES go through the Rust side, not the webview. WebKitGTK gates
+# navigator.clipboard.* behind a permission prompt a Tauri window can't grant
+# (tauri-apps/tauri#12007), so every async write rejects NotAllowedError; and
+# under Wayland the webview's clipboard integration fails outright. This plugin
+# pulls in wl-clipboard-rs and talks to the compositor directly, past both.
+# NOTE: only writes. Its read_text is known to hang on WebKit/Linux
+# (tauri-apps/plugins-workspace#2267) — paste already arrives via the DOM paste
+# event, so we never call it.
+tauri-plugin-clipboard-manager = "2"
+
+[dev-dependencies]
+# httpmock is sync-friendly (does not require a tokio runtime in the
+# test harness) -- a good match for the blocking reqwest client.
+httpmock = "0.7"
+tempfile = "3"
+
+# Desktop-only dependencies. The keyring crate doesn't compile for iOS /
+# Android (no libsecret / KeychainServices binding via this crate path);
+# tauri-plugin-global-shortcut is a desktop-only plugin (mobile OSes
+# own the global keymap). Both are gated so the dependency graph
+# remains valid when targeting mobile.
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+keyring = "3"
+tauri-plugin-global-shortcut = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+# Direct webkit2gtk access for the on_permission_request hook on the
+# main webview — used to auto-grant camera permission so getUserMedia
+# (QR scanner) works without an engine-level prompt that the webkit2gtk
+# stack doesn't always surface cleanly. Version pinned to match the
+# transitive version pulled in by wry.
+webkit2gtk = "2.0"
+
+# Android OpenSSL vendored build: disable ASM (AVX-512 etc.
+# incompatible with NDK). Patched via local copy of openssl-src.
+[patch.crates-io]
+openssl-src = { path = "vendor/openssl-src" }
+
+[[bin]]
+name = "shizumu-cli"
+path = "src/bin/cli.rs"
+
+[[bin]]
+name = "op_log_audit"
+path = "src/bin/op_log_audit.rs"

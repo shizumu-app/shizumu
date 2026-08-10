@@ -1,0 +1,111 @@
+{
+  "_comment": "Demo seed — three trails + one peer, one inherited pin. Narrative: launch is the parent project with two subtrails (v0.1.24 ships now, v1.0-roadmap is what comes after). daily-thinking is a separate peer for reflective writing. The launch checklist pinned on the parent trail appears on every page in the launch family — that's the trail-pin inheritance demo.",
+
+  "trails": [
+    { "slug": "launch",        "name": "launch",        "mode": "discrete" },
+    { "slug": "v0.1.24",       "name": "v0.1.24",       "mode": "discrete", "parent": "launch" },
+    { "slug": "v1.0-roadmap",  "name": "v1.0 roadmap",  "mode": "discrete", "parent": "launch" },
+    { "slug": "daily-thinking","name": "daily thinking","mode": "discrete" }
+  ],
+
+  "pages": [
+    {
+      "_": "-2d on launch — the planning page. Carries the pinned checklist block.",
+      "date": "-2d",
+      "trail": "launch",
+      "page_number": 1,
+      "what_matters_now": "shape the launch plan",
+      "doc": {
+        "type": "doc",
+        "content": [
+          { "type": "paragraph", "content": [{ "type": "text", "text": "two things to ship before the announcement: the flatpak is live on flathub, and the demo content is real. the rest is polish." }] },
+          {
+            "type": "list",
+            "attrs": { "pinId": "00000001-0000-4000-8000-000000000001", "blockTitle": "launch checklist" },
+            "content": [
+              { "type": "listItem", "attrs": { "marker": "task", "checked": true  }, "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "tag v0.1.24 and push to gitlab" }] }] },
+              { "type": "listItem", "attrs": { "marker": "task", "checked": true  }, "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "sync the manifest to the flathub repo" }] }] },
+              { "type": "listItem", "attrs": { "marker": "task", "checked": false }, "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "respond to the last review thread" }] }] },
+              { "type": "listItem", "attrs": { "marker": "task", "checked": false }, "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "draft the announcement post" }] }] },
+              { "type": "listItem", "attrs": { "marker": "task", "checked": false }, "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "capture screenshots once the demo seed lands" }] }] }
+            ]
+          },
+          { "type": "paragraph", "content": [{ "type": "text", "text": "tomorrow's focus is the flathub thread — split into its own subtrail so the back-and-forth has a place." }] }
+        ]
+      }
+    },
+
+    {
+      "_": "today on v0.1.24 — the active subtrail. The launch checklist pin inherits down to here.",
+      "date": "today",
+      "trail": "v0.1.24",
+      "page_number": 1,
+      "what_matters_now": "close out the flathub review",
+      "doc": {
+        "type": "doc",
+        "content": [
+          { "type": "paragraph", "content": [{ "type": "text", "text": "the reviewer left two notes overnight. small, both fixable in one commit." }] },
+          {
+            "type": "list",
+            "content": [
+              { "type": "listItem", "attrs": { "marker": "task", "checked": true  }, "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "rename app-id to follow reverse-DNS of shizumu.app" }] }] },
+              { "type": "listItem", "attrs": { "marker": "task", "checked": false }, "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "drop the redundant filesystem permission from the manifest" }] }] }
+            ]
+          },
+          { "type": "paragraph", "content": [{ "type": "text", "text": "once those land the merge can happen and the announcement post can go out tonight." }] }
+        ]
+      }
+    },
+
+    {
+      "_": "-3d on v1.0-roadmap — what comes after. The pin still inherits here too.",
+      "date": "-3d",
+      "trail": "v1.0-roadmap",
+      "page_number": 1,
+      "what_matters_now": "sync design — opt-in, end-to-end encrypted",
+      "doc": {
+        "type": "doc",
+        "content": [
+          { "type": "paragraph", "content": [{ "type": "text", "text": "the v1.0 sync story has to honor the local-first promise. principles:" }] },
+          {
+            "type": "list",
+            "content": [
+              { "type": "listItem", "attrs": { "marker": "ordered" }, "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "opt-in: sync is off by default. local-only is the supported mode." }] }] },
+              { "type": "listItem", "attrs": { "marker": "ordered" }, "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "e2e encrypted: the server stores blobs it can't read." }] }] },
+              { "type": "listItem", "attrs": { "marker": "ordered" }, "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "provider-agnostic: speak to s3-compatible storage. user picks." }] }] }
+            ]
+          },
+          { "type": "paragraph", "content": [{ "type": "text", "text": "rough budget: 3-4 months of focused work to get a beta worth shipping." }] }
+        ]
+      }
+    },
+
+    {
+      "_": "-1d on daily-thinking — peer trail, no inheritance from launch. Reflective writing has its own home.",
+      "date": "-1d",
+      "trail": "daily-thinking",
+      "page_number": 1,
+      "what_matters_now": "morning",
+      "doc": {
+        "type": "doc",
+        "content": [
+          { "type": "paragraph", "content": [{ "type": "text", "text": "slept well. cold morning. wrote nothing useful for an hour and that turned out to be the work." }] },
+          { "type": "paragraph", "content": [{ "type": "text", "text": "the thing about a tool that refuses to organize for you is that the refusal IS the feature. the structure that comes from writing is shaped by the writing, not the other way around." }] },
+          { "type": "paragraph", "content": [{ "type": "text", "text": "today's plan: close the flathub review, draft the post, sleep at a reasonable hour." }] }
+        ]
+      }
+    }
+  ],
+
+  "pins": [
+    {
+      "_": "Trail-scoped pin on the launch parent. Inherits to v0.1.24 and v1.0-roadmap via the parent_id chain. Stored as a board (not 'checklist') so the panel renders it as a real list with checkboxes; content is a JSON-stringified TipTap doc matching how the GUI stores pins from board blocks.",
+      "id": "00000001-0000-4000-8000-000000000001",
+      "page_date": "-2d",
+      "trail": "launch",
+      "kind": "board",
+      "label": "launch checklist",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"list\",\"attrs\":{\"pinId\":\"00000001-0000-4000-8000-000000000001\",\"blockTitle\":\"launch checklist\"},\"content\":[{\"type\":\"listItem\",\"attrs\":{\"marker\":\"task\",\"checked\":true},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"tag v0.1.24 and push to gitlab\"}]}]},{\"type\":\"listItem\",\"attrs\":{\"marker\":\"task\",\"checked\":true},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"sync the manifest to the flathub repo\"}]}]},{\"type\":\"listItem\",\"attrs\":{\"marker\":\"task\",\"checked\":false},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"respond to the last review thread\"}]}]},{\"type\":\"listItem\",\"attrs\":{\"marker\":\"task\",\"checked\":false},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"draft the announcement post\"}]}]},{\"type\":\"listItem\",\"attrs\":{\"marker\":\"task\",\"checked\":false},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"capture screenshots once the demo seed lands\"}]}]}]}]}"
+    }
+  ]
+}

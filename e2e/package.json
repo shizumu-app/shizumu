@@ -1,0 +1,22 @@
+{
+  "name": "shizumu-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Tauri WebDriver golden-path e2e suite (WebdriverIO + tauri-driver).",
+  "scripts": {
+    "test": "wdio run wdio.conf.js",
+    "vr:capture": "wdio run vr/wdio.vr.conf.js",
+    "vr:update": "VR_UPDATE=1 wdio run vr/wdio.vr.conf.js",
+    "vr:android": "node vr/android/capture.mjs",
+    "vr:android:update": "VR_UPDATE=1 node vr/android/capture.mjs"
+  },
+  "devDependencies": {
+    "@wdio/cli": "^9.0.0",
+    "@wdio/local-runner": "^9.0.0",
+    "@wdio/mocha-framework": "^9.0.0",
+    "@wdio/spec-reporter": "^9.0.0",
+    "chrome-remote-interface": "^0.33.3",
+    "pixelmatch": "^6.0.0",
+    "pngjs": "^7.0.0"
+  }
+}

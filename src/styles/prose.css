@@ -1,0 +1,959 @@
+/* prose.css — node-shape CSS shared across every surface that renders a
+   TipTap doc: the live editor (TipTapEditor's `.prose` wrapper), the
+   read-only mounts (ThreadPageView, SharedObjectsPanel pin modal), and
+   the static-rendered previews (Memory expanded cards, trail-map hover,
+   Backlinks excerpt — anything that uses renderDocHTML or ProseHTML).
+
+   Naming: every rule is anchored to `.prose` so a stray surface that
+   forgets the wrapper renders unstyled (loud signal) rather than
+   subtly broken. The unified-list, date-separator, local-image, and
+   qa-block rules already live in global.css under `.ProseMirror` — they
+   remain there and are unaffected by this file; both selectors hit the
+   same node.
+
+   Why this file exists: before, every TipTap surface duplicated these
+   rules in its own scoped <style> block, drifting silently. One source
+   of truth here means a dayMarker (or pageRef, or board frame) looks
+   identical wherever it renders. */
+
+/* ── Editor base ─────────────────────────────────────────────────────── */
+.prose .ProseMirror {
+  outline: none;
+  font-family: var(--canvas-font-family, "Lora", serif);
+  font-size: var(--editor-font-size, 16px);
+  line-height: var(--editor-line-height, 1.6);
+  color: var(--ink);
+  caret-color: var(--warm-accent);
+  user-select: text;
+}
+
+/* For static-rendered HTML there's no `.ProseMirror` wrapper — the
+   children land directly in `.prose`. Apply the same body rules. */
+.prose {
+  font-family: var(--canvas-font-family, "Lora", serif);
+  font-size: var(--editor-font-size, 16px);
+  line-height: var(--editor-line-height, 1.6);
+  color: var(--ink);
+}
+
+.prose p {
+  margin: 0;
+  opacity: 0.92;
+}
+
+/* Headings — size in em so they scale with the editor font. */
+.prose h1 {
+  font-size: 1.625em;
+  font-weight: 700;
+  line-height: 1.7;
+  margin: 1.5rem 0 0.625rem;
+  padding-bottom: 0.25rem;
+  position: relative;
+}
+
+.prose h2 {
+  font-size: 1.375em;
+  font-weight: 600;
+  line-height: 1.7;
+  margin: 1.25rem 0 0.5rem;
+  padding-bottom: 0.1875rem;
+  position: relative;
+}
+
+.prose h3 {
+  font-size: 1.1875em;
+  font-weight: 500;
+  line-height: 1.7;
+  margin: 0.875rem 0 0.25rem;
+  padding-bottom: 0.125rem;
+  position: relative;
+  opacity: 0.92;
+}
+
+/* Anchor styling */
+.prose a {
+  color: var(--warm-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ── Placeholder (live editor only — static HTML doesn't have empty
+      placeholder pseudo-state) ─────────────────────────────────────── */
+.prose .ProseMirror h1.is-empty::before,
+.prose .ProseMirror h2.is-empty::before,
+.prose .ProseMirror h3.is-empty::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  top: 0;
+  left: 0;
+  float: none;
+  height: auto;
+  line-height: inherit;
+  font-size: inherit;
+  font-style: italic;
+  font-weight: inherit;
+  color: var(--ink);
+  opacity: var(--ink-tertiary);
+  pointer-events: none;
+}
+
+.prose .ProseMirror p.is-editor-empty:first-child::before,
+.prose .ProseMirror .is-empty::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--ink);
+  opacity: var(--ink-tertiary);
+  font-style: italic;
+  pointer-events: none;
+  height: 0;
+}
+
+/* ── Shared block region ──────────────────────────────────────────────────
+   Cohesive with the editor: a block is ordinary prose whose region is marked
+   by ONE left-edge hairline. No background, no box, no radius. The title slot
+   is the only other chrome. */
+.prose .block-shell {
+  position: relative;
+  margin: 0.4375rem 0;
+  padding: 0 0 0 0.875rem;
+  /* shizumu's warm orange marks the region — quiet but on-brand. */
+  border-left: 1px solid color-mix(in srgb, var(--warm-accent) 26%, transparent);
+}
+/* The content hugs the hairline: zero the board content's own margin so the
+   left rule doesn't float above/below it (the shell's margin handles the gap
+   to neighbouring blocks). */
+.prose .board-content {
+  margin: 0;
+}
+
+/* Nested boards (a list inside a list item) carry no region mark — the outer
+   block already names the group. */
+.prose .board-content .block-shell {
+  border-left: none;
+  padding-left: 0;
+  margin: 0;
+}
+
+.prose .block-shell[data-board="blockquote"] > blockquote {
+  /* No inner border — the shell's left-edge hairline is the single, uniform
+     region mark for every block type, a blockquote included. */
+  border-left: none;
+  padding: 0;
+  margin: 0;
+}
+
+/* ── recipe block — typeset given / do / result three-slot structure ──
+   Each slot carries a warm-accent label chip in the top-left and a
+   hairline divider above it (except the first slot). Empty slots
+   show a soft placeholder hint via ::after. */
+.prose .recipe-block {
+  position: relative;
+  margin: 1rem 0;
+  padding: 0.625rem 1rem 0.625rem 1rem;
+  background: color-mix(in srgb, var(--ink) 2%, transparent);
+  border-radius: 0.5rem;
+}
+/* When wrapped inside the shared board frame the outer wrapper already
+   supplies bg + border + padding; strip the inner duplicate so chips
+   and dividers don't fight the frame. */
+.prose .block-shell[data-board="recipeBlock"] > .recipe-block {
+  background: transparent;
+  border: none;
+  padding: 0.25rem 0 0 0;
+  margin: 0;
+  border-radius: 0;
+}
+.prose .recipe-block > * {
+  position: relative;
+  margin: 0;
+  padding: 1.25rem 0 0.375rem 0;
+}
+.prose .recipe-block > * + * {
+  border-top: 1px dashed color-mix(in srgb, var(--ink) 6%, transparent);
+  margin-top: 0.375rem;
+}
+/* Slot label chip — sits at the top-left of each slot. Matches the
+   trail-chip pill used in ThreadCard / PinRow. */
+.prose .recipe-block > *::before {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-family: "Lora", Georgia, serif;
+  font-style: italic;
+  font-size: 0.625rem;
+  color: var(--warm-accent);
+  opacity: 0.92;
+  padding: 0.0625rem 0.4375rem;
+  border-radius: 0.5rem;
+  background: var(--warm-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--warm-accent) 25%, transparent);
+  letter-spacing: 0.01em;
+  user-select: none;
+  pointer-events: none;
+  line-height: 1.4;
+}
+.prose .recipe-block > *:nth-child(1)::before { content: "given"; }
+.prose .recipe-block > *:nth-child(2)::before { content: "do"; }
+.prose .recipe-block > *:nth-child(3)::before { content: "result"; }
+
+/* Placeholder hints for empty slots. ::after sits at the start of the
+   slot's content; the :empty selector matches a paragraph with no inline
+   children (TipTap's default empty paragraph). */
+.prose .recipe-block > *:nth-child(1):empty::after,
+.prose .recipe-block > *:nth-child(1) > p:empty:only-child::after {
+  content: "given…";
+}
+.prose .recipe-block > *:nth-child(3):empty::after,
+.prose .recipe-block > *:nth-child(3) > p:empty:only-child::after {
+  content: "produce…";
+}
+.prose .recipe-block > *:nth-child(1):empty::after,
+.prose .recipe-block > *:nth-child(1) > p:empty:only-child::after,
+.prose .recipe-block > *:nth-child(3):empty::after,
+.prose .recipe-block > *:nth-child(3) > p:empty:only-child::after {
+  font-family: "Lora", Georgia, serif;
+  font-style: italic;
+  color: var(--ink);
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* Static-render fallback for the BlockTitle slot. The live editor's
+   NodeView injects a `.board-title-slot` child element; generateHTML
+   does not. When no slot is present and a `data-block-title` attr is,
+   render the title via ::before so it shows up in previews.
+
+   `:has()` is supported in every browser we ship to (Tauri's WebKit /
+   WebView2). If a future surface needs to opt out, give it a class
+   like `.no-static-board-title`. */
+.prose [data-block-title]:not(:has(> .board-title-slot))::before {
+  content: attr(data-block-title);
+  display: block;
+  font-family: var(--canvas-font-family, "Lora", serif);
+  font-style: italic;
+  font-size: 0.95em;
+  color: var(--warm-accent);
+  opacity: 0.85;
+  margin: 0 0 0.25rem;
+}
+
+/* The existing `.modal-editor table[data-block-title]::before` rule in
+   global.css already handles tables specifically; the rule above won't
+   conflict because tables can't have a `.board-title-slot` child. */
+
+/* Paragraph margins inside list items */
+.prose .ProseMirror ul[data-list] li p,
+.prose ul[data-list] li p {
+  margin: 0;
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────── */
+.prose table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5rem 0;
+}
+
+.prose th,
+.prose td {
+  border: 1px solid var(--card-border);
+  padding: 0.375rem 0.625rem;
+  font-family: var(--canvas-font-family, "Lora", serif);
+  font-size: 0.875em;
+  line-height: 1.5;
+  color: var(--ink);
+  vertical-align: top;
+  min-width: 5rem;
+}
+
+.prose th {
+  background: color-mix(in srgb, var(--ink) 3%, var(--canvas-bg));
+  font-family: "Inter", sans-serif;
+  font-weight: 400;
+  font-size: 0.6875em;
+  opacity: 0.75;
+}
+
+.prose td p,
+.prose th p {
+  margin: 0;
+}
+
+.prose .selectedCell {
+  background: color-mix(in srgb, var(--warm-accent) 8%, transparent);
+}
+
+/* ── Horizontal rule ─────────────────────────────────────────────────── */
+.prose hr {
+  border: none;
+  border-top: 1px dashed var(--horizon);
+  opacity: 0.35;
+  margin: 0.75rem 0;
+}
+
+/* ── Strikethrough ──────────────────────────────────────────────────── */
+.prose s {
+  opacity: 0.55;
+}
+
+/* ── Day marker (continuous-trail decorator) ─────────────────────────── */
+.prose .day-marker {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  margin: 1.125rem 0 0.625rem;
+  padding: 0 0 0 0.625rem;
+  user-select: none;
+  cursor: default;
+  opacity: 0.55;
+  border-left: 2px solid var(--warm-accent-soft);
+}
+
+.prose .day-marker-date {
+  font-family: "DM Mono", monospace;
+  font-size: 0.625em;
+  color: var(--ink);
+  opacity: 0.55;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+.prose .day-marker-sep {
+  font-family: "DM Mono", monospace;
+  font-size: 0.625em;
+  color: var(--ink);
+  opacity: 0.35;
+}
+
+.prose .day-marker-focus {
+  font-family: var(--canvas-font-family, "Lora", serif);
+  font-style: italic;
+  font-size: 0.75em;
+  color: var(--warm-accent);
+  opacity: 0.75;
+}
+
+/* ── pageRef — inline reference token ────────────────────────────────── */
+.prose .page-ref {
+  display: inline;
+  cursor: pointer;
+  color: var(--warm-accent);
+  border-bottom: 1px dotted color-mix(in srgb, var(--warm-accent) 35%, transparent);
+  padding: 0 1px;
+  opacity: 0.92;
+  transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
+              border-color 180ms cubic-bezier(0.2, 0, 0, 1);
+  white-space: nowrap;
+}
+.prose .page-ref:hover,
+.prose .page-ref:focus-visible {
+  opacity: 1;
+  border-bottom-color: color-mix(in srgb, var(--warm-accent) 70%, transparent);
+  outline: none;
+}
+/* On coarse-pointer (touch) devices the affordance needs to be a little
+   stronger at rest — there's no hover state to intensify it before the
+   user commits to a tap. */
+@media (pointer: coarse) {
+  .prose .page-ref {
+    border-bottom-color: color-mix(in srgb, var(--warm-accent) 55%, transparent);
+  }
+}
+.prose .page-ref.ProseMirror-selectednode {
+  background: color-mix(in srgb, var(--warm-accent) 18%, transparent);
+  border-radius: 0.125rem;
+}
+.prose .page-ref .page-ref-arrow {
+  opacity: 0.55;
+  margin-right: 1px;
+}
+.prose .page-ref .page-ref-label {
+  font-family: inherit;
+}
+.prose .page-ref.page-ref--deleted {
+  color: var(--ink);
+  opacity: 0.35;
+  cursor: default;
+  border-bottom-style: dashed;
+  border-bottom-color: color-mix(in srgb, var(--ink) 20%, transparent);
+}
+.prose .page-ref.page-ref--deleted:hover {
+  opacity: 0.55;
+}
+.prose .page-ref .page-ref-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  margin-left: 0.25rem;
+  padding: 0 0.1875rem;
+  font-size: 0.6875rem;
+  color: var(--ink);
+  opacity: 0.35;
+  line-height: 1;
+  transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+.prose .page-ref .page-ref-remove:hover {
+  opacity: 0.92;
+}
+
+/* ── pinRef — inline reference to a pin ──────────────────────────────────
+   Mirrors `.page-ref` exactly (same chrome, same hover, same deleted
+   state) but distinguished inline by the `↗` glyph the NodeView prepends
+   (`pageRef` uses `→`). Sharing the underline + warm-accent colour keeps
+   the addressable-reference vocabulary consistent. */
+.prose .pin-ref {
+  display: inline;
+  cursor: pointer;
+  color: var(--warm-accent);
+  border-bottom: 1px dotted color-mix(in srgb, var(--warm-accent) 35%, transparent);
+  padding: 0 1px;
+  opacity: 0.92;
+  transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
+              border-color 180ms cubic-bezier(0.2, 0, 0, 1);
+  white-space: nowrap;
+}
+.prose .pin-ref:hover,
+.prose .pin-ref:focus-visible {
+  opacity: 1;
+  border-bottom-color: color-mix(in srgb, var(--warm-accent) 70%, transparent);
+  outline: none;
+}
+@media (pointer: coarse) {
+  .prose .pin-ref {
+    border-bottom-color: color-mix(in srgb, var(--warm-accent) 55%, transparent);
+  }
+}
+.prose .pin-ref.ProseMirror-selectednode {
+  background: color-mix(in srgb, var(--warm-accent) 18%, transparent);
+  border-radius: 0.125rem;
+}
+.prose .pin-ref .pin-ref-arrow {
+  opacity: 0.55;
+  margin-right: 1px;
+}
+.prose .pin-ref .pin-ref-label {
+  font-family: inherit;
+}
+.prose .pin-ref.pin-ref--deleted {
+  color: var(--ink);
+  opacity: 0.35;
+  cursor: default;
+  border-bottom-style: dashed;
+  border-bottom-color: color-mix(in srgb, var(--ink) 20%, transparent);
+}
+.prose .pin-ref.pin-ref--deleted:hover {
+  opacity: 0.55;
+}
+.prose .pin-ref .pin-ref-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  margin-left: 0.25rem;
+  padding: 0 0.1875rem;
+  font-size: 0.6875rem;
+  color: var(--ink);
+  opacity: 0.35;
+  line-height: 1;
+  transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+.prose .pin-ref .pin-ref-remove:hover {
+  opacity: 0.92;
+}
+
+/* ── find-match highlights (B.5) ────────────────────────────────────────
+   The find-replace plugin decorates every substring match in the live
+   editor; the currently-active match (the one Enter would jump to) gets
+   a stronger accent. Static-rendered previews never include these — the
+   plugin only runs in the writable editor. */
+.prose .find-match {
+  background: color-mix(in srgb, var(--warm-accent) 18%, transparent);
+  border-radius: 0.125rem;
+  padding: 0 1px;
+}
+.prose .find-match-active {
+  background: color-mix(in srgb, var(--warm-accent) 35%, transparent);
+}
+
+/* ── Inline code mark + fenced code block ───────────────────────────────
+   `code` mark wraps inline references (a function name, a path); the
+   fenced block is rendered by the CodeBlockShizumu NodeView with a
+   quiet header (language label + copy button). Both use DM Mono with
+   ligatures disabled (code reads as literal characters, not glyph art).
+   No syntax highlighting; honest containment of the snippet. */
+.prose code {
+  font-family: "DM Mono", monospace;
+  /* Match the actually-loaded DMMono-Light.woff2 weight. Inheriting
+     400 from body forced the browser to synthesize a faux-regular
+     from the 300 master, which rendered fuzzy and uneven. */
+  font-weight: 300;
+  font-size: 0.875em;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  border-radius: 0.1875rem;
+  padding: 0.0625rem 0.3125rem;
+  color: var(--ink);
+  opacity: 0.92;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+/* Empty inline code (mark toggled on with no content typed yet) renders
+   as a zero-width <code> in the DOM, so the chip is invisible. The
+   zero-width space in ::before gives the element layout so the user
+   sees the pill the instant they switch into code mode. */
+.prose code:empty::before {
+  content: "\200B";
+}
+
+/* Fallback styling for the static-render path (generateHTML emits a
+   bare <pre><code> with no NodeView wrap). Live editor + read-only
+   editors run the NodeView and use the .code-block-wrap rules below. */
+.prose pre {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border-radius: 0.5rem;
+  padding: 0.75rem 0.875rem;
+  margin: 0.625rem 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 10%, transparent) transparent;
+  line-height: 1.5;
+}
+.prose pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+  font-weight: 300;
+  font-size: 0.875em;
+  opacity: 0.92;
+}
+
+/* CodeBlockShizumu NodeView frame. Header carries the language input
+   and copy button; the <pre><code> below holds the editable content. */
+.prose .code-block-wrap {
+  /* Seamless like every other block — the .block-shell left-edge hairline is
+     the sole region mark. No box, no fill; the header + code sit in the shell's
+     padded region. */
+  position: relative;
+}
+/* Title slot inside the code-block frame. The wrap itself has no padding
+   (header + pre handle their own); add horizontal padding here so the
+   title aligns with the language input below. The base height/visibility
+   rules live in global.css under `.ProseMirror .board-title-slot`. */
+.prose .code-block-wrap > .board-title-slot {
+  /* No extra inset — the shell's padding-left aligns the title with the boards. */
+  padding: 0;
+  box-sizing: border-box;
+}
+.prose .code-block-wrap > .board-title-slot:not(:placeholder-shown) {
+  padding-top: 0.3125rem;
+}
+/* Focused title carries a stronger ink opacity so the user can see the
+   caret has landed (the base focus rule sets opacity 0.3 for the empty
+   placeholder state, which is too quiet to read as "you are here"). */
+.prose .code-block-wrap > .board-title-slot:focus {
+  opacity: 0.85;
+}
+.prose .code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.3125rem 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--ink) 8%, transparent);
+  user-select: none;
+}
+.prose .code-block-lang {
+  appearance: none;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: "Lora", Georgia, serif;
+  font-style: italic;
+  font-size: 0.75rem;
+  color: var(--ink);
+  opacity: 0.7;
+  padding: 0;
+  width: 8rem;
+  max-width: 50%;
+}
+.prose .code-block-lang::placeholder {
+  color: var(--ink);
+  opacity: 0.4;
+}
+.prose .code-block-lang:disabled {
+  cursor: default;
+}
+.prose .code-block-copy {
+  appearance: none;
+  background: transparent;
+  border: none;
+  font-family: "DM Mono", monospace;
+  font-size: 0.625rem;
+  text-transform: lowercase;
+  letter-spacing: 0.05em;
+  color: var(--ink);
+  opacity: 0.45;
+  cursor: pointer;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  transition:
+    opacity 120ms cubic-bezier(0.2, 0, 0, 1),
+    color 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+.prose .code-block-copy:hover {
+  opacity: 0.9;
+}
+.prose .code-block-copy.copied {
+  color: var(--warm-accent);
+  opacity: 0.92;
+}
+.prose .code-block-wrap pre {
+  background: transparent;
+  border-radius: 0;
+  border: none;
+  padding: 0.625rem 0;
+  margin: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 10%, transparent) transparent;
+  line-height: 1.5;
+  /* Explicit so the <pre> never inherits Lora from its prose ancestor;
+     keeps the box geometry monospace-tight even before glyphs paint. */
+  font-family: "DM Mono", monospace;
+  font-weight: 300;
+}
+.prose .code-block-wrap pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+  /* Repeat the family here (not inherited from .prose code's chip rule
+     because the wrap selector is more specific and we don't want the
+     chip border carrying through). */
+  font-family: "DM Mono", monospace;
+  font-weight: 300;
+  font-size: 0.875em;
+  opacity: 0.92;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+/* ── /chart visual diagrams (10.6) ──────────────────────────────────────
+   Mermaid renders an SVG inside `.chart-render`; click on the wrapper
+   (when editable) reopens the ChartBuilder. The chart sits flush with
+   the prose typography — same column width, no card chrome, no hover
+   highlight. Static path renders `.chart-placeholder` instead. */
+.prose .chart-block {
+  margin: 1rem 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 100%;
+  position: relative;
+}
+/* Block title for charts. The generic `[data-block-title]::before` rule
+   elsewhere in this file renders the label, but its default styling sits
+   awkwardly above a centered diagram. Override here for typography and
+   spacing tuned to the chart layout. */
+.prose .chart-block[data-block-title]::before {
+  content: attr(data-block-title);
+  display: block;
+  font-family: "Lora", Georgia, serif;
+  font-style: italic;
+  /* Match the shared block title caption (small, warm-accent); centered to
+     follow the chart's centered layout. Collapsed by default, reveals on
+     hover with the same sleek fade + slide. */
+  font-size: 0.78em;
+  color: var(--warm-accent);
+  text-align: center;
+  letter-spacing: 0.01em;
+  max-height: 0;
+  opacity: 0;
+  margin: 0;
+  transform: translateY(-3px);
+  overflow: hidden;
+  transition: max-height 200ms cubic-bezier(0.2, 0, 0, 1),
+              opacity 200ms cubic-bezier(0.2, 0, 0, 1),
+              margin 200ms cubic-bezier(0.2, 0, 0, 1),
+              transform 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+.prose .chart-block:hover[data-block-title]::before {
+  max-height: 2em;
+  opacity: 0.85;
+  margin: 0 0 0.375rem;
+  transform: translateY(0);
+}
+.prose .chart-block.chart-editable {
+  cursor: pointer;
+  border-radius: 0.375rem;
+  transition: box-shadow 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+.prose .chart-block.chart-editable:hover {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warm-accent) 15%, transparent);
+}
+/* ── Mindmap visual treatment ──────────────────────────────────────────
+   Mermaid's mindmap diagram type accepts almost no config; we shape the
+   feel via CSS selectors against the rendered SVG. Two goals: mark the
+   root as the central idea (heavier stroke, stronger fill, italic label
+   reading as "the topic") and give branch connectors a calm, consistent
+   stroke so radial structure reads at a glance. The dual `:global(svg)`
+   plus plain-`svg` selector pairs handle both Svelte-scoped and
+   non-scoped contexts; `g.section-root` and `g.section--1` cover both
+   class spellings Mermaid v10 has used across minor versions. */
+
+/* Root node — heavier stroke + slightly stronger fill mark centrality
+   without resorting to a different color. */
+.prose .chart-render :global(svg) g.section-root path,
+.prose .chart-render :global(svg) g.section--1 path,
+.prose .chart-render svg g.section-root path,
+.prose .chart-render svg g.section--1 path {
+  stroke-width: 2px !important;
+  fill: color-mix(in srgb, var(--ink) 8%, var(--canvas-bg)) !important;
+}
+
+/* Root label — italic and slightly larger so it reads as the topic, not
+   another branch. Targets the text element Mermaid places inside the
+   section-root group. Hits both raw SVG text and foreignObject-wrapped
+   labels (Mermaid v10 mindmap uses foreignObject by default). */
+.prose .chart-render :global(svg) g.section-root text,
+.prose .chart-render :global(svg) g.section--1 text,
+.prose .chart-render svg g.section-root text,
+.prose .chart-render svg g.section--1 text,
+.prose .chart-render :global(svg) g.section-root foreignObject div,
+.prose .chart-render :global(svg) g.section--1 foreignObject div,
+.prose .chart-render svg g.section-root foreignObject div,
+.prose .chart-render svg g.section--1 foreignObject div {
+  font-style: italic !important;
+  font-size: 1rem !important;
+}
+
+/* Branch connectors — explicit stroke so radial lines don't render as
+   the default thin Mermaid blue. Mermaid v10 mindmap edges land under
+   `.edge` or `path.mindmap-link` depending on minor version; cover both. */
+.prose .chart-render :global(svg) .edge path,
+.prose .chart-render :global(svg) path.mindmap-link,
+.prose .chart-render svg .edge path,
+.prose .chart-render svg path.mindmap-link {
+  stroke: color-mix(in srgb, var(--ink) 28%, var(--canvas-bg)) !important;
+  stroke-width: 1.25px !important;
+  fill: none !important;
+}
+.prose .chart-render {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  max-width: none;
+}
+.prose .chart-render :global(svg),
+.prose .chart-render svg {
+  width: 100%;
+  height: auto;
+}
+/* Per-kind default sizing. Timeline renders wide and sparse by Mermaid's
+   default, so it visually dominates the column when given full width.
+   Cap it at 70% so it reads as a quieter inline reference. Flowchart and
+   mindmap keep full column width (they fill it with denser content).
+   Drag-to-resize via the corner handle bypasses these caps via the
+   chart-sized-w class below. */
+.prose .chart-block[data-kind="timeline"]:not(.chart-sized-w) .chart-render {
+  max-width: 70%;
+}
+/* Once the user drags the resize handle, the chart-block carries explicit
+   width and/or height. Drop the column-style 28rem cap and let the SVG
+   fill the box (its viewBox + preserveAspectRatio keep aspect ratio). */
+.prose .chart-block.chart-sized-w .chart-render {
+  max-width: none;
+}
+.prose .chart-block.chart-sized-h {
+  align-items: stretch;
+}
+.prose .chart-block.chart-sized-h .chart-render {
+  height: 100%;
+}
+.prose .chart-block.chart-sized-h .chart-render :global(svg),
+.prose .chart-block.chart-sized-h .chart-render svg {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: 100%;
+}
+.prose .chart-loading,
+.prose .chart-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-family: "DM Mono", monospace;
+  font-size: 0.6875rem;
+  color: var(--ink);
+  opacity: 0.35;
+  border: 1px dashed color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 0.5rem;
+}
+.prose .chart-placeholder {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--ink) 2%, transparent);
+}
+.prose .chart-placeholder-glyph {
+  font-family: "DM Mono", monospace;
+  font-size: 0.875rem;
+  color: var(--ink);
+  opacity: 0.55;
+}
+.prose .chart-placeholder-label {
+  font-family: "DM Mono", monospace;
+  font-size: 0.625rem;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  opacity: 0.55;
+}
+/* Backward compat — legacy data-size charts still rendering before the
+   NodeView migrates them to data-width on mount. */
+.prose .chart-block[data-size="s"] { max-width: 40%; }
+.prose .chart-block[data-size="m"] { max-width: 60%; }
+.prose .chart-block[data-size="l"] { max-width: 80%; }
+
+/* Resize handle — small square at bottom-right of the chart-block.
+   Hover-revealed in edit mode; cursor changes to col-resize on the
+   handle itself so the drag affordance is visible. */
+.prose .chart-block .chart-resize-handle {
+  position: absolute;
+  bottom: 0.25rem;
+  right: 0.25rem;
+  width: 0.875rem;
+  height: 0.875rem;
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity 120ms cubic-bezier(0.2, 0, 0, 1);
+  background:
+    linear-gradient(135deg, transparent 50%, color-mix(in srgb, var(--ink) 35%, transparent) 50% 60%, transparent 60% 70%, color-mix(in srgb, var(--ink) 35%, transparent) 70% 80%, transparent 80%);
+  z-index: 2;
+}
+.prose .chart-block.chart-editable:hover .chart-resize-handle {
+  opacity: 0.75;
+}
+.prose .chart-block.chart-editable .chart-resize-handle:hover {
+  opacity: 1;
+}
+.prose .chart-block.chart-resizing { user-select: none; }
+
+/* Selection accent — emitted by SelectionAccentDecorations.
+   Replaces the browser default selection rectangle (which leaks past
+   text and across container width) with a line-clean fill + left-edge
+   accent border that hugs each logical line the selection covers. */
+.prose .selection-accent {
+  background: color-mix(in srgb, var(--warm-accent) 12%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--warm-accent) 55%, transparent);
+  padding-left: 6px;
+  margin-left: -8px;
+  border-radius: 0 4px 4px 0;
+  /* Preserve the line's natural break behaviour. */
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.prose .selection-accent-frame {
+  background: color-mix(in srgb, var(--warm-accent) 6%, transparent);
+  border-radius: 0.5rem;
+}
+
+/* ── Per-block type chip ──────────────────────────────────────────────
+   Subtle pill at the bottom-right of every structured block. Lists,
+   outlines, q&a, recipe, codeblock get it from their own NodeView;
+   chart / table / attachment get it via the BlockTypeChip widget
+   decoration plugin. Either way the DOM shape is the same .block-type-
+   chip span with a data-family attribute. */
+.prose .block-type-chip-anchor {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  height: 0;
+}
+
+/* The table's chip is a direct child of .tableWrapper (rendered by
+   ShellTableView), so the wrapper is its positioning context — without this
+   the absolutely-positioned chip would anchor to a far ancestor and slide
+   off the page. */
+.prose .tableWrapper {
+  position: relative;
+}
+
+.prose .block-type-chip {
+  position: absolute;
+  bottom: 0.25rem;
+  right: 0.5rem;
+  font-family: "DM Mono", monospace;
+  font-size: 0.625rem;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  opacity: 0.5;
+  padding: 0.125rem 0.375rem;
+  border: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
+  border-radius: 0.25rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Hover targets: every structured wrapper that hosts a chip. */
+.prose .block-shell:hover .block-type-chip,
+.prose .code-block-wrap:hover .block-type-chip,
+.prose .chart-block:hover .block-type-chip,
+.prose .tableWrapper:hover .block-type-chip,
+.prose .block-type-chip-anchor:hover .block-type-chip {
+  opacity: 0.8;
+}
+
+/* On touch viewports there's no hover state, so the hover-brighten
+   never fires. Default the chip a bit brighter so it stays legible
+   without a hover gesture that doesn't exist. */
+@media (pointer: coarse) {
+  .prose .block-type-chip {
+    opacity: 0.65;
+  }
+}
+
+.prose .block-type-chip[data-family="lists"],
+.prose .block-type-chip[data-family="structure"] {
+  color: var(--warm-accent);
+  border-color: color-mix(in srgb, var(--warm-accent) 22%, transparent);
+}
+.prose .block-type-chip[data-family="charts"] {
+  color: var(--warm-accent);
+  border-color: color-mix(in srgb, var(--warm-accent) 30%, transparent);
+}
+.prose .block-type-chip[data-family="code"] {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 18%, transparent);
+}
+.prose .block-type-chip[data-family="files"] {
+  color: var(--warm-accent);
+  border-color: color-mix(in srgb, var(--warm-accent) 25%, transparent);
+}
+
+/* Suppress the browser default selection — our plugin is the single
+   source of selection chrome. */
+.prose .ProseMirror ::selection {
+  background: transparent;
+}
+.prose .ProseMirror ::-moz-selection {
+  background: transparent;
+}
+
+/* Minimum tap target for collapsible disclosures + similar small
+   one-line affordances. 44×44px is the standard touch target;
+   2.75rem (44px at default font size) gets the row to height
+   without changing typography. */
+@media (pointer: coarse) {
+  .prose details > summary,
+  details.op-log-stats > summary {
+    min-height: 2.75rem;
+    display: flex;
+    align-items: center;
+    padding: 0.5rem 0;
+  }
+}

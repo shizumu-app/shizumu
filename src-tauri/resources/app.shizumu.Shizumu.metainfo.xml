@@ -1,0 +1,322 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>app.shizumu.Shizumu</id>
+  <name>Shizumu</name>
+  <summary>write · pin · trail · sink. a private thinking space.</summary>
+  <summary xml:lang="fr">écrire · épingler · suivre · déposer. espace d'écriture privé.</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+
+  <description>
+    <p>
+      Shizumu is a private thinking space built on four verbs.
+      You write to think, you pin what matters, you trail what
+      continues, and the rest sinks. The volume of writing is not
+      the artifact; what you pin is. No tags, no folders, no
+      templates. The calm of opening the app and not facing a pile.
+    </p>
+    <p>
+      Pages flow into a daily memory you can scroll back through and
+      search by content. Pins lift the lines that matter out of the
+      daily stream: checklists, references, anything you want close at
+      hand. Trails group writing that belongs together (a project, a
+      book, an ongoing thread of thought) without forcing you to design
+      a structure first. Continuous trails are the one intentional
+      exception: when a single thread should genuinely keep growing,
+      you choose to trail it.
+    </p>
+    <p>
+      Local-first by design. Everything stays on your device, in a SQLite
+      database you can open with any compatible tool. Optional end-to-end
+      encryption keeps your words readable only by you. No account, no
+      analytics. Your writing remains yours.
+    </p>
+    <p>
+      Shizumu fits the writer who keeps a daily log, the developer with
+      one running notebook per project, the student capturing reading
+      notes, and anyone who wants a private place to write to think
+      without learning a tagging system first.
+    </p>
+    <p xml:lang="fr">
+      Shizumu est un espace d'écriture privé construit sur quatre
+      verbes. Vous écrivez pour penser, vous épinglez ce qui compte,
+      vous suivez ce qui continue, et le reste se dépose. Le volume
+      d'écriture n'est pas l'objet ; ce que vous épinglez l'est.
+      Aucun tag, aucun dossier, aucun gabarit. Le calme d'ouvrir
+      l'application sans faire face à une pile.
+    </p>
+    <p xml:lang="fr">
+      Les pages s'écoulent dans une mémoire quotidienne que vous pouvez
+      parcourir et rechercher par contenu. Les épingles soulèvent les
+      lignes qui comptent hors du flux : listes, références, tout ce
+      que vous voulez garder à portée. Les pistes regroupent les écrits
+      qui vont ensemble (un projet, un livre, un fil de pensée en
+      cours) sans imposer de structure préalable. Les pistes continues
+      sont l'exception intentionnelle : quand un seul fil doit vraiment
+      continuer à grandir, vous choisissez de le suivre.
+    </p>
+    <p xml:lang="fr">
+      Local d'abord, par conception. Tout reste sur votre appareil, dans
+      une base SQLite que vous pouvez ouvrir avec n'importe quel outil
+      compatible. Le chiffrement de bout en bout, optionnel, garde vos
+      mots lisibles uniquement par vous. Pas de compte, pas d'analytique.
+      Vos écrits vous appartiennent.
+    </p>
+    <p xml:lang="fr">
+      Shizumu convient à l'auteur qui tient un journal, au développeur
+      avec un carnet par projet, à l'étudiant qui prend des notes de
+      lecture, et à quiconque cherche un endroit privé pour penser en
+      écrivant, sans devoir apprendre un système de tags d'abord.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">app.shizumu.Shizumu.desktop</launchable>
+
+  <developer id="app.shizumu">
+    <name>Shizumu</name>
+  </developer>
+
+  <url type="homepage">https://shizumu.app</url>
+  <url type="bugtracker">https://gitlab.com/shizumu/shizumu-issues/-/issues</url>
+  <url type="donation">https://ko-fi.com/shizumu</url>
+
+  <provides>
+    <binary>shizumu</binary>
+  </provides>
+
+  <requires>
+    <display_length compare="ge">700</display_length>
+  </requires>
+
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+
+  <categories>
+    <category>Office</category>
+    <category>TextEditor</category>
+  </categories>
+
+  <keywords>
+    <keyword>writing</keyword>
+    <keyword>notebook</keyword>
+    <keyword>journal</keyword>
+    <keyword>diary</keyword>
+    <keyword>notes</keyword>
+    <keyword>note-taking</keyword>
+    <keyword>notetaking</keyword>
+    <keyword>daily</keyword>
+    <keyword>writer</keyword>
+    <keyword>thoughts</keyword>
+    <keyword>ideas</keyword>
+    <keyword>text-editor</keyword>
+    <keyword>local-first</keyword>
+    <keyword>offline</keyword>
+    <keyword>encrypted</keyword>
+    <keyword>private</keyword>
+    <keyword>minimal</keyword>
+    <keyword>research</keyword>
+    <keyword>study</keyword>
+    <keyword xml:lang="fr">écriture</keyword>
+    <keyword xml:lang="fr">carnet</keyword>
+    <keyword xml:lang="fr">journal</keyword>
+    <keyword xml:lang="fr">notes</keyword>
+    <keyword xml:lang="fr">prise-de-notes</keyword>
+    <keyword xml:lang="fr">quotidien</keyword>
+    <keyword xml:lang="fr">privé</keyword>
+    <keyword xml:lang="fr">hors-ligne</keyword>
+    <keyword xml:lang="fr">chiffré</keyword>
+    <keyword xml:lang="fr">minimal</keyword>
+  </keywords>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#C44D28</color>
+    <color type="primary" scheme_preference="dark">#E07050</color>
+  </branding>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>the writing page. where every session begins</caption>
+      <caption xml:lang="fr">la page d'écriture. où chaque session commence</caption>
+      <image>https://shizumu.app/screenshots/page_with_tasks.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>tools that read like prose. chart, recipe, code</caption>
+      <caption xml:lang="fr">des outils qui se lisent comme la prose. graphique, recette, code</caption>
+      <image>https://shizumu.app/screenshots/page_with_tools.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>memory. the trail map. every day, one card per trail</caption>
+      <caption xml:lang="fr">mémoire. la carte des pistes. chaque jour, une carte par piste</caption>
+      <image>https://shizumu.app/screenshots/trail_map.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>memory. pins. boards and notes lifted out of the daily stream</caption>
+      <caption xml:lang="fr">mémoire. épingles. tableaux et notes sortis du flux quotidien</caption>
+      <image>https://shizumu.app/screenshots/pin_panel.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>@ to attach. a trail, a pinned reference, or an image</caption>
+      <caption xml:lang="fr">@ pour attacher. une piste, une référence épinglée, ou une image</caption>
+      <image>https://shizumu.app/screenshots/mention.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>fonts, themes, encryption. all yours, locally</caption>
+      <caption xml:lang="fr">polices, thèmes, chiffrement. à vous, en local</caption>
+      <image>https://shizumu.app/screenshots/settings.png</image>
+    </screenshot>
+  </screenshots>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.6.0" date="2026-08-10">
+      <description>
+        <p>Attachments. A file you attach now syncs between your devices, up to 100 MB where the practical limit used to be about one. The bytes travel alongside the sync log instead of inside it, which is also what makes them removable: turn an attachment's sync off and the copy on the relay goes with it, rather than staying there forever. Files are sealed under your current key, so revoking a device stops it reading attachments added afterwards. A pinned file now survives the page it came from — freeing up space no longer takes it away, and unpinning is what releases the bytes. A pin whose file is not on this device says so instead of doing nothing.</p>
+        <p>The phone interface is reworked. Block actions no longer cover the block they belong to, the header stops printing today twice, and the shell fits the screen with the keyboard up instead of scrolling itself out of view. Edge swipes move between pages the way the arrow keys do on desktop. Rotating the phone keeps the phone layout rather than falling back to the desktop one. Images and files render as blocks you can resize, preview and collapse, and a pinned image looks like an image rather than a file chip.</p>
+      </description>
+    </release>
+    <release version="0.4.0" date="2026-05-23">
+      <description>
+        <p>Sync. End-to-end encrypted sync between your devices, through a relay you run yourself. A new device joins through a short pairing code; old devices can be revoked. Continuous trails ride on a CRDT (Yjs) so two devices writing into the same trail at the same time converge without losing characters or fighting cursors. Discrete pages travel under HLC ordering. Doc identifiers are encrypted in transit — the relay routes ops without learning which page they belong to. Your recovery phrase and the keys derived from it live in the system keyring (libsecret or kwallet), not in the database, so home-directory access doesn't hand over your sync identity. Settings gain a sync section with pause, resume, force-pull, device list, and op log stats. The engine can be turned off entirely if you prefer to stay fully local. The four verbs hold: write, pin, trail, sink — now across your devices.</p>
+      </description>
+    </release>
+    <release version="0.3.2" date="2026-05-25">
+      <description>
+        <p>Editor polish. Block toolbar reappears on empty boards. Frame titles render reliably. Copy works inside structured blocks. Escape behavior is unified across block types. Markdown paste preserves list and task markers across the round-trip. No surface changes; just less friction while writing.</p>
+      </description>
+    </release>
+    <release version="0.3.1" date="2026-05-25">
+      <description>
+        <p>Tray polish. Close-to-tray now keeps the app alive in the system tray instead of quitting, with a settings toggle to flip the behavior. Tray icon is redrawn at the right bit depth so it stops appearing as a colorless square on some Linux desktops.</p>
+      </description>
+    </release>
+    <release version="0.3.0" date="2026-05-19">
+      <description>
+        <p>shizumu, made flexible. Trails you've already made can be reshaped without touching the writing inside them. Rename, move under another trail, fold into a parent, or delete. A new export sends any trail (or every trail) out as readable markdown, one folder per lineage, so your words are never trapped in the app. Underneath: the block and pin rewrite (pin sync moved to a Rust-side cache hook, same-page edits propagate within one editor frame), unified Alt-arrow movement across blocks and list items, midnight transition handling so the day you wrote on stays the day you wrote on, and a quieter writing surface from the rail-system and list-marker rewrites that landed across the v0.2.x line. The four verbs hold: write, pin, trail, sink.</p>
+      </description>
+    </release>
+    <release version="0.2.17" date="2026-05-10">
+      <description>
+        <p>Stabilization release. Pin reactivity fixes: clicking a pinned item in the panel now scrolls and highlights the corresponding block in the editor; renaming a block updates the pin card label without a reload; editing a pin after moving it to a parent page now reflects in the parent's injected copy. Trail highlight updates the moment "what matters now" is saved, no nav roundtrip. Titled boards (lists, blockquotes) survive Enter on an empty item instead of disappearing. Nested outlines render as a continuation of the parent item rather than as a separate panel inside it. New keyboard tools for blocks: Alt+Up and Alt+Down move the current block past its sibling; Tab and Shift+Tab at the start of a block nest or unnest it under the previous sibling. Slash menu adds matching entries for move up, move down, nest, unnest.</p>
+      </description>
+    </release>
+    <release version="0.2.16" date="2026-05-17">
+      <description>
+        <p>Listing polish. Sharpened description (mentions search and optional end-to-end encryption), expanded keywords for note-taking discovery (notetaking, diary, daily, writer, thoughts, ideas, encrypted, minimal), and a clearer "who this is for" paragraph. No app-behavior changes.</p>
+      </description>
+    </release>
+    <release version="0.2.15" date="2026-05-16">
+      <description>
+        <p>Picker-attach replaces the page. When you pick a continuous trail from an empty scratchpad, the scratchpad is consumed instead of lingering as an extra dot. If you'd typed a focus prompt before picking, that focus carries over to today's day-marker on the trail.</p>
+      </description>
+    </release>
+    <release version="0.2.14" date="2026-05-16">
+      <description>
+        <p>Same-day reopen fix. Closing and reopening the app on the same day no longer drops continuous trails you assigned but didn't write on yet. Today's day-marker is now preserved across boots; only past-day empty markers get cleaned up. The user's active session persists; cross-day cleanup still happens naturally tomorrow.</p>
+      </description>
+    </release>
+    <release version="0.2.13" date="2026-05-16">
+      <description>
+        <p>Rail system rewrite. Continuous trails now appear on today's rail by writing on them, the WhatMattersNow gate no longer blocks the editor, and the rail orders dots by when each one was first touched today (a trail picked first sits to the left of pages created later). Empty per-day markers from days the user assigned a trail but never wrote get cleaned up on next launch, so a "I just wanted to peek at this trail" doesn't leave a phantom day-entry tomorrow. Plus several cumulative reliability fixes from rounds 2-7: keyboard-arrow page-creation, picker-attach data-loss protection, today-orphan boot sweep.</p>
+      </description>
+    </release>
+    <release version="0.2.12" date="2026-05-09">
+      <description>
+        <p>Continuous-trail rail fixes. Pressing the right arrow on a continuous trail's living doc no longer spawns empty today-pages on every press, and the desktop-icon launch on Flathub installs is fixed (the exporter was rewriting the launcher to force x11, which has no socket on Wayland sessions). Use "+" to add a new focus; the arrow walks existing rail dots.</p>
+      </description>
+    </release>
+    <release version="0.2.11" date="2026-05-08">
+      <description>
+        <p>Continuous-trail data-loss fix. Switching trails via the picker, unlinking, or moving to a discrete trail while on a continuous trail's living doc no longer destroys the source trail's history. The picker now navigates between continuous trails without merging, and refuses unsafe moves with a hint.</p>
+      </description>
+    </release>
+    <release version="0.2.10" date="2026-05-08">
+      <description>
+        <p>Continuous-trail navigation fixes. Attaching today's page to an existing continuous trail now lands you on today's section with the "what matters now" gate on the new day's first open (previously the editor opened scrolled to yesterday's content), and the prev/next arrows walk today's focuses correctly when the canonical sits on the rail (the canonical now anchors at the right edge so left-arrow no longer dead-ends).</p>
+      </description>
+    </release>
+    <release version="0.2.9" date="2026-05-08">
+      <description>
+        <p>Continuous-trail fix. Attaching today's page to an existing continuous trail now lands you on today's section, with the "what matters now" gate showing on the new day's first open. Previously the editor opened scrolled to yesterday's content.</p>
+      </description>
+    </release>
+    <release version="0.2.8" date="2026-05-07">
+      <description>
+        <p>Listing polish. Refreshed app icon (denser ripple field), correct primary brand colors, capitalized launcher entry, and a refreshed summary. Bundled the new flathub-ready screenshots highlighting v0.2 features (memory, pins panel, trail nesting, settings).</p>
+      </description>
+    </release>
+    <release version="0.2.7" date="2026-05-07">
+      <description>
+        <p>Pin and font fixes. Pinned blocks containing inline images or links no longer render empty when reopened, and opening a pin without editing no longer overwrites its stored content. The font and size selector now applies consistently across the page, the focus rail, and the pin editor.</p>
+      </description>
+    </release>
+    <release version="0.2.6" date="2026-05-06">
+      <description>
+        <p>Tighter writing canvas. The page column no longer feels narrow at small font sizes (820px floor), and the focus pill and footer hug the viewport more closely so the surface feels less stretched on a wide window.</p>
+      </description>
+    </release>
+    <release version="0.2.5" date="2026-05-06">
+      <description>
+        <p>Fix release that brings the editor source in sync with the v0.2.x feature drop. Slash commands, @ subtrails, and list shortcuts now work in the rpm/deb installs as they always have in development.</p>
+      </description>
+    </release>
+    <release version="0.2.4" date="2026-05-06">
+      <description>
+        <p>Diagnostic build to confirm list-item commands are registering correctly. Removed an unused legacy editor extension.</p>
+      </description>
+    </release>
+    <release version="0.2.3" date="2026-05-06">
+      <description>
+        <p>Fixed slash commands and the @ mention popup not opening on the deb/rpm install. Two editor extensions were colliding on the same internal plugin key in production builds; both now register cleanly.</p>
+      </description>
+    </release>
+    <release version="0.2.2" date="2026-05-06">
+      <description>
+        <p>Diagnostic build with developer tools and runtime logging enabled, helping investigate keyboard-shortcut handling on the deb/rpm install. End users will see the same app; logs are written to stderr only when launched from a terminal.</p>
+      </description>
+    </release>
+    <release version="0.2.1" date="2026-05-06">
+      <description>
+        <p>Fixed a typing-hang on KDE Plasma 6 Wayland for the deb/rpm install. The desktop launcher now routes the app through Xwayland so keyboard input reaches the writing surface reliably. Flatpak installs were unaffected.</p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-05-05">
+      <description>
+        <p>Mixed list nesting. Bullets, numbered, and tasks freely interleave. Type @ to spawn a child trail without leaving the page. Live font family and size controls. Refreshed app icon. Polish across pins and the writing surface. Now on Flathub.</p>
+      </description>
+    </release>
+    <release version="0.1.23" date="2026-04-29">
+      <description>
+        <p>First Flathub release. Earlier installations are migrated automatically on launch.</p>
+      </description>
+    </release>
+    <release version="0.1.18" date="2026-04-25">
+      <description>
+        <p>New app icon across the window, tray, launcher and dock.</p>
+      </description>
+    </release>
+    <release version="0.1.17" date="2026-04-23">
+      <description>
+        <p>Flatpak packaging fixes and cleaner integration with KDE and GNOME tray icons.</p>
+      </description>
+    </release>
+    <release version="0.1.16" date="2026-04-23">
+      <description>
+        <p>Embed local images in the editor with resize and collapse-to-chip. Pins now follow their source page across trail moves and survive trail deletion.</p>
+      </description>
+    </release>
+    <release version="0.1.15" date="2026-04-18">
+      <description>
+        <p>Trails, pins, and the choice between continuous and discrete writing modes.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-04-12">
+      <description>
+        <p>Initial release. The writing page and chronological memory view.</p>
+      </description>
+    </release>
+  </releases>
+</component>

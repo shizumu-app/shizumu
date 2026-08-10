@@ -1,0 +1,33 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "default permissions \u2014 desktop only. mobile permissions live in mobile.json.",
+  "platforms": [
+    "linux",
+    "macOS",
+    "windows"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-set-focus",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-unminimize",
+    "core:window:allow-is-visible",
+    "notification:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered",
+    "dialog:default",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-write-html"
+  ]
+}

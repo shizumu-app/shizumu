@@ -1,0 +1,14 @@
+-- Pin pointer architecture (v0.3.0).
+--
+-- Schema change: source_page_id becomes nullable so orphaned pins can have
+-- their FK reference cleared when the source page is deleted. Existing columns
+-- (content, title) are reframed as caches refreshed by the Rust
+-- refresh_pin_caches hook on every save of the source page. When the source
+-- node is removed, the cache is frozen, source_page_id is set to NULL, and
+-- status is set to 'orphaned'. Pin rows are no longer deleted automatically
+-- when their source page is deleted.
+--
+-- SQLite does not support ALTER COLUMN, so this migration recreates the
+-- shared_objects table. The migration runner in db.rs handles this step
+-- directly. This file is a placeholder to mark the migration version.
+SELECT 1

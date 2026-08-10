@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 432 432" width="432" height="432">
+  <!-- shizumu glyph ONLY (no background) — for the Android adaptive-icon foreground.
+       Centered within the adaptive safe zone (inner 66% ≈ 73..359 of 432) so the
+       launcher's circular/rounded mask never clips the ripples. -->
+  <!-- the settling line — bold horizontal stroke -->
+  <line x1="96" y1="140" x2="336" y2="140" stroke="#c44d28" stroke-width="22" stroke-linecap="round"/>
+
+  <!-- the drop -->
+  <circle cx="216" cy="160" r="12" fill="#c44d28"/>
+
+  <!-- ripple 1: closest, strongest -->
+  <path d="M 132 206 Q 216 244 300 206" fill="none" stroke="#c44d28" stroke-width="18" stroke-linecap="round" opacity="0.9"/>
+
+  <!-- ripple 2: wider, softer -->
+  <path d="M 108 258 Q 216 298 324 258" fill="none" stroke="#c44d28" stroke-width="15" stroke-linecap="round" opacity="0.6"/>
+
+  <!-- ripple 3: widest, faintest but still readable -->
+  <path d="M 90 308 Q 216 348 342 308" fill="none" stroke="#c44d28" stroke-width="12" stroke-linecap="round" opacity="0.35"/>
+</svg>
