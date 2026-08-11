@@ -100,8 +100,8 @@ modules:
       # under flathub at the next release.
       - type: git
         url: https://github.com/shizumu-app/shizumu.git
-        tag: PLACEHOLDER_TAG
-        commit: PLACEHOLDER_COMMIT
+        tag: v0.6.3
+        commit: 8003238b31f2180194d0e0773403eea2394d2573
         x-checker-data:
           type: git
           tag-pattern: '^v([\d.]+)$'
