@@ -334,7 +334,12 @@
   // rail's right edge on today; that's the desktop behavior being mirrored,
   // not the old "every right swipe makes a page".
   function handleSwipeNavPrev() { navigatePrev(); }
-  function handleSwipeNavNext() { navigateNext(); }
+  // A swipe navigates; it never creates. Ctrl/Cmd+Right creating a page at
+  // the rail's end is a deliberate keypress meaning "keep writing forward".
+  // An edge swipe is exploratory, easy to trigger by accident, and on a
+  // single-page day it is ALWAYS at the end — so mapping it to the same
+  // handler made every right-swipe spawn a page.
+  function handleSwipeNavNext() { navigateNext({ allowCreate: false }); }
 
   onMount(() => {
     if (typeof window === "undefined") return;
@@ -933,7 +938,7 @@
     }
   }
 
-  async function navigateNext() {
+  async function navigateNext({ allowCreate = true } = {}) {
     if (!page || transitioning) return;
     try {
       const idx = railIndexOfCurrent();
@@ -947,6 +952,7 @@
       // instant orphan. Each press creates exactly one page; the new page
       // lands at the rightmost rail position (highest page_number) and
       // becomes the new "last dot" for the next press.
+      if (!allowCreate) return;
       const today = getLocalDateStr();
       if (effectiveDate === today) {
         navDirection = 1;

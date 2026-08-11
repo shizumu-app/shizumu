@@ -1,3 +1,4 @@
+import { placeMenu } from "./editor/menu-placement.js";
 import { Extension } from "@tiptap/core";
 import { Suggestion } from "@tiptap/suggestion";
 import { PluginKey, TextSelection } from "@tiptap/pm/state";
@@ -535,20 +536,34 @@ function positionMenu(menuEl, rect) {
   menuEl.style.visibility = "hidden";
   menuEl.style.top = "0px";
   menuEl.style.left = "0px";
+  menuEl.style.maxHeight = "";
   menuEl.style.display = "block";
-  const menuH = menuEl.offsetHeight;
-  const menuW = menuEl.offsetWidth;
-  const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
-  const vw = (window.visualViewport && window.visualViewport.width) || window.innerWidth;
-  let top = rect.bottom + 4;
-  if (top + menuH > vh - 8) {
-    const flipped = rect.top - menuH - 4;
-    top = flipped >= 8 ? flipped : Math.max(8, vh - menuH - 8);
-  }
-  let left = rect.left;
-  if (left + menuW > vw - 8) left = Math.max(8, vw - menuW - 8);
+
+  const vv = window.visualViewport;
+  const cs = getComputedStyle(document.documentElement);
+  const px = (v) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const { top, left, maxHeight } = placeMenu({
+    caretRect: rect,
+    menuH: menuEl.offsetHeight,
+    menuW: menuEl.offsetWidth,
+    vh: (vv && vv.height) || window.innerHeight,
+    vw: (vv && vv.width) || window.innerWidth,
+    // Read the insets through the same --safe-* variables the rest of the
+    // app uses, so the VR harness's ?inset=notch override reaches here too.
+    safeTop: px(cs.getPropertyValue("--safe-top")),
+    safeBottom: px(cs.getPropertyValue("--safe-bottom")),
+  });
+
   menuEl.style.top = `${top}px`;
   menuEl.style.left = `${left}px`;
+  // A menu taller than the space it has must scroll. Without this it simply
+  // ran off the bottom of the screen and its last section was unreachable.
+  menuEl.style.maxHeight = `${maxHeight}px`;
+  menuEl.style.overflowY = "auto";
   menuEl.style.visibility = "visible";
 }
 

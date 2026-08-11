@@ -96,6 +96,7 @@
         onkeydown={handleKeydown}
         onblur={handleBlur}
         spellcheck="false"
+        placeholder="what settled"
         autofocus
       />
     </div>
@@ -187,6 +188,15 @@
     color: var(--ink);
     padding: 0.375rem 0 0.5rem;
     transition: border-color 180ms cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  /* The expanded state replaces the "what settled" label with a bare input.
+     Without a placeholder that is a caret alone — on a phone, against an
+     empty canvas, with no indication of what is being typed into. Same
+     words as the collapsed label so tapping does not change what it says. */
+  .strip-input::placeholder {
+    color: color-mix(in srgb, var(--ink) 35%, transparent);
+    opacity: 1;
   }
 
   .strip-input:focus {
