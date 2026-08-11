@@ -172,7 +172,7 @@
   <content_rating type="oars-1.1" />
 
   <releases>
-    <release version="0.6.3" date="2026-08-11">
+    <release version="0.6.4" date="2026-08-11">
       <description>
         <p>An image that cannot load no longer leaves its controls floating over the text beneath it. The file is reported as not on this device instead, which is the honest answer. On a phone the image's sync and remove buttons are visible at rest rather than needing a hover that touch does not have.</p>
       </description>
