@@ -73,6 +73,7 @@ export function isTabletViewport() {
  *  the resizes-content branch below. Only ever grows, so a rotation or a
  *  collapsing address bar re-baselines instead of reading as a keyboard. */
 let maxLayoutHeight = 0;
+let baselineWidth = 0;
 
 /** The keyboard-slack threshold, shared by both detection branches. An
  *  Android system bar can move the visible area by a few dozen px with no
@@ -95,6 +96,16 @@ const KEYBOARD_SLACK_PX = 100;
 export function isKeyboardOpen() {
   if (typeof window === "undefined" || !window.visualViewport) return false;
   const inner = window.innerHeight;
+  const width = window.innerWidth;
+  // A soft keyboard never changes the viewport WIDTH; a rotation always
+  // does. Height alone cannot tell them apart, and the baseline below only
+  // ever grows — so portrait to landscape, which makes the viewport SHORTER,
+  // read as a keyboard that then never closed. On a landscape phone that
+  // left the header permanently collapsed with no keyboard on screen.
+  if (width !== baselineWidth) {
+    baselineWidth = width;
+    maxLayoutHeight = inner;
+  }
   if (window.visualViewport.height < inner - KEYBOARD_SLACK_PX) return true;
   if (inner > maxLayoutHeight) maxLayoutHeight = inner;
   return maxLayoutHeight - inner > KEYBOARD_SLACK_PX;
@@ -104,6 +115,7 @@ export function isKeyboardOpen() {
  *  between cases. Not used by app code. */
 export function _resetKeyboardBaseline() {
   maxLayoutHeight = 0;
+  baselineWidth = 0;
 }
 
 /** Subscribe to a media query — fires `cb(matches)` immediately and on

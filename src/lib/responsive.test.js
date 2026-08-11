@@ -192,6 +192,41 @@ describe("isKeyboardOpen", () => {
       expect(m.isKeyboardOpen()).toBe(false);
     });
 
+    // The existing re-baseline test only covers rotation that makes the
+    // viewport TALLER. Portrait to landscape makes it shorter, and the
+    // baseline only ever grew — so the shrink read as a keyboard that never
+    // closed, leaving the header collapsed for as long as the phone was in
+    // landscape with no keyboard on screen. A soft keyboard never changes
+    // the viewport width; a rotation always does.
+    it("re-baselines on rotation that makes the viewport SHORTER", async () => {
+      Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+      Object.defineProperty(window, "innerHeight", { value: 800, configurable: true });
+      window.visualViewport = { height: 800 };
+      const m = await import("./responsive.js");
+      m._resetKeyboardBaseline();
+      expect(m.isKeyboardOpen()).toBe(false);
+
+      // Rotate: shorter AND wider, with no keyboard.
+      Object.defineProperty(window, "innerWidth", { value: 800, configurable: true });
+      Object.defineProperty(window, "innerHeight", { value: 390, configurable: true });
+      window.visualViewport = { height: 390 };
+      expect(m.isKeyboardOpen()).toBe(false);
+    });
+
+    it("still detects a keyboard when the width is unchanged", async () => {
+      Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+      Object.defineProperty(window, "innerHeight", { value: 800, configurable: true });
+      window.visualViewport = { height: 800 };
+      const m = await import("./responsive.js");
+      m._resetKeyboardBaseline();
+      m.isKeyboardOpen();
+
+      // Keyboard opens: shorter, same width.
+      Object.defineProperty(window, "innerHeight", { value: 400, configurable: true });
+      window.visualViewport = { height: 400 };
+      expect(m.isKeyboardOpen()).toBe(true);
+    });
+
     it("ignores a shrink too small to be a keyboard", async () => {
       window.visualViewport = { height: 900 };
       Object.defineProperty(window, "innerHeight", { value: 900, configurable: true });

@@ -1856,7 +1856,12 @@
       let seen = false;
       try { seen = (await getSetting("mobile_gestures_tip_seen")) === "true"; } catch {}
       if (seen) return;
-      showToast("tip — long-press a block for actions. swipe from the right edge for a new page.");
+      // Describes what the gesture does NOW. It used to say "swipe from the
+      // right edge for a new page", which was accurate only because
+      // navigateNext created one at the end of the rail — the bug that made
+      // every right-swipe on a single-page day spawn a page. The gesture
+      // navigates and no longer creates.
+      showToast("tip — long-press a block for actions. swipe from either edge to move between pages.");
       try { await setSetting("mobile_gestures_tip_seen", "true"); } catch {}
     } catch {}
   }

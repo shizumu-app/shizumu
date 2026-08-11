@@ -1475,6 +1475,21 @@
     transition:
       transform var(--motion-normal, 240ms) cubic-bezier(0.2, 0, 0, 1),
       opacity var(--motion-fast, 140ms) ease;
+  }
+
+  /* `will-change: transform` ONLY while the slide is running.
+     Unconditionally, it makes this element the containing block for every
+     `position: fixed` descendant — which is every overlay the editor mounts,
+     since TipTapEditor lives in here. Those overlays then measure the
+     viewport in JS and get positioned against the writing body's box
+     instead: ChartBuilder's modal starts below the header while still being
+     100dvh tall, so its action row hangs off the bottom, and SharePopup's
+     "20% down so the keyboard never covers it" becomes 20% measured from the
+     wrong origin. Their scrims dim only the writing body, leaving the header
+     live behind a modal surface.
+     Settings, TrailIndex and CommandPalette render OUTSIDE .page-body, which
+     is why this only ever bit the editor's own overlays. */
+  .page-body.transitioning {
     will-change: transform;
   }
 

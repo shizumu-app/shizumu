@@ -2113,7 +2113,15 @@
     cursor: pointer;
   }
   /* Lightweight toast — pinned to the viewport so it's visible no
-     matter how far the user has scrolled in the settings sheet. */
+     matter how far the user has scrolled in the settings sheet.
+     On a phone it must also clear the MobileActionBar — settings keeps the
+     bar visible (hideBar={false}), and the bar is fixed at z-index 1000, so
+     a bare 1.25rem left this confirmation entirely behind ~86px of opaque
+     bar: the "copied" for the recovery phrase never appeared. Reserved with
+     --mobile-bar-h, the bar's real height, inside the same phone query the
+     bar mounts under — the token is defined on :root unconditionally, so
+     applying it here without the query would shift the toast on desktop
+     where there is no bar at all. */
   .copy-toast {
     position: fixed;
     bottom: 1.25rem;
@@ -2127,6 +2135,12 @@
     z-index: 100;
     pointer-events: none;
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  }
+
+  @media (max-width: 480px), (orientation: landscape) and (max-height: 480px) {
+    .copy-toast {
+      bottom: calc(var(--mobile-bar-h) + 1.25rem);
+    }
   }
   /* Mobile: enlarge touch targets. 44px is the Apple/Material minimum;
      the phrase/SAS displays get a little more breathing room because
