@@ -211,6 +211,28 @@
         onkeydown={(e) => e.key === "Enter" && onChipClick(e)}
         ondblclick={onExpand}
       >{node.attrs.filename || "image"}</span>
+      <!-- Collapsed used to be a one-way door on touch: the only route back
+           was a double-click, which is undiscoverable on a phone and
+           unreliable next to the single-click preview it shares a target
+           with. The sync decision was unreachable too — the toggle lives on
+           the expanded image, so collapsing a file hid the control that says
+           whether it leaves the device. Both are buttons now. -->
+      <span class="local-image-chip-actions">
+        <button
+          type="button"
+          class="action"
+          title="expand"
+          onmousedown={swallowMouseDown}
+          onclick={onExpand}
+        >expand</button>
+        <button
+          type="button"
+          class="action sync-toggle"
+          title={node.attrs.sync ? "synced. click to keep local-only" : "local only. click to authorize syncing"}
+          onmousedown={swallowMouseDown}
+          onclick={onToggleSync}
+        >{node.attrs.sync ? "local-only" : "sync"}</button>
+      </span>
     {:else if resolvedSrc}
       <img
         src={resolvedSrc}

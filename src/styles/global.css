@@ -708,6 +708,20 @@ body {
 }
 
 @media (pointer: coarse) {
+  /* Touch has no hover, only an emulated one that flaps on and off as the
+     finger settles — and with `transition: opacity` on these controls that
+     reads as rapid flicker over the image. Pinning the opacity and removing
+     the transition means the chrome simply IS there on a phone, which is
+     also the only way to reach it: there is no cursor to hover with. */
+  .local-image-collapse-btn,
+  .attachment-image-actions,
+  .local-image-chip-actions {
+    transition: none;
+  }
+  .local-image-wrap:hover .local-image-collapse-btn,
+  .local-image-wrap:hover .attachment-image-actions {
+    transition: none;
+  }
   .local-image-collapse-btn {
     opacity: 0.55;
   }
@@ -778,6 +792,14 @@ body {
    line with the surrounding canvas type. Click to preview, double-click to
    expand the full image back into the doc. No icon or expand button — the
    filename itself is the affordance. */
+.local-image-chip-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: 0.375rem;
+  vertical-align: middle;
+}
+
 .local-image-chip {
   display: inline;
   cursor: pointer;
