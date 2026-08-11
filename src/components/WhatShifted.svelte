@@ -89,6 +89,12 @@
     </button>
   {:else if !readonly}
     <div class="strip-input-area">
+      <!-- The label stays. Swapping it for a bare input made the strip
+           vanish on tap: the thing you aimed at was gone and a caret was
+           in its place, with nothing left saying what the field was for.
+           Keeping it visible means tapping opens the field rather than
+           replacing the strip, and it doubles as the placeholder. -->
+      <span class="strip-label strip-label-editing">what settled</span>
       <input
         type="text"
         class="strip-input selectable"
@@ -96,7 +102,6 @@
         onkeydown={handleKeydown}
         onblur={handleBlur}
         spellcheck="false"
-        placeholder="what settled"
         autofocus
       />
     </div>
@@ -172,11 +177,15 @@
 
   .strip-input-area {
     padding: 0.25rem 0 0;
+    display: flex;
+    align-items: baseline;
   }
 
   .strip-input {
+    flex: 1 1 auto;
     width: 20rem;
     max-width: 100%;
+    min-width: 0;
     background: transparent;
     border: none;
     border-bottom: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
@@ -194,6 +203,12 @@
      Without a placeholder that is a caret alone — on a phone, against an
      empty canvas, with no indication of what is being typed into. Same
      words as the collapsed label so tapping does not change what it says. */
+  .strip-label-editing {
+    flex: 0 0 auto;
+    margin-right: 0.5rem;
+    opacity: 0.45;
+  }
+
   .strip-input::placeholder {
     color: color-mix(in srgb, var(--ink) 35%, transparent);
     opacity: 1;

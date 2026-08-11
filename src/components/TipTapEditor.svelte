@@ -2632,11 +2632,19 @@
   }
 
   @media (pointer: coarse) {
+    /* 2rem, down from 2.5rem. The bar floats over the writing column on a
+       phone rather than sitting in a gutter, so its footprint is space the
+       text does not get — a 40px `+` beside a 24px checkbox read as the
+       loudest thing on the page. 32px stays a comfortable target while
+       looking like chrome rather than a primary action.
+       Kept above 30px deliberately: shrinking further to tidy the layout is
+       how a control becomes hard to hit for anyone whose aim is less than
+       perfect. */
     .block-handle {
-      width: 2.5rem;
-      height: 2.5rem;
+      width: 2rem;
+      height: 2rem;
       padding: 0;
-      font-size: 0.875rem;
+      font-size: 0.8125rem;
       opacity: 0.75;
       background: none;
       border: none;
@@ -2842,10 +2850,10 @@
      is actually tappable above a text selection. */
   @media (pointer: coarse) {
     .bubble-btn {
-      padding: 10px 12px;
-      font-size: 15px;
-      min-width: 40px;
-      min-height: 40px;
+      padding: 7px 10px;
+      font-size: 14px;
+      min-width: 34px;
+      min-height: 34px;
     }
     .bubble-btn.mono { font-size: 13px; }
 

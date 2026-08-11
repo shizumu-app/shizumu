@@ -6,8 +6,11 @@
 // clear of the text instead. Putting the arithmetic here (rather than
 // inline in TipTapEditor) keeps it testable without mounting an editor.
 
-/** Height of the floating bar on touch: one 2.5rem row plus its border. */
-export const HANDLE_BAR_HEIGHT = 42;
+/** Height of the floating bar on touch: one 2rem row plus its border.
+ *  Tracks `.block-handle`'s coarse-pointer size in TipTapEditor — if that
+ *  changes and this does not, placement reserves space the bar no longer
+ *  occupies and it floats away from the block it belongs to. */
+export const HANDLE_BAR_HEIGHT = 34;
 
 /** Breathing room between the bar and the block it belongs to. */
 export const HANDLE_BAR_GAP = 6;
