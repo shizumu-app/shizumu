@@ -17,7 +17,16 @@
   // whatever text followed: a control pill floating over the next paragraph,
   // with no image in sight. Falling back to the missing state renders the
   // one honest thing instead — the file is not on this device.
+  let failedHash = null;
+
+  // Remember WHICH hash failed, not just that one did. Clearing resolvedSrc
+  // alone leaves the resolver free to fetch the same dead path again the next
+  // time the node object churns — and svelte-tiptap hands a new one on every
+  // editor update, so hovering produces a stream of them. That resolves,
+  // renders, errors and clears in a loop, which is what a rapid flicker over
+  // an image looks like. A failed hash stays failed for the session.
   function handleImageError() {
+    failedHash = node.attrs.blob_hash || null;
     resolvedSrc = null;
   }
 
@@ -34,6 +43,8 @@
   $effect(() => {
     if (!isImage || !node.attrs.blob_hash) { resolvedSrc = null; resolvedHash = null; return; }
     const hash = node.attrs.blob_hash;
+    // Never re-fetch a hash whose image already failed to load.
+    if (hash === failedHash) { resolvedSrc = null; return; }
     // svelte-tiptap hands a NEW node object on every editor update, and
     // hovering a block produces a stream of them, so this effect re-ran
     // constantly — one IPC round-trip per mouse move, each one reassigning
