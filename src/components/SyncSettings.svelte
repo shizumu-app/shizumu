@@ -86,7 +86,12 @@
   // The hosted relay we run for users — makes "we host it for you" the easy
   // default at setup, with self-host as the power path. Set to "" to hide the
   // hosted option (falls back to manual relay url) until the hosted relay is live.
-  const HOSTED_RELAY_URL = ""; // set to the hosted relay url once it is live; "" hides the hosted option (manual url only)
+  // The hosted relay. Setting this makes "hosted" the default choice and
+  // pre-fills the url, so turning sync on is one tap; "self-host" swaps to an
+  // empty field for anyone running their own. Set to "" to hide the hosted
+  // option entirely and require a url — which is what shipped before the
+  // relay was live.
+  const HOSTED_RELAY_URL = "https://relay.shizumu.app";
   let relayChoice = $state("hosted"); // 'hosted' | 'self'
   let errorMsg = $state("");
   // Set when pairing a new device hits the free-tier device limit, so the
@@ -1108,6 +1113,15 @@
           </button>
         </div>
       {/if}
+      {#if relayChoice === "hosted" && HOSTED_RELAY_URL}
+        <!-- Name the destination even when it is not editable. The relay
+             holds ciphertext it cannot read, but "where does this go" is
+             still the first question worth answering, and hiding the answer
+             behind the easy path is how a sync toggle stops feeling
+             trustworthy. -->
+        <p class="wizard-prompt">syncs to</p>
+        <p class="relay-destination">{HOSTED_RELAY_URL.replace(/^https:\/\//, "")}</p>
+      {/if}
       {#if relayChoice === "self" || !HOSTED_RELAY_URL}
         <p class="wizard-prompt">relay url</p>
         <input
@@ -1746,6 +1760,15 @@
   .relay-opt.active .relay-opt-name {
     color: var(--warm-accent);
   }
+  .relay-destination {
+    font-family: "DM Mono", monospace;
+    font-size: 0.8125rem;
+    color: var(--ink);
+    opacity: 0.7;
+    margin: 0 0 0.75rem;
+    word-break: break-all;
+  }
+
   .relay-opt-desc {
     font-size: 0.75rem;
     opacity: 0.6;
