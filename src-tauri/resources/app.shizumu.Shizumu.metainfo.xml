@@ -172,6 +172,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.6.1" date="2026-08-11">
+      <description>
+        <p>Phone fixes. The slash and mention menus fit the screen they are on rather than opening under the status bar with their tails off-screen. An edge swipe moves between pages and no longer creates one — on a single-page day every right swipe used to make a new page. Tapping "what settled" shows what the field is instead of a bare cursor. The app no longer draws under the system bars, so the header is not printed beneath the clock. Overlays inside the editor — the chart builder, the pin prompt — land in the viewport again. Rotating to landscape no longer reads as a keyboard that never closes.</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-08-10">
       <description>
         <p>Attachments. A file you attach now syncs between your devices, up to 100 MB where the practical limit used to be about one. The bytes travel alongside the sync log instead of inside it, which is also what makes them removable: turn an attachment's sync off and the copy on the relay goes with it, rather than staying there forever. Files are sealed under your current key, so revoking a device stops it reading attachments added afterwards. A pinned file now survives the page it came from — freeing up space no longer takes it away, and unpinning is what releases the bytes. A pin whose file is not on this device says so instead of doing nothing.</p>
