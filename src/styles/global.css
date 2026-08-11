@@ -711,6 +711,14 @@ body {
   .local-image-collapse-btn {
     opacity: 0.55;
   }
+  /* The sync/remove overlay had no coarse-pointer rule at all, so on a
+     phone it was reachable only through sticky :hover — revealed by a tap
+     and then left on screen with no way to dismiss it. Given the same
+     resting visibility as the collapse button it reads as chrome that
+     belongs to the image, rather than something that appeared. */
+  .attachment-image-actions {
+    opacity: 0.55;
+  }
 }
 
 .local-image-collapse-btn:hover {

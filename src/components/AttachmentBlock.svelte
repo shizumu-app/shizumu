@@ -9,6 +9,18 @@
   let errorMsg = $state("");
   let resolvedSrc = $state(null);
 
+  // A src that resolves but will not load — a stale path after a restore, a
+  // file removed underneath us, a revoked blob URL — used to leave an <img>
+  // of zero height while its branch still rendered the resize handle, the
+  // collapse button and the sync/remove overlay. All three are absolutely
+  // positioned inside the wrapper, so with nothing to overlay they landed on
+  // whatever text followed: a control pill floating over the next paragraph,
+  // with no image in sight. Falling back to the missing state renders the
+  // one honest thing instead — the file is not on this device.
+  function handleImageError() {
+    resolvedSrc = null;
+  }
+
   const isImage = $derived(node.attrs.kind === "image");
 
   // Resolve the image's on-device path -> convertFileSrc URL whenever the
@@ -206,6 +218,7 @@
         data-display={node.attrs.display || "block"}
         draggable="false"
         style:width={node.attrs.width || null}
+        onerror={handleImageError}
       />
       <span
         class="local-image-resize-handle"
