@@ -468,12 +468,20 @@
     padding-bottom: var(--safe-bottom);
   }
 
-  @media (pointer: coarse) and (max-width: 768px), (pointer: coarse) and (orientation: landscape) and (max-height: 480px) {
-    .app-shell {
-      padding-top: max(var(--safe-top), 24px);
-      padding-bottom: max(var(--safe-bottom), 16px);
-    }
-  }
+  /* No coarse-pointer floor. The floors existed because Android drew
+     edge-to-edge while nothing bridged its window insets into
+     env(safe-area-inset-*), so --safe-top read 0 and content collided with
+     the status bar; 24px was a guess at a bar height.
+
+     The app no longer draws edge-to-edge (scripts/patch-android-insets.py),
+     so Android insets the WebView itself using the real height for the
+     device. Inside that viewport there is no unsafe area, --safe-top is
+     legitimately 0, and a floor would be pure padding stacked on top of the
+     inset the system already applied — the wasted space at the top of the
+     screen, which was reported in the same breath as the collision.
+
+     iOS is unaffected: it still reports real insets through env(), which
+     the `padding-top: var(--safe-top)` above consumes. */
 
   .canvas {
     flex: 1;

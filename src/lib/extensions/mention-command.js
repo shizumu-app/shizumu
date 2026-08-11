@@ -1,3 +1,4 @@
+import { placeMenu } from "../editor/menu-placement.js";
 import { Extension } from "@tiptap/core";
 import { Suggestion } from "@tiptap/suggestion";
 import { PluginKey } from "@tiptap/pm/state";
@@ -21,9 +22,8 @@ function createMenu() {
     box-shadow: 0 4px 16px rgba(0,0,0,0.1);
     border-radius: 6px;
     padding: 4px 0;
-    min-width: 320px;
+    min-width: min(320px, calc(100vw - 16px));
     max-width: 480px;
-    max-height: 380px;
     overflow-y: auto;
     display: none;
   `;
@@ -213,20 +213,34 @@ function positionMenu(menuEl, rect) {
   menuEl.style.visibility = "hidden";
   menuEl.style.top = "0px";
   menuEl.style.left = "0px";
+  menuEl.style.maxHeight = "";
   menuEl.style.display = "block";
-  const menuH = menuEl.offsetHeight;
-  const menuW = menuEl.offsetWidth;
-  const vh = window.innerHeight;
-  const vw = window.innerWidth;
-  let top = rect.bottom + 4;
-  if (top + menuH > vh - 8) {
-    const flipped = rect.top - menuH - 4;
-    top = flipped >= 8 ? flipped : Math.max(8, vh - menuH - 8);
-  }
-  let left = rect.left;
-  if (left + menuW > vw - 8) left = Math.max(8, vw - menuW - 8);
+
+  const vv = window.visualViewport;
+  const cs = getComputedStyle(document.documentElement);
+  const px = (v) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const { top, left, maxHeight } = placeMenu({
+    caretRect: rect,
+    menuH: menuEl.offsetHeight,
+    menuW: menuEl.offsetWidth,
+    // visualViewport, not innerHeight: the layout viewport's keyboard
+    // behaviour is engine-dependent, and this menu is opened by typing.
+    vh: (vv && vv.height) || window.innerHeight,
+    vw: (vv && vv.width) || window.innerWidth,
+    safeTop: px(cs.getPropertyValue("--safe-top")),
+    safeBottom: px(cs.getPropertyValue("--safe-bottom")),
+  });
+
   menuEl.style.top = `${top}px`;
   menuEl.style.left = `${left}px`;
+  // Replaces the fixed 380px cap in createMenu, which was a guess rather
+  // than a fit: nothing compared it to what was left of the screen.
+  menuEl.style.maxHeight = `${maxHeight}px`;
+  menuEl.style.overflowY = "auto";
   menuEl.style.visibility = "visible";
 }
 
