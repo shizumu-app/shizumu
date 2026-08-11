@@ -172,6 +172,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.6.2" date="2026-08-11">
+      <description>
+        <p>An image that cannot load no longer leaves its controls floating over the text beneath it. The file is reported as not on this device instead, which is the honest answer. On a phone the image's sync and remove buttons are visible at rest rather than needing a hover that touch does not have.</p>
+      </description>
+    </release>
     <release version="0.6.1" date="2026-08-11">
       <description>
         <p>Phone fixes. The slash and mention menus fit the screen they are on rather than opening under the status bar with their tails off-screen. An edge swipe moves between pages and no longer creates one — on a single-page day every right swipe used to make a new page. Tapping "what settled" shows what the field is instead of a bare cursor. The app no longer draws under the system bars, so the header is not printed beneath the clock. Overlays inside the editor — the chart builder, the pin prompt — land in the viewport again. Rotating to landscape no longer reads as a keyboard that never closes.</p>
