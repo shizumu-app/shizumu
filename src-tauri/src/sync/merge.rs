@@ -1200,11 +1200,16 @@ fn merge_attachment_blob(
         }
     }
     // Upsert into the attachments index so the storage panel and pin
-    // open-paths know the blob is locally available. Filename defaults
-    // to the hash on receive — peers may not have shared the original
-    // filename (it's a UX hint, not part of the content address).
+    // open-paths know the blob is locally available. Prefer the name the
+    // sender carried; fall back to the hash for a legacy op or an older
+    // peer that did not send one. The filename is a UX hint, not part of
+    // the content address, so a fallback is correct rather than an error.
     let now = chrono::Utc::now().to_rfc3339();
-    let filename = dto.blob_hash.clone();
+    let filename = dto
+        .filename
+        .clone()
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| dto.blob_hash.clone());
     conn.execute(
         "INSERT INTO attachments \
             (blob_hash, filename, mime_type, size_bytes, sync, has_local, created_at, last_seen_at) \
@@ -1283,7 +1288,12 @@ fn merge_attachment_reference(
     dto: &crate::sync::wire::attachment_blob::AttachmentBlobPayload,
 ) -> Result<MergeOutcome, MergeError> {
     let now = chrono::Utc::now().to_rfc3339();
-    let filename = dto.blob_hash.clone();
+    // Prefer the sender's name; the hash is the fallback for an older peer.
+    let filename = dto
+        .filename
+        .clone()
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| dto.blob_hash.clone());
     let object_epoch = dto
         .object_key
         .as_ref()

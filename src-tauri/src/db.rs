@@ -140,12 +140,21 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
                  auto_insert INTEGER NOT NULL DEFAULT 0,
                  created_at TEXT NOT NULL,
                  updated_at TEXT NOT NULL,
-                 applied_hlc_ts INTEGER NOT NULL DEFAULT 0
+                 applied_hlc_ts INTEGER NOT NULL DEFAULT 0,
+                 -- diverged (migration 020) MUST be here. This recreate runs
+                 -- AFTER the migration loop, so on a fresh DB it fires right
+                 -- after 020 added the column and, without this line, dropped
+                 -- it again — leaving the whole first session querying a
+                 -- column that does not exist. getPins and create_pin's
+                 -- SELECT both name it, so pinning silently did nothing until
+                 -- the SECOND launch re-added it. Any column a later ALTER
+                 -- adds has to be mirrored here too.
+                 diverged INTEGER NOT NULL DEFAULT 0
              );
              INSERT INTO shared_objects_new
                  SELECT id, lineage_id, source_page_id, object_type, title, content,
                         status, position, auto_insert, created_at, updated_at,
-                        applied_hlc_ts
+                        applied_hlc_ts, diverged
                  FROM shared_objects;
              DROP TABLE shared_objects;
              ALTER TABLE shared_objects_new RENAME TO shared_objects;
@@ -164,6 +173,33 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
 mod tests {
     use crate::test_helpers::{insert_lineage, insert_page, insert_pin, test_db};
     use rusqlite::Connection;
+
+    // The migration loop adds `diverged` (020), then the needs_013 block
+    // recreates shared_objects. That recreate ran AFTER 020 and, by omitting
+    // the column, dropped it — but only in the REAL run_migrations path. The
+    // test harness (test_helpers::apply_migrations) skips the recreate, so
+    // every existing test saw a `diverged` that production dropped on first
+    // launch. This exercises run_migrations directly so the two cannot
+    // diverge silently again.
+    #[test]
+    fn the_shared_objects_recreate_keeps_the_diverged_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run_migrations(&conn).unwrap();
+        let has_diverged = conn
+            .prepare("PRAGMA table_info(shared_objects)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .any(|name| name == "diverged");
+        assert!(
+            has_diverged,
+            "the shared_objects recreate dropped the diverged column"
+        );
+        // And it is queryable, which is what actually broke.
+        conn.execute_batch("SELECT diverged FROM shared_objects LIMIT 0")
+            .expect("diverged must be selectable after migrations");
+    }
 
     #[test]
     fn all_migrations_apply_cleanly() {

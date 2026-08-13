@@ -205,8 +205,16 @@ body {
   color: var(--ink);
   font-family: var(--canvas-font-family, "Lora", serif);
   line-height: 1.7;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  /* Font smoothing left at the OS default ON PURPOSE. `-webkit-font-smoothing:
+     antialiased` forces GRAYSCALE antialiasing — right only on macOS Retina. On
+     this app's real Linux webview (webkit2gtk) and on Windows it rendered the
+     thin Lora serif lighter and softer (the "font quality is not good" report)
+     by discarding the crisper subpixel rendering the OS would apply. CSS cannot
+     tell macOS Safari from Linux webkit2gtk apart (both are WebKit and both
+     match the usual Safari @supports hack), so the fix is simply to NOT force
+     grayscale AA anywhere. If the macOS build ever wants it back, gate it on a
+     platform class set from Tauri (e.g. html.is-macos), not a CSS feature
+     query. Do NOT re-add a bare `-webkit-font-smoothing: antialiased` here. */
 }
 
 body {
@@ -525,6 +533,18 @@ body {
    mousemove tracking (handleEditorMouseMove -> hoveredMouseBlock), gated
    by a last-touch timestamp (isTrustedMouseHover, block-hover-guard.js) —
    not by what the engine's interaction media features report. */
+/* The title slot is quiet chrome: collapsed by default (filled OR empty),
+   revealed on hover (desktop) or a deliberate margin-tap (.block-active-touch,
+   touch) or focus. A board title behaves the same whether it was typed or
+   carried in on an injected/carried-forward pin — a pin's title is never
+   permanently pinned open on the canvas; it reads back on hover/return, and it
+   is always legible in the pin panel and pin modal regardless.
+   (Do NOT re-add a "filled title is always visible" rule here — an earlier
+   attempt keyed on :not(:placeholder-shown), then on data-block-title, to keep
+   injected titles from rendering invisible. That was compensating for a
+   different bug — the title rendering OUTSIDE the block as a bold line, since
+   fixed in pin-carry-forward's contentNodes — and it made every titled board's
+   slot permanently open, which is not the wanted behavior.) */
 .ProseMirror .block-shell.block-mouse-hovered > .board-title-slot,
 .ProseMirror .code-block-wrap.block-mouse-hovered > .board-title-slot {
   max-height: 2.6em;

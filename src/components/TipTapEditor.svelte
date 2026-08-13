@@ -316,6 +316,8 @@
   }
 
   onMount(async () => {
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", handleHide);
+    if (typeof window !== "undefined") window.addEventListener("pagehide", handleHide);
     // Ensure all `bind:this` targets (especially bubbleMenuEl) have been
     // flushed before the Editor is constructed. BubbleMenu silently bails
     // out when its `element` option is null at plugin-registration time.
@@ -658,7 +660,14 @@
   });
 
   onDestroy(() => {
-    if (editor) {
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", handleHide);
+    if (typeof window !== "undefined") window.removeEventListener("pagehide", handleHide);
+    if (editor && !editor.isDestroyed) {
+      // Flush a pending edit before tearing down rather than discarding it —
+      // this is what silently dropped a just-stamped pinId when the editor
+      // unmounted inside the debounce window. Capture synchronously; the save
+      // itself is fire-and-forget since onDestroy cannot await.
+      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; flushSave({ preserveCursor: false }); }
       try { pruneAllEmptyHeadings(editor, { preserveCursor: false }); } catch {}
       editor.destroy();
     }
@@ -669,29 +678,45 @@
     if (dragActive) endDrag();
   });
 
-  function debouncedSave(ed) {
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(async () => {
-      try {
-        pruneAllEmptyHeadings(ed, { preserveCursor: true });
-        const json = JSON.stringify(ed.getJSON());
-        // When bound to a Y.Doc, ship its v2-encoded state alongside
-        // the JSON snapshot. The backend persists both: yjs_state is
-        // source-of-truth for sync, content_json keeps FTS warm.
-        const yjsBytes = yjsDoc ? encodeState(yjsDoc) : null;
-        if (isTrailMode && trailLineageId) {
-          // saveTrailContent doesn't accept yjsState yet — continuous
-          // trails always go through PAGE's savePageContent path, so
-          // this branch only handles legacy trail-mode pages where the
-          // editor was a passthrough. Leave the JSON-only shape.
-          await saveTrailContent(trailLineageId, pageId, json);
-        } else {
-          await savePageContent(pageId, json, yjsBytes);
-        }
-      } catch (err) {
-        console.error("Failed to save content:", err);
+  // App backgrounded or closing: flush a pending save before the OS can
+  // suspend or kill the webview. On mobile a swipe-away fires visibilitychange
+  // /pagehide, not onDestroy, so without this a just-created pin's stamp is
+  // lost exactly the way the user hit it.
+  function handleHide() {
+    if (typeof document !== "undefined" && document.visibilityState === "visible") return;
+    if (saveTimer) flushSave({ preserveCursor: false });
+  }
+
+  // Persist the editor's content NOW, awaitable. The single place the doc is
+  // written, so the debounce, the pin-create flush, teardown and pagehide all
+  // save identically. `preserveCursor` is caller-chosen: true mid-session,
+  // false on teardown where the cursor no longer matters.
+  async function flushSave({ preserveCursor = true } = {}) {
+    if (!editor || editor.isDestroyed) return;
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    try {
+      pruneAllEmptyHeadings(editor, { preserveCursor });
+      const json = JSON.stringify(editor.getJSON());
+      // When bound to a Y.Doc, ship its v2-encoded state alongside the JSON
+      // snapshot. The backend persists both: yjs_state is source-of-truth for
+      // sync, content_json keeps FTS warm.
+      const yjsBytes = yjsDoc ? encodeState(yjsDoc) : null;
+      if (isTrailMode && trailLineageId) {
+        // saveTrailContent doesn't accept yjsState yet — continuous trails go
+        // through PAGE's savePageContent path, so this branch only handles
+        // legacy trail-mode pages where the editor was a passthrough.
+        await saveTrailContent(trailLineageId, pageId, json);
+      } else {
+        await savePageContent(pageId, json, yjsBytes);
       }
-    }, 1000);
+    } catch (err) {
+      console.error("Failed to save content:", err);
+    }
+  }
+
+  function debouncedSave(_ed) {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { flushSave(); }, 1000);
   }
 
   // Click-to-preview image modal (dispatched by the LocalImage node view).
@@ -1610,30 +1635,45 @@
     selectionPinVisible = false;
   }
 
-  async function handlePinBlock() {
-    if (!hoveredBlock || !editor) return;
-
-    // A block containing a NodeView (e.g. an attachment chip) can have its
-    // DOM node replaced shortly after it's first hovered — svelte-tiptap's
-    // NodeView mount() settles asynchronously, and the resulting reconcile
-    // detaches the original element sometime around the next paint. Left
-    // alone, hoveredBlock then points at a stale, disconnected node whose
-    // textContent silently reads as "" — the pin button did nothing at all,
-    // no error, no popup. Re-resolve the live element at the same on-screen
-    // row before giving up.
-    if (!hoveredBlock.isConnected) {
-      const proseMirror = editorEl?.querySelector(".ProseMirror");
-      const wrapperRect = wrapperEl?.getBoundingClientRect();
-      if (proseMirror && wrapperRect) {
-        const targetY = wrapperRect.top + handleTop + 4;
-        const fresh = Array.from(proseMirror.children).find((child) => {
-          const r = child.getBoundingClientRect();
-          return targetY >= r.top && targetY <= r.bottom;
-        });
-        if (fresh) hoveredBlock = fresh;
-      }
+  // The live top-level block the pin button belongs to, resolved at click
+  // time from the best source available. `hoveredBlock` is the happy path,
+  // but by the time onclick fires it is often gone: svelte-tiptap replaces a
+  // block's DOM node when a NodeView settles, and the reveal/leave timing can
+  // null it out entirely — which on a first launch left the button visible
+  // and inert, no error, no popup, "nothing at all". So fall back to the
+  // block under the handle's on-screen row, then to the block at the cursor.
+  function resolveHandleBlock() {
+    if (hoveredBlock?.isConnected) return hoveredBlock;
+    const proseMirror = editorEl?.querySelector(".ProseMirror");
+    const wrapperRect = wrapperEl?.getBoundingClientRect();
+    if (proseMirror && wrapperRect) {
+      // handleTop is content-space (it includes scrollTop); convert back to
+      // viewport before matching against getBoundingClientRect.
+      const targetY = wrapperRect.top + handleTop - (wrapperEl?.scrollTop || 0) + 4;
+      const fresh = Array.from(proseMirror.children).find((child) => {
+        const r = child.getBoundingClientRect();
+        return targetY >= r.top && targetY <= r.bottom;
+      });
+      if (fresh?.isConnected) return fresh;
     }
-    if (!hoveredBlock.isConnected) return;
+    // Last resort: the top-level block containing the cursor.
+    try {
+      const pos = editor.state.selection.$from.before(1);
+      const dom = editor.view.domAtPos(pos)?.node;
+      let el = dom?.nodeType === 1 ? dom : dom?.parentElement;
+      while (el && el.parentElement && !el.parentElement.classList?.contains("ProseMirror")) {
+        el = el.parentElement;
+      }
+      if (el?.isConnected && el.parentElement?.classList?.contains("ProseMirror")) return el;
+    } catch {}
+    return null;
+  }
+
+  async function handlePinBlock() {
+    if (!editor) return;
+    const block = resolveHandleBlock();
+    if (!block) return;
+    hoveredBlock = block;
 
     // Don't pin empty blocks
     const blockText = hoveredBlock.textContent?.trim() || "";
@@ -1993,6 +2033,12 @@
         setTimeout(() => { if (pinBlockEl) pinBlockEl.style.background = ""; }, 800);
       }
       existingPinContents = new Set([...existingPinContents, pinContent]);
+      // The pinId now lives only in the live doc. refresh_pin_caches orphans
+      // any open pin whose id is not in the SAVED content_json, so unless we
+      // persist now, an unmount before the 1s debounce leaves the pin
+      // orphaned (dimmed, "like deleted") on the next launch. Persist the
+      // stamp synchronously so creation is durable, then tell the panel.
+      await flushSave();
       onPinCreated();
     } catch (err) {
       console.error("Failed to pin block:", err);
@@ -2082,10 +2128,16 @@
     const built = [];
     for (const json of nodes) {
       try {
+        // Compare shapes WITHOUT pinIds so the same content is not injected
+        // twice, but insert the node WITH its pinId. Inserting the stripped
+        // copy is what made an injected pin inert: it looked identical and
+        // carried no link, so editing it changed the page and never the pin.
+        // With the id intact, the save path's refresh_pin_caches recognises
+        // the node and the page that holds it becomes the pin's owner.
         const stripped = stripPinIdsFromJSON(json);
         const key = JSON.stringify(stripped);
         if (existingKeys.has(key)) continue;
-        built.push(editor.state.schema.nodeFromJSON(stripped));
+        built.push(editor.state.schema.nodeFromJSON(json));
         existingKeys.add(key);
       } catch (err) {
         console.error("appendNodesToDoc: skipping invalid node", err);

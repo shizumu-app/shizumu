@@ -1,6 +1,6 @@
 {
   "name": "shizumu",
-  "version": "0.6.5",
+  "version": "0.6.7",
   "description": "write to think. pin what matters. trail what continues. the rest sinks.",
   "license": "AGPL-3.0-or-later",
   "private": true,
@@ -17,6 +17,8 @@
     "test:all": "npm run test:rust && npm test && npm run test:e2e",
     "seed": "node scripts/seed-corpus.js",
     "seed:demo": "node scripts/seed-corpus.js --reset",
+    "video:validate": "node scripts/validate-video-config.js marketing/videos/src/vbeta-release.json",
+    "test:scripts": "node --test scripts/validate-video-config.test.mjs",
     "test:vr": "playwright test --project=win-webview2 --project=android-webview",
     "test:vr:update": "playwright test --project=win-webview2 --project=android-webview --update-snapshots",
     "test:vr:all": "playwright test",

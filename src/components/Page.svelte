@@ -700,6 +700,10 @@
     }
   }
 
+  // Bumped when a pin is created so SharedObjectsPanel reloads its list
+  // instead of waiting for a remount.
+  let pinRefreshToken = $state(0);
+
   async function loadPinCount() {
     // Instant update from cache so the trail name/mode reflects the new page
     // before the API call completes.
@@ -1297,7 +1301,7 @@
           initialYjsState={page.yjs_state ?? null}
           readonly={!isWritable}
           lineageId={page.lineage_id || null}
-          onPinCreated={loadPinCount}
+          onPinCreated={() => { pinRefreshToken += 1; loadPinCount(); }}
           onDocChange={(json) => editorDoc = json}
           onWordCount={(c) => currentWordCount = c}
           onCreateSubtrail={handleCreateSubtrail}
@@ -1388,6 +1392,7 @@
     <!-- Pins panel -->
     {#if page && showSharedPanel}
       <SharedObjectsPanel
+        refreshToken={pinRefreshToken}
         lineageId={page.lineage_id || null}
         lineageName={currentLineageName}
         pageId={page.id}

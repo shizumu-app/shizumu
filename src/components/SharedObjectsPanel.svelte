@@ -12,7 +12,7 @@
   } from "../lib/api.js";
   import { attachmentLocality } from "../lib/attachment-locality.js";
   import { buildMentionLabel } from "../lib/mention-label.js";
-  import { pinFamily } from "../lib/pin-display.js";
+  import { pinFamily, pinDisplayTitle } from "../lib/pin-display.js";
   import SidebarShell from "../lib/ui/SidebarShell.svelte";
   import SidebarNavRow from "../lib/ui/SidebarNavRow.svelte";
   import SectionHeader from "../lib/ui/SectionHeader.svelte";
@@ -34,7 +34,7 @@
   } from "../lib/render/preview-card.js";
 
   /** @type {{ lineageId: string|null, lineageName: string, pageId: string, editorDoc: any, onClose: () => void, onPinRemoved: (content: string) => void, onPinInject: (nodes: any[]) => void, onPinLocate: (pinId: string) => void, onSamePagePinSave: (pinId: string, newNode: any) => void, onNavigateToSource: (pageId: string) => void }} */
-  let { lineageId = null, lineageName = "", pageId, editorDoc = null, openPinId = null, onPinOpened = () => {}, onClose, onPinRemoved = () => {}, onPinInject = () => {}, onPinLocate = () => {}, onSamePagePinSave = () => {}, onNavigateToSource = () => {} } = $props();
+  let { lineageId = null, lineageName = "", pageId, refreshToken = 0, editorDoc = null, openPinId = null, onPinOpened = () => {}, onClose, onPinRemoved = () => {}, onPinInject = () => {}, onPinLocate = () => {}, onSamePagePinSave = () => {}, onNavigateToSource = () => {} } = $props();
 
   // The panel is mounted/unmounted by the caller's {#if} (there's no
   // internal open prop to react to), so it registers on the navstack once
@@ -117,9 +117,15 @@
   }
 
   function effectivePin(p) {
-    if (p.source_page_id !== pageId) return p;  // cross-page: cache only
+    // Key on whether this page's live doc actually holds the pin's node, NOT
+    // on the DB row's source_page_id. An injected pin's node is in this doc
+    // immediately, but its source_page_id only transfers to this page after a
+    // save runs refresh_pin_caches — so gating on source_page_id showed the
+    // stale cache and never reflected edits the user just made. livePinNodes
+    // only contains pinIds present in THIS doc, so a pin owned elsewhere is
+    // absent and correctly falls through to its cache.
     const live = livePinNodes.get(p.id);
-    if (!live) return p;  // pin's source missing from current doc; render cache
+    if (!live) return p;  // not in this doc — cross-page or truly absent; cache
     const liveTitle = (live.attrs?.blockTitle || "").trim();
     if (isBoard(p)) {
       return {
@@ -238,9 +244,12 @@
   }
 
   $effect(() => {
-    // Track only lineageId. Without untrack, loadPins() would also track filter
-    // state and cause the effect to re-run on every filter toggle.
+    // Track lineageId AND refreshToken. Without refreshToken the panel loaded
+    // its pins once per mount, so a pin created while the panel was open never
+    // appeared until it was remounted (the user restarted the app to see it).
+    // The parent bumps refreshToken on creation to force a reload.
     lineageId;
+    refreshToken;
     untrack(() => {
       loadPins();
       getLineages().then((list) => { allLineages = list || []; }).catch(() => {});
@@ -473,8 +482,23 @@
   // divergent implementation that assumed a note's content was plain text,
   // so a JSON-shaped note pasted its own serialization in as visible
   // characters and never carried its title at all.
-  function injectPinNow(obj) {
-    const nodes = pinToNodes(obj);
+  // Receives the EFFECTIVE pin (effectivePin), not the raw row. The panel
+  // renders from `eff` — live content with the title already in blockTitle —
+  // while the raw row's cache can hold a null title and a node with no
+  // blockTitle. Injecting the raw row is what put the title outside the
+  // block: withTitle saw an empty title and stamped nothing, or a non-board
+  // cache and added a bold line. `eff` is what the user is looking at.
+  function injectPinNow(pin) {
+    // Inject with the title the row shows. The authoritative title is the
+    // pin's title column; when that is blank the panel derives one from the
+    // content (pinDisplayTitle), and inject must use the SAME value so the
+    // injected block is not silently titleless. withTitle keeps a block's own
+    // slot title over this when it has one, so a real blockTitle is never
+    // clobbered by a derived fallback.
+    const titled = { ...pin, title: (pin.title || "").trim() || pinDisplayTitle(pin) };
+    // keepPinIds: the injected block is the pin, not a copy of it. Editing it
+    // updates the pin, and the page it lands on becomes the pin's owner.
+    const nodes = pinToNodes(titled, { keepPinIds: true });
     if (nodes.length === 0) return;
     onPinInject(nodes);
   }
@@ -902,7 +926,7 @@
                 await commitInlineRename(obj);
               }}
               onCarryForward={() => toggleAutoInsert(obj)}
-              onInject={() => injectPinNow(obj)}
+              onInject={() => injectPinNow(eff)}
               onDelete={() => removePin(obj)}
               onScopeChange={() => {}}
               onScopeMenuToggle={() => { scopeMenuFor = scopeMenuFor === obj.id ? null : obj.id; }}
@@ -953,7 +977,7 @@
       onSave={(newNode, newTitle, contentChanged, titleChanged) => saveArtifact(pin.id, newNode, newTitle, contentChanged, titleChanged)}
       onDelete={() => { removePin(pin); modal = null; }}
       onToggleAutoInsert={() => toggleAutoInsert(pin)}
-      onInject={() => injectPinNow(pin)}
+      onInject={() => injectPinNow(effectivePin(pin))}
       onNavigateToSource={onNavigateToSource}
     />
   {/if}
@@ -972,7 +996,7 @@
       onSave={(newContent, newTitle, contentChanged, titleChanged) => saveNote(pin.id, newContent, newTitle, contentChanged, titleChanged)}
       onDelete={() => { removePin(pin); modal = null; }}
       onToggleAutoInsert={() => toggleAutoInsert(pin)}
-      onInject={() => injectPinNow(pin)}
+      onInject={() => injectPinNow(effectivePin(pin))}
       onNavigateToSource={onNavigateToSource}
     />
   {/if}

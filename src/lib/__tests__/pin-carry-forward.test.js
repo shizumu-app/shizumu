@@ -141,3 +141,108 @@ describe("pinToNodes", () => {
     expect(pinToNodes({ object_type: "note", content: "" })).toEqual([]);
   });
 });
+
+describe("pinToNodes — pin id retention", () => {
+  const pin = {
+    id: "PIN-1",
+    title: "Linux tasks/issues",
+    content: JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "taskList",
+          attrs: { pinId: "PIN-1" },
+          content: [
+            { type: "taskItem", content: [{ type: "paragraph", content: [{ type: "text", text: "a" }] }] },
+          ],
+        },
+      ],
+    }),
+  };
+
+  // Carry-forward appends a fresh day's working copy. It must NOT claim the
+  // pin, or the new page would take ownership of a pin the user never touched.
+  it("strips the pin id by default", () => {
+    const nodes = pinToNodes(pin);
+    const list = nodes.find((n) => n.type === "taskList");
+    expect(list.attrs?.pinId).toBeUndefined();
+  });
+
+  // Inject means "work on this pin here". Without the id the injected block
+  // is inert: refresh_pin_caches has nothing to match, so every edit updates
+  // the page and never the pin. That is the regression this guards.
+  it("keeps the pin id when asked, so an injected block IS the pin", () => {
+    const nodes = pinToNodes(pin, { keepPinIds: true });
+    const list = nodes.find((n) => n.type === "taskList");
+    expect(list.attrs.pinId).toBe("PIN-1");
+  });
+});
+
+describe("withTitle via pinToNodes — the block's own title wins, else fill", () => {
+  const list = (bt) => ({
+    type: "list",
+    attrs: bt ? { blockTitle: bt } : {},
+    content: [{ type: "listItem", attrs: { marker: "task" }, content: [{ type: "paragraph", content: [{ type: "text", text: "a" }] }] }],
+  });
+  const doc = (n) => JSON.stringify({ type: "doc", content: [n] });
+  const bt = (nodes) => nodes.find((n) => n.type === "list")?.attrs?.blockTitle;
+
+  it("keeps a real blockTitle even when a title is passed", () => {
+    // The block's own slot title must never be overwritten by a passed title —
+    // that is how an injected board kept a line of body text as its title.
+    const nodes = pinToNodes({ title: "prepare flathub", content: doc(list("Linux tasks/issues")) });
+    expect(bt(nodes)).toBe("Linux tasks/issues");
+  });
+
+  it("fills an empty slot from the title", () => {
+    const nodes = pinToNodes({ title: "My Tasks", content: doc(list(null)) });
+    expect(bt(nodes)).toBe("My Tasks");
+  });
+
+  it("leaves an empty slot empty when there is no title at all", () => {
+    // A board with neither a slot title nor a pin title has nothing to stamp;
+    // the caller (inject) supplies a derived fallback, not withTitle.
+    const nodes = pinToNodes({ title: "", content: doc(list(null)) });
+    expect(bt(nodes) ?? "").toBe("");
+  });
+});
+
+// The production bug: confirmPin writes {type:"doc", content:[node]}, but the
+// Rust refresh_pin_caches re-caches the BARE pinned node on every save —
+// {type:"list", content:[listItem, listItem]}. Reading `.content` off that
+// bare board node returns its own listItems, dropping the `list` wrapper that
+// holds the blockTitle slot. withTitle then saw no board and prepended a bold
+// title line: the "title outside the block" symptom. Every pin ends up in this
+// shape after its first save, so this is the shape inject/carry-forward hit.
+describe("pinToNodes — the bare board node shape refresh_pin_caches writes", () => {
+  const bareList = (bt) =>
+    JSON.stringify({
+      type: "list",
+      attrs: { pinId: "pin-1", ...(bt ? { blockTitle: bt } : {}) },
+      content: [
+        { type: "listItem", attrs: { marker: "task" }, content: [{ type: "paragraph", content: [{ type: "text", text: "a" }] }] },
+        { type: "listItem", attrs: { marker: "task" }, content: [{ type: "paragraph", content: [{ type: "text", text: "b" }] }] },
+      ],
+    });
+
+  it("keeps the list as ONE board node instead of hoisting its listItems", () => {
+    const nodes = pinToNodes({ object_type: "board", title: "my tasks", content: bareList(null) }, { keepPinIds: true });
+    // The regression produced [paragraph(bold title), listItem, listItem].
+    // Correct is a single list node — no stray top-level listItems, no bold
+    // title paragraph.
+    expect(nodes.map((n) => n.type)).toEqual(["list"]);
+  });
+
+  it("stamps the title into the board's slot, not as a bold line above it", () => {
+    const nodes = pinToNodes({ object_type: "board", title: "my tasks", content: bareList(null) }, { keepPinIds: true });
+    expect(nodes[0].type).toBe("list");
+    expect(nodes[0].attrs.blockTitle).toBe("my tasks");
+    // No prepended bold-title paragraph.
+    expect(nodes.some((n) => n.type === "paragraph")).toBe(false);
+  });
+
+  it("keeps the block's own slot title over the pin title on this shape too", () => {
+    const nodes = pinToNodes({ object_type: "board", title: "pin title", content: bareList("slot title") }, { keepPinIds: true });
+    expect(nodes[0].attrs.blockTitle).toBe("slot title");
+  });
+});

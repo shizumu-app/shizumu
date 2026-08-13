@@ -83,6 +83,17 @@ pub struct AttachmentBlobPayload {
     /// leaves the row exactly as it was — a no-op, not a corruption.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked: Option<bool>,
+    /// The user-facing name of the attachment, carried so a device that
+    /// RECEIVES this reference shows the real filename rather than the
+    /// blob_hash. `merge` had nothing else to use and fell back to the
+    /// hash — the origin of the raw-UUID filenames on synced attachments.
+    ///
+    /// `Option` + `#[serde(default)]` + `skip_serializing_if`: absent on a
+    /// legacy inline op and on any reference emitted before this field
+    /// existed, and a receiver without it keeps the hash fallback. Purely
+    /// additive; nothing about the existing wire shape changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
     pub hlc_ts: i64,
 }
 
@@ -107,6 +118,8 @@ pub fn build_payload(
         // own ciphertext epoch (`op_log.epoch`) covers these bytes.
         object_epoch: None,
         revoked: None,
+        // The bytes carry no reference; the local row still has the name.
+        filename: None,
         hlc_ts,
     }
 }
@@ -143,6 +156,8 @@ pub fn build_reference_payload(
         object_key: Some(object_key.to_string()),
         object_epoch: Some(object_epoch),
         revoked: None,
+        // Filled in by the emit path, which holds the row the name lives on.
+        filename: None,
         hlc_ts,
     }
 }
@@ -185,6 +200,8 @@ pub fn build_revocation_payload(
         // so there is no epoch to name.
         object_epoch: None,
         revoked: Some(true),
+        // A retraction names no name — it removes an object, not content.
+        filename: None,
         hlc_ts,
     }
 }
@@ -289,6 +306,7 @@ mod tests {
             object_key: None,
             object_epoch: None,
             revoked: None,
+            filename: None,
             hlc_ts: 0,
         };
         assert!(reassemble(&payload).is_err());
@@ -305,6 +323,7 @@ mod tests {
             object_key: None,
             object_epoch: None,
             revoked: None,
+            filename: None,
             hlc_ts: 0,
         };
         assert!(reassemble(&payload).is_err());
@@ -480,5 +499,52 @@ mod tests {
         // what the send side accepts, or a file uploads fine and is then
         // refused by the other device.
         assert!(MAX_BLOB_BYTES >= 100 * 1024 * 1024);
+    }
+
+    // An op emitted before `filename` existed has no such key. It MUST still
+    // deserialise — a peer on the new build pulling an old peer's reference,
+    // and this build reading its own earlier ops. `#[serde(default)]` gives
+    // None, and the receiver falls back to the hash, which is exactly the
+    // behaviour before this field.
+    #[test]
+    fn a_payload_without_filename_deserialises_to_none() {
+        let json = serde_json::json!({
+            "op": "attachment_blob",
+            "blob_hash": "a".repeat(64),
+            "mime_type": "image/png",
+            "size_bytes": 10,
+            "chunks_b64": [],
+            "object_key": "b".repeat(64),
+            "object_epoch": 0,
+            "hlc_ts": 0
+        })
+        .to_string();
+        let p: AttachmentBlobPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(p.filename, None);
+    }
+
+    // A filename set on the payload survives the wire round-trip, so the
+    // receiving device shows the real name instead of the blob_hash.
+    #[test]
+    fn filename_round_trips_through_serialisation() {
+        let mut p = build_reference_payload(
+            &"a".repeat(64), Some("image/png"), 10, &"b".repeat(64), 0, 0,
+        );
+        // build_reference_payload leaves it None; emit fills it in. Simulate.
+        p.filename = Some("golden-retriever.jpg".to_string());
+        let round: AttachmentBlobPayload =
+            serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(round.filename.as_deref(), Some("golden-retriever.jpg"));
+    }
+
+    // The builder itself does not set a name — the emit path does, from the
+    // row. This pins that contract so a future refactor does not quietly
+    // start sending a name the builder cannot know is correct.
+    #[test]
+    fn the_reference_builder_leaves_filename_for_the_emit_path() {
+        let p = build_reference_payload(
+            &"a".repeat(64), None, 10, &"b".repeat(64), 0, 0,
+        );
+        assert_eq!(p.filename, None);
     }
 }

@@ -2795,11 +2795,22 @@ fn refresh_pin_caches(
     for (pin_id, node) in &found {
         let node_json = node.to_string();
         let title = extract_block_title(node);
+        // Ownership follows the doc. This used to require
+        // `source_page_id = ?`, so a pin injected into another page carried
+        // its id but could never write back — every edit to the injected
+        // copy was silently discarded, because the row still belonged to the
+        // page it was originally pinned from.
+        //
+        // Matching on the id alone and re-stamping source_page_id means the
+        // page that last saved a doc containing this pin owns it. That keeps
+        // exactly one owner, so two pages cannot race, and the orphan sweep
+        // below stays correct: it scopes by source_page_id, which now names
+        // the page the pin actually lives on.
         conn.execute(
-            "UPDATE shared_objects SET content = ?, title = ?, \
+            "UPDATE shared_objects SET content = ?, title = ?, source_page_id = ?, \
              status = CASE WHEN status = 'orphaned' THEN 'open' ELSE status END, \
-             updated_at = ? WHERE id = ? AND source_page_id = ?",
-            params![&node_json, &title, &now, pin_id, page_id],
+             updated_at = ? WHERE id = ?",
+            params![&node_json, &title, page_id, &now, pin_id],
         )
         .map_err(|e| e.to_string())?;
     }

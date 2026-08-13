@@ -189,7 +189,7 @@ pub fn emit_attachment_blob(
     object_key: &str,
     object_epoch: i64,
 ) -> Result<(), String> {
-    let payload = crate::sync::wire::attachment_blob::build_reference_payload(
+    let mut payload = crate::sync::wire::attachment_blob::build_reference_payload(
         blob_hash,
         mime_type,
         size_bytes,
@@ -197,6 +197,20 @@ pub fn emit_attachment_blob(
         object_epoch,
         0,
     );
+    // Carry the user-facing name so the receiving device shows it instead of
+    // the blob_hash. The name lives on the row this op is being emitted for;
+    // read it here rather than thread it through the upload path. A missing
+    // row or a NULL name simply leaves `filename` None, which the receiver
+    // already handles by falling back to the hash.
+    payload.filename = conn
+        .query_row(
+            "SELECT filename FROM attachments WHERE blob_hash = ?1",
+            rusqlite::params![blob_hash],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .filter(|f| !f.is_empty());
     apply_attachment_payload(engine, conn, blob_hash, payload)
 }
 
