@@ -6,7 +6,42 @@
 // isTrustedMouseHover() so Chromium's post-touch-tap compat mousemove
 // (the original D-6 hole) can't reopen the tap-steals-focus bug.
 import { describe, it, expect } from "vitest";
-import { isTrustedMouseHover, resolveHoveredMouseBlock, TOUCH_COMPAT_GUARD_MS } from "../block-hover-guard.js";
+import { isTrustedMouseHover, resolveHoveredMouseBlock, hoverClassTarget, TOUCH_COMPAT_GUARD_MS } from "../block-hover-guard.js";
+
+// A fake element whose classList mimics the DOM API surface the predicate uses.
+const elWith = (...classes) => ({
+  classList: {
+    contains: (c) => classes.includes(c),
+  },
+});
+
+// Regression: hovering an expanded image flickered rapidly. `.block-mouse-
+// hovered` was stamped on the image's NodeView root; ProseMirror's
+// MutationObserver saw the foreign class change and REBUILT the NodeView, which
+// remounts the Svelte component and tears the <img> down — on every mousemove.
+// The class only reveals a board's title slot, so it must land only on boards.
+describe("hoverClassTarget — only boards carry .block-mouse-hovered", () => {
+  it("returns the element for a list/quote board (.block-shell)", () => {
+    const board = elWith("block-shell");
+    expect(hoverClassTarget(board)).toBe(board);
+  });
+
+  it("returns the element for a code board (.code-block-wrap)", () => {
+    const code = elWith("code-block-wrap");
+    expect(hoverClassTarget(code)).toBe(code);
+  });
+
+  it("returns null for an image/attachment wrapper — the flicker source", () => {
+    // Stamping the class here is what rebuilt the NodeView and flickered the
+    // <img>; the predicate must refuse it.
+    expect(hoverClassTarget(elWith("local-image-wrap", "attachment-image"))).toBe(null);
+  });
+
+  it("returns null for a plain paragraph and for null", () => {
+    expect(hoverClassTarget(elWith())).toBe(null);
+    expect(hoverClassTarget(null)).toBe(null);
+  });
+});
 
 describe("isTrustedMouseHover", () => {
   it("trusts a mousemove when there has been no touch yet this session", () => {

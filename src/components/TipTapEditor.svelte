@@ -24,7 +24,7 @@
   import { migrateQASchema } from "../lib/extensions/migrate-qa-schema.js";
   import { stripPinIdsFromJSON } from "../lib/extensions/pin-id.js";
   import { isBoardType } from "../lib/extensions/block-title.js";
-  import { resolveHoveredMouseBlock } from "../lib/extensions/block-hover-guard.js";
+  import { resolveHoveredMouseBlock, hoverClassTarget } from "../lib/extensions/block-hover-guard.js";
   import { deleteBlockAt, resolveBlockPos } from "../lib/extensions/block-delete.js";
   import { writeClipboard } from "../lib/clipboard-write.js";
   import { sanitizePastedHtml } from "../lib/paste-sanitize.js";
@@ -798,13 +798,25 @@
   let hoveredMouseBlockEl = null;
   $effect(() => {
     const active = hoveredMouseBlock;
-    if (hoveredMouseBlockEl && hoveredMouseBlockEl !== active) {
+    // `.block-mouse-hovered` exists for ONE purpose: revealing a board's title
+    // slot on hover (see global.css). Its only consumers are `.block-shell` and
+    // `.code-block-wrap`. Stamping it on any OTHER NodeView root — notably an
+    // image/attachment wrapper (`.local-image-wrap`) — mutates that NodeView's
+    // own element, which ProseMirror's MutationObserver treats as a foreign DOM
+    // change and reconciles by REBUILDING the NodeView. For a Svelte NodeView
+    // that remounts the component and briefly tears down the <img>, and because
+    // mousemove re-runs this on every pixel of travel, the image flickers
+    // rapidly the whole time the cursor is over it. Restrict the stamp to the
+    // boards that actually use it; everything else was only ever paying the
+    // rebuild cost for a class that did nothing.
+    const board = hoverClassTarget(active);
+    if (hoveredMouseBlockEl && hoveredMouseBlockEl !== board) {
       hoveredMouseBlockEl.classList.remove("block-mouse-hovered");
     }
-    if (active) {
-      active.classList.add("block-mouse-hovered");
+    if (board) {
+      board.classList.add("block-mouse-hovered");
     }
-    hoveredMouseBlockEl = active;
+    hoveredMouseBlockEl = board;
   });
 
   function handleEditorMouseMove(e) {

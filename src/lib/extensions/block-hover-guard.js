@@ -79,3 +79,32 @@ export function resolveHoveredMouseBlock(found, lastTouchAt, now, guardMs = TOUC
   }
   return null;
 }
+
+/**
+ * hoverClassTarget — which element (if any) should carry `.block-mouse-hovered`.
+ *
+ * The class exists for ONE purpose: revealing a board's title slot on hover
+ * (global.css). Its only consumers are `.block-shell` and `.code-block-wrap`.
+ * Stamping it on any OTHER NodeView root — an image/attachment wrapper
+ * (`.local-image-wrap`) above all — mutates that NodeView's own element, which
+ * ProseMirror's MutationObserver treats as a foreign DOM change and reconciles
+ * by REBUILDING the NodeView. For a Svelte NodeView that remounts the component
+ * and tears down the <img>; because mousemove re-runs the stamp on every pixel,
+ * the image flickers the whole time the cursor is over it.
+ *
+ * Returning the element only when it is a board keeps the stamp where it does
+ * something and off everything that was only ever paying the rebuild cost.
+ *
+ * @param {Element|null} el - the currently hovered block element, or null.
+ * @returns {Element|null} `el` if it is a board that uses the class, else null.
+ */
+export function hoverClassTarget(el) {
+  if (
+    el &&
+    el.classList &&
+    (el.classList.contains("block-shell") || el.classList.contains("code-block-wrap"))
+  ) {
+    return el;
+  }
+  return null;
+}
