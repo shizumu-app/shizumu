@@ -8,7 +8,14 @@ sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
   - org.freedesktop.Sdk.Extension.node24
-command: shizumu
+# The command — and thus the launched binary's argv[0] — must equal the app-id.
+# On Wayland the compositor takes the surface's app_id from the GTK prgname
+# (argv[0] basename) and matches it to `<app_id>.desktop` to find the icon. With
+# command: shizumu the app_id was "shizumu" while the desktop file is
+# app.shizumu.Shizumu.desktop, so nothing matched and the taskbar showed a
+# generic icon on Wayland (StartupWMClass is X11-only and ignored there). The
+# main binary is installed under this same name below; shizumu-cli is unchanged.
+command: app.shizumu.Shizumu
 finish-args:
   - --share=ipc
   - --socket=fallback-x11
@@ -63,23 +70,35 @@ modules:
       - cargo --offline fetch --manifest-path src-tauri/Cargo.toml
       - cargo build --offline --release --manifest-path src-tauri/Cargo.toml
         --bin shizumu --bin shizumu-cli
-      - install -Dm755 src-tauri/target/release/shizumu ${FLATPAK_DEST}/bin/shizumu
+      # Install the GUI binary UNDER THE APP-ID so its argv[0] basename — and
+      # therefore the Wayland app_id — is app.shizumu.Shizumu, matching the
+      # exported desktop file and letting the compositor find the icon. The
+      # build still produces target/release/shizumu; only the installed name
+      # changes. shizumu-cli keeps its own name (it is not the windowed app).
+      - install -Dm755 src-tauri/target/release/shizumu ${FLATPAK_DEST}/bin/${FLATPAK_ID}
       - install -Dm755 src-tauri/target/release/shizumu-cli ${FLATPAK_DEST}/bin/shizumu-cli
 
       # 3. Desktop integration.
-      # Strip the native-install env wrapper from the .desktop's Exec line.
-      # Flatpak's exporter takes the first word of Exec= as the --command for
-      # `flatpak run`, so leaving "env GDK_BACKEND=x11" in place rewrites the
-      # exported launcher to "flatpak run --command=env … GDK_BACKEND=x11
-      # shizumu", which forces x11 inside the sandbox. With finish-args
-      # `--socket=fallback-x11`, no X11 socket is provided on Wayland
-      # sessions, so the desktop-icon launch fails silently while CLI launch
-      # (which uses the manifest's `command: shizumu` directly with no env
-      # override) works. Native rpm/deb keep the env wrapper for the v0.2.1
-      # webkit Wayland-input fix.
+      # Strip the native-install env wrapper from the .desktop's Exec line and
+      # point it at the app-id-named binary. Flatpak's exporter takes the first
+      # word of Exec= as the --command for `flatpak run`, so leaving
+      # "env GDK_BACKEND=x11" in place rewrites the exported launcher to
+      # "flatpak run --command=env … GDK_BACKEND=x11 shizumu", which forces x11
+      # inside the sandbox. With finish-args `--socket=fallback-x11`, no X11
+      # socket is provided on Wayland sessions, so the desktop-icon launch fails
+      # silently while CLI launch works. Native rpm/deb keep the env wrapper for
+      # the v0.2.1 webkit Wayland-input fix. The value is now the app-id (see the
+      # `command:` note above) so the Wayland app_id matches this desktop file's
+      # basename and the icon resolves.
       # desktop-file-edit, not sed — this is what flathub review settled on
       # (flathub commit b61d94e). Keep it.
-      - desktop-file-edit --set-key=Exec --set-value=shizumu
+      - desktop-file-edit --set-key=Exec --set-value=${FLATPAK_ID}
+        src-tauri/resources/app.shizumu.Shizumu.desktop
+      # Under --socket=fallback-x11 the renamed binary's X11 WM_CLASS is now the
+      # app-id too, so the X11 icon match needs StartupWMClass to follow. Only
+      # the flatpak's copy is edited here; native deb/rpm keep StartupWMClass
+      # =shizumu, which is right for their `shizumu` binary.
+      - desktop-file-edit --set-key=StartupWMClass --set-value=${FLATPAK_ID}
         src-tauri/resources/app.shizumu.Shizumu.desktop
       - install -Dm644 src-tauri/resources/app.shizumu.Shizumu.desktop
         ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
