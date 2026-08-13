@@ -264,7 +264,13 @@
       border: none;
       padding: 1rem;
       padding-top: max(1rem, var(--safe-top));
-      padding-bottom: max(1rem, var(--safe-bottom));
+      /* Reserve the fixed MobileActionBar's height (z-index:1000, above this
+         modal at z-index:201) so the modal's last content — the cancel/join
+         action row of the pairing wizard — can scroll clear of the bar instead
+         of sitting hidden behind pages/memory/settings. --mobile-bar-h already
+         folds in the bottom safe-area. Same clearance pattern as Memory and
+         SidebarShell. */
+      padding-bottom: calc(var(--mobile-bar-h) + 0.75rem);
       padding-left: max(1rem, var(--safe-left));
       padding-right: max(1rem, var(--safe-right));
       box-shadow: none;

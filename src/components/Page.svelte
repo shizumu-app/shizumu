@@ -1118,7 +1118,11 @@
     // swipe-to-memory flick — that would tear the sheet down mid-scroll,
     // reading as "the sheet doesn't open" when it's actually closing under
     // the user's thumb before they finish reading it.
-    ignoreSelector: ".tiptap-editor, .thread-scroll, .scrollable, .panel-list, .memory-list, .sheet, textarea, input",
+    // .modal / .modal-body: the settings/sync modal renders INSIDE .page (it is
+    // only visually detached via position:fixed, not portaled), so scrolling
+    // its body bubbled to this flick and jumped to memory — pronounced once the
+    // pairing wizard makes the pane taller than the viewport and it can scroll.
+    ignoreSelector: ".tiptap-editor, .thread-scroll, .scrollable, .panel-list, .memory-list, .sheet, .modal, .modal-body, textarea, input",
   }}
 >
 

@@ -46,6 +46,21 @@
   let lineages = $state([]);
   let isOpen = $state(false);
   let filterText = $state("");
+  // Focus the trail-name field imperatively when the panel opens. The bare
+  // `autofocus` attribute does NOT raise the on-screen keyboard in a mobile
+  // webview, so the create-trail sheet sat at the bottom with an un-typable
+  // field AND — because the keyboard never opened — BottomSheet's keyboard-lift
+  // never engaged, leaving it stuck. requestAnimationFrame(() => el.focus())
+  // is the pattern the app's other sheet inputs use (SharePopup, CommandPalette,
+  // TrailIndex); it fires the focus after the input mounts and reliably brings
+  // the keyboard up, which in turn triggers the sheet's existing lift.
+  let searchInputEl = $state();
+  $effect(() => {
+    if (isOpen && searchInputEl) {
+      const el = searchInputEl;
+      requestAnimationFrame(() => { try { el.focus(); } catch {} });
+    }
+  });
   let currentLineage = $state(null);
   let selectedParent = $state(null);
   let showNestPicker = $state(false);
@@ -151,6 +166,15 @@
   let actionMenuFor = $state(null);
   let renamingTrail = $state(null);
   let renameValue = $state("");
+  // Same imperative-focus reason as the search field above: autofocus alone
+  // won't raise the mobile keyboard when the rename input mounts.
+  let renameInputEl = $state();
+  $effect(() => {
+    if (renamingTrail && renameInputEl) {
+      const el = renameInputEl;
+      requestAnimationFrame(() => { try { el.focus(); el.select?.(); } catch {} });
+    }
+  });
   let renameError = $state("");
   let movingTrail = $state(null);
   let moveTargetParentId = $state(null);
@@ -379,13 +403,13 @@
 
     {#snippet dropdownBody()}
       <input
+        bind:this={searchInputEl}
         type="text"
         class="lineage-search selectable"
         placeholder="search or create..."
         bind:value={filterText}
         onkeydown={handleKeydown}
         spellcheck="false"
-        autofocus
       />
 
         <div class="lineage-list">
@@ -420,8 +444,8 @@
                     <span class="tree-chevron-spacer" aria-hidden="true"></span>
                   {/if}
                   {#if renamingTrail?.id === lineage.id}
-                    <!-- svelte-ignore a11y_autofocus -->
                     <input
+                      bind:this={renameInputEl}
                       type="text"
                       class="rename-input"
                       bind:value={renameValue}
@@ -429,7 +453,6 @@
                       onblur={confirmRename}
                       onclick={(e) => e.stopPropagation()}
                       onmousedown={(e) => e.stopPropagation()}
-                      autofocus
                       spellcheck="false"
                     />
                   {:else}
