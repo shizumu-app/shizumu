@@ -119,6 +119,39 @@
   /* shizumu's warm orange marks the region — quiet but on-brand. */
   border-left: 1px solid color-mix(in srgb, var(--warm-accent) 26%, transparent);
 }
+/* Code-review fix (post-120d403): on touch, tapping a block reveals its
+   title as an absolutely-positioned overlay anchored with `bottom: 100%`
+   (global.css, `.block-active-touch > .board-title-slot`) so it renders
+   entirely ABOVE the block's own border-box, never over its content. That
+   only works if there is reserved space above the box for it to render
+   into — a `position: absolute` child doesn't push layout, so without a
+   real top margin the overlay would render into the PREVIOUS block's
+   bottom margin / content instead of blank space.
+   2.3em ≈ 36.8px at the default 16px `--editor-font-size` comfortably
+   covers the slot's own `max-height: 2.6em` (itself 0.78em font-size *
+   1.9 line-height * 2.6 ≈ 32.4px) — both figures share the same
+   inherited-font-size em chain, so the reserved margin tracks the slot's
+   real rendered height at any editor font size, not just the default.
+   Applies to `.block-shell` AND `.code-block-wrap` — the latter's NodeView
+   (code-block.js) stamps both classes on the same element via
+   createBlockShell, so this selector already covers it, but it's named
+   explicitly below too since that sharing is an implementation detail.
+   Desktop is unaffected: hover-reveal keeps the original in-flow
+   max-height/margin animation (no `(hover: none)`), and this permanent
+   margin bump only ever applies on touch. */
+@media (hover: none) {
+  .prose .block-shell,
+  .prose .code-block-wrap {
+    margin-top: 2.3em;
+  }
+  /* Nested boards (a list inside a list item) intentionally keep zero
+     margin — see the `.board-content .block-shell` rule below, which wins
+     on specificity regardless of this media query. They fall back to the
+     same pre-existing behavior as before this fix (no reserved space);
+     tap-to-reveal there is rare enough (nested list items rarely carry a
+     block title) that it is left as a known gap rather than widening
+     every nested list row's spacing to cover it. */
+}
 /* The content hugs the hairline: zero the board content's own margin so the
    left rule doesn't float above/below it (the shell's margin handles the gap
    to neighbouring blocks). */

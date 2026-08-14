@@ -10,7 +10,7 @@
     foldLineage,
   } from "../lib/api.js";
   import { buildTreeList, isItemVisible, getDescendantIds } from "../lib/trail-utils.js";
-  import { isPhoneViewport, watchPhoneViewport } from "../lib/responsive.js";
+  import { isPhoneViewport, watchPhoneViewport, isCoarsePointer } from "../lib/responsive.js";
   import { focusField } from "../lib/focus-field.js";
   import BottomSheet from "../lib/ui/BottomSheet.svelte";
   import TriggerChip from "../lib/ui/TriggerChip.svelte";
@@ -55,10 +55,18 @@
   // is the pattern the app's other sheet inputs use (SharePopup, CommandPalette,
   // TrailIndex); it fires the focus after the input mounts and reliably brings
   // the keyboard up, which in turn triggers the sheet's existing lift.
+  // Tap-to-type on touch (user-approved redesign): a mobile webview only
+  // raises the IME for focus that traces to a user gesture — programmatic
+  // .focus() cannot be relied on and cannot be "raced" or collapsed into
+  // one. So on a coarse (touch) pointer the sheet opens with a large,
+  // obviously tappable field that is NOT auto-focused; the user taps it
+  // and the tap itself raises the keyboard. Desktop (fine pointer) keeps
+  // the old autofocus-on-open behavior.
   let searchInputEl = $state();
   $effect(() => {
-    if (isOpen && searchInputEl) focusField(searchInputEl);
-    else if (!isOpen && searchInputEl) focusField.reset(searchInputEl);
+    if (isOpen && searchInputEl) {
+      if (!isCoarsePointer()) focusField(searchInputEl);
+    } else if (!isOpen && searchInputEl) focusField.reset(searchInputEl);
   });
   let currentLineage = $state(null);
   let selectedParent = $state(null);
@@ -167,10 +175,12 @@
   let renameValue = $state("");
   // Same imperative-focus reason as the search field above: autofocus alone
   // won't raise the mobile keyboard when the rename input mounts.
+  // Same tap-to-type rationale as the search field above.
   let renameInputEl = $state();
   $effect(() => {
-    if (renamingTrail && renameInputEl) focusField(renameInputEl, { select: true });
-    else if (!renamingTrail && renameInputEl) focusField.reset(renameInputEl);
+    if (renamingTrail && renameInputEl) {
+      if (!isCoarsePointer()) focusField(renameInputEl, { select: true });
+    } else if (!renamingTrail && renameInputEl) focusField.reset(renameInputEl);
   });
   let renameError = $state("");
   let movingTrail = $state(null);
@@ -729,9 +739,15 @@
     width: 100%;
     padding: 0;
   }
+  /* Tap-to-type (commit 2): the field is no longer auto-focused on touch,
+     so it needs to visibly invite a tap on its own — a resting border and
+     a thumb-height hit area, not just a placeholder hoping to be noticed. */
   .lineage-sheet :global(.lineage-search) {
     font-size: 1rem;
+    min-height: max(var(--touch-target), 44px);
     padding: 0.875rem 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+    border-radius: var(--radius-sm);
   }
   .lineage-sheet :global(.lineage-list) {
     max-height: 60dvh;

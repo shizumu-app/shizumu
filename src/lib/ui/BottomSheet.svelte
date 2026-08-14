@@ -129,34 +129,14 @@
     }
   });
 
-  // Backstop for Android WebView quirks (Samsung's WebView sometimes
-  // doesn't reflow fixed-position elements when adjustResize/IME fires):
-  // when an input inside the sheet receives focus, wait for the IME
-  // animation to settle, then scrollIntoView the input. The browser
-  // handles the parent-scroll math for us.
-  $effect(() => {
-    if (!open || !sheetEl) return;
-    // Capture the live element now — the cleanup below closes over `el`,
-    // not the reactive `sheetEl` binding. bind:this nulls `sheetEl` as part
-    // of this same block's teardown (the sheet's markup is behind
-    // `{#if open}`), and if that happens before this effect's cleanup runs,
-    // `sheetEl.removeEventListener(...)` throws on a null reference —
-    // exactly the race that silently killed "+ new page" from PageNav's
-    // pages sheet (PageNav.svelte:213 flips `open` to false right after
-    // firing the create).
-    const el = sheetEl;
-    const onFocusIn = (e) => {
-      const target = e.target;
-      if (!(target instanceof HTMLElement)) return;
-      if (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA" && !target.isContentEditable) return;
-      // 350ms covers the IME slide-in across most Android phones.
-      setTimeout(() => {
-        try { target.scrollIntoView({ block: "center", behavior: "smooth" }); } catch {}
-      }, 350);
-    };
-    el.addEventListener("focusin", onFocusIn);
-    return () => el.removeEventListener("focusin", onFocusIn);
-  });
+  // A focusin scrollIntoView backstop used to live here (Android WebView
+  // quirk workaround). It's gone: the sheet now lifts itself above the
+  // keyboard via `bottom: var(--kb-inset, 0px)` (see the .sheet rule
+  // below), so the field is already in view without a scroll — and the
+  // backstop's smooth-scroll animation was itself firing a stream of vv
+  // scroll events that fought keyboard-state.js's scroll reset, which is
+  // what caused the "keyboard appears then collapses" bug (see
+  // keyboard-state.js's activeElement guard, the other half of that fix).
 
   onMount(() => {
     if (typeof window === "undefined") return;
@@ -233,8 +213,16 @@
     box-shadow: 0 -0.5rem 2rem var(--card-shadow-hover);
     /* Fill the space between the system status bar and the
        MobileActionBar so long content (filter sheet with calendar +
-       sort + filter sections) is mostly visible without scrolling. */
-    max-height: calc(100dvh - var(--safe-top) - 2rem);
+       sort + filter sections) is mostly visible without scrolling.
+       --app-height (keyboard-state.js), not 100dvh: dvh is the LAYOUT
+       viewport and doesn't shrink for the soft keyboard, so a tall sheet
+       capped against it — even with `bottom` already pulled up by
+       --kb-inset above — can still be TALLER than the space actually
+       available above the keyboard, pushing the sheet's own top (handle,
+       title) off the top of the visible area. Capping against the visible
+       viewport instead means the sheet can never be taller than the room
+       it actually has, keyboard open or not. */
+    max-height: calc(var(--app-height, 100dvh) - var(--safe-top) - 2rem);
     overflow-y: auto;
     padding:
       0.5rem

@@ -258,8 +258,17 @@
       transform: none;
       width: 100%;
       max-width: 100%;
-      height: 100dvh;
-      max-height: 100dvh;
+      /* 100dvh is the LAYOUT viewport (see viewport-height.js's header
+         comment) — it does not shrink when the soft keyboard opens under
+         resizes-visual, so once tall content (e.g. the pairing wizard)
+         renders and/or the keyboard opens, a modal fixed to 100dvh is
+         taller than what's actually visible: its bottom (the action row)
+         sinks below the reachable area. --app-height is the VISIBLE
+         viewport height, published live by keyboard-state.js (the app's
+         single viewport-state owner) — use that, with 100dvh only as the
+         pre-script fallback for first paint. */
+      height: var(--app-height, 100dvh);
+      max-height: var(--app-height, 100dvh);
       border-radius: 0;
       border: none;
       padding: 1rem;

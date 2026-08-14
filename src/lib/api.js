@@ -782,6 +782,7 @@ export function createMockInvoke() {
       case "save_image_file":
       case "op_log_stats":
       case "sync_status":
+      case "sync_flush_now":
       case "sync_quota":
       case "sync_setup":
       case "sync_enroll":
@@ -1304,6 +1305,20 @@ export async function syncForceReupload() {
 
 export async function syncStatus() {
   return call("sync_status");
+}
+
+/// Blocking upload pass, run inline on the Rust side right now instead of
+/// waiting for the worker thread's next scheduled tick. Called from the
+/// app's `visibilitychange` / `pagehide` handlers — on Android the worker
+/// thread can be frozen the instant the app backgrounds, so a debounced
+/// `wake_after` flag it may never get scheduled to notice is not enough;
+/// this is the last chance to get pending writes out before that happens.
+/// Fire-and-forget from the caller's side (no UI is awaiting this), but
+/// the promise itself always resolves — the Rust command never throws,
+/// even when sync is off or unconfigured (see sync_flush_now's doc
+/// comment in commands.rs).
+export async function syncFlushNow() {
+  return call("sync_flush_now");
 }
 
 /// Last N sync errors (default 20, clamped 1..=50 server-side) for

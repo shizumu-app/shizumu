@@ -195,6 +195,17 @@ pub fn attachment_set_sync(
                 handle.wake();
             }
         }
+    } else {
+        // The off edge doesn't queue an object upload, but
+        // attachment_set_sync_inner still commits an `attachment_revocation`
+        // op straight to the log on that path (see its body) — that op had
+        // no wake at all before this, on-off toggles unlike every on-edge
+        // toggle above. Debounced (not the immediate `.wake()` above): a
+        // revocation is not latency-sensitive the way an upload-in-progress
+        // nudge is.
+        if let Ok(conn) = db.lock() {
+            crate::commands::schedule_sync_wake(&worker_slot, &conn);
+        }
     }
     Ok(())
 }

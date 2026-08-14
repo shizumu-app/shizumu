@@ -43,6 +43,36 @@ describe("hoverClassTarget — only boards carry .block-mouse-hovered", () => {
   });
 });
 
+// Mobile-stability item 4: touch parity with desktop hover. A touch
+// pointerdown ANYWHERE inside a block now stamps `.block-active-touch`
+// (TipTapEditor.svelte's handleEditorPointerDown), not just the deliberate
+// margin-tap gesture — and it filters the found element through this SAME
+// hoverClassTarget predicate before assigning it, mirroring exactly how
+// hoveredMouseBlock is filtered above. Locking that shared contract here:
+// if hoverClassTarget's board-type set ever narrows or widens, both the
+// desktop hover reveal AND the touch tap reveal move together instead of
+// silently drifting apart (e.g. a tap on a day-marker or an image wrapper
+// must never stamp a class nothing reads, on touch any more than on hover).
+describe("hoverClassTarget — also gates the touch tap-to-reveal (mobile-stability item 4)", () => {
+  it("a tap that lands on a board (.block-shell) is a valid touch-active target", () => {
+    const board = elWith("block-shell");
+    expect(hoverClassTarget(board)).toBe(board);
+  });
+
+  it("a tap that lands on a code board (.code-block-wrap) is a valid touch-active target", () => {
+    const code = elWith("code-block-wrap");
+    expect(hoverClassTarget(code)).toBe(code);
+  });
+
+  it("a tap that lands on a non-board top-level node (e.g. a day marker) is refused", () => {
+    expect(hoverClassTarget(elWith("day-marker"))).toBe(null);
+  });
+
+  it("a tap that finds no block at all is refused", () => {
+    expect(hoverClassTarget(null)).toBe(null);
+  });
+});
+
 describe("isTrustedMouseHover", () => {
   it("trusts a mousemove when there has been no touch yet this session", () => {
     expect(isTrustedMouseHover(0, 1_000_000)).toBe(true);

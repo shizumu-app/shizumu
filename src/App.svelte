@@ -5,7 +5,8 @@
   import Memory from "./components/Memory.svelte";
   import Onboarding from "./components/Onboarding.svelte";
   import LockScreen from "./components/LockScreen.svelte";
-  import { checkOnboardingComplete, getSetting, checkEncryptionStatus, createNewPage } from "./lib/api.js";
+  import { checkOnboardingComplete, getSetting, checkEncryptionStatus, createNewPage, syncFlushNow } from "./lib/api.js";
+  import { installSyncFlushOnHide } from "./lib/sync-flush-on-hide.js";
   import { getLocalDateStr } from "./lib/utils.js";
   import MobileActionBar from "./components/MobileActionBar.svelte";
   import { isMobileNav, watchMobileNav, watchKeyboardOpen } from "./lib/responsive.js";
@@ -171,6 +172,11 @@
       continueFocus = result?.page || null;
       space = "page";
     };
+
+    // Flush pending sync uploads before the OS suspends the process — see
+    // lib/sync-flush-on-hide.js for why this is two events, not one, and
+    // why both are fire-and-forget.
+    installSyncFlushOnHide({ syncFlushNow });
 
     try {
       onboardingComplete = await checkOnboardingComplete();

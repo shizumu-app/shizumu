@@ -24,6 +24,7 @@ export const STATES = {
   KEYBOARD: "keyboard",
   PIN_PANEL: "pin-panel",
   WHAT_SETTLED: "what-settled",
+  BLOCK_TITLE_TOUCH: "block-title-touch",
 };
 
 
@@ -33,6 +34,10 @@ export const SCENES = {
   "page-content": {
     space: "page", fixture: FIXTURES.pageWithContent, onboarding: false,
     states: [STATES.BLOCK_HANDLES, STATES.KEYBOARD, STATES.PIN_PANEL, STATES.WHAT_SETTLED],
+  },
+  "page-board-content": {
+    space: "page", fixture: FIXTURES.pageWithBoardContent, onboarding: false,
+    states: [STATES.BLOCK_TITLE_TOUCH],
   },
   "memory-list": { space: "memory", fixture: FIXTURES.memoryWithPages, onboarding: false },
   "pin-view": { space: "memory", fixture: FIXTURES.pinsRich, onboarding: false },

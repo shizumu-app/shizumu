@@ -998,6 +998,32 @@
     blockAlreadyPinned = existingPinContents.has(block.textContent?.trim());
   }
 
+  // Mobile-stability item 5: the floating touch bar is a ONE-SHOT
+  // measurement (revealHandleForBlock, taken at long-press/margin-tap
+  // time) that then sits on screen for up to TOUCH_HANDLE_REVEAL_MS
+  // (armTouchHandleHide) — long enough for the user to keep typing in
+  // that same block. Desktop hover never goes stale this way because
+  // handleEditorMouseMove re-measures on every mousemove; touch has no
+  // equivalent continuous signal. If the block gains a wrapped line while
+  // the bar is still up, the bar — still positioned against the OLD,
+  // shorter height (placeHandleBar's "below" placement is
+  // `blockTop + blockHeight + gap`) — ends up sitting exactly where the
+  // NEW line now renders: the on-device report of the pill covering the
+  // block's second line. Re-running the same measurement whenever the
+  // active block's own box actually changes size keeps the bar honest for
+  // the lifetime of the reveal, the touch equivalent of what continuous
+  // mousemove tracking already gives the mouse path. Scoped to
+  // `gutterless` (the floating-bar layout) — the gutter column's `top`
+  // never depends on blockHeight, so it has nothing to go stale.
+  $effect(() => {
+    if (!gutterless || !handleVisible || !hoveredBlock) return;
+    if (typeof ResizeObserver === "undefined") return;
+    const target = hoveredBlock;
+    const ro = new ResizeObserver(() => revealHandleForBlock(target));
+    ro.observe(target);
+    return () => ro.disconnect();
+  });
+
   function armTouchHandleHide() {
     // A control that removes itself after four seconds cannot be
     // photographed: toHaveScreenshot's stability pass takes longer than
@@ -1029,38 +1055,41 @@
   // hover-reveal is scoped to `(hover: hover)` (see global.css) so a tap
   // can never accidentally steal focus into it — but that also meant
   // touch users had NO path to reach an existing block's title at all.
-  // Mirror the block-handles touch-reveal state (handleVisible +
-  // hoveredBlock, set by revealHandleForBlock() from the margin-tap path
-  // in handleEditorPointerDown) onto a DOM class so a matching
+  // Mirror the reveal state onto a DOM class so a matching
   // `@media (hover: none)` rule can reveal + re-enable the SAME block's
-  // title. Tapping the block's margin now reveals handles AND the title
-  // together; a follow-up tap directly on the (now visible, now
-  // pointer-events:auto) title slot then focuses it normally.
-  // Coordinator branch-review fix (item 2), take 2: `handleVisible` +
-  // `hoveredBlock` are NOT a safe signal for "the user deliberately
-  // margin-tapped this block" — handleEditorMouseMove (bound for the
-  // desktop hover path) also gets driven by the synthetic
-  // mousemove/mouseenter compatibility events Chromium dispatches after
-  // ANY touch tap, ANYWHERE on a block (not just the margin — that
-  // handler doesn't check X at all, only Y-range). Mirroring
-  // handleVisible/hoveredBlock directly re-opened the exact D-6 hole this
-  // was meant to close: tapping a fresh board's BODY set hoveredBlock via
-  // that compat mousemove, which then (via the class) revealed +
-  // re-enabled the title right under the tap. `touchActiveBoard` is a
-  // dedicated signal set ONLY by the deliberate margin-tap gesture
-  // (handleEditorPointerDown's `inMargin` branch) and cleared by the same
-  // touch-hide timer that hides the block-handles column.
+  // title, exactly like `.block-mouse-hovered` does for desktop hover
+  // (hoveredMouseBlock above) — a follow-up tap directly on the (now
+  // visible, now pointer-events:auto) title slot then focuses it normally.
+  // Coordinator branch-review fix (item 2), take 2: this can't be driven
+  // by handleVisible/hoveredBlock (the block-handles reveal state) —
+  // handleEditorMouseMove (bound for the desktop hover path) also gets
+  // driven by the synthetic mousemove/mouseenter compatibility events
+  // Chromium dispatches after ANY touch tap, ANYWHERE on a block (not
+  // just the margin — that handler doesn't check X at all, only
+  // Y-range). Mirroring handleVisible/hoveredBlock directly re-opened the
+  // exact D-6 hole this was meant to close. `touchActiveBoard` is instead
+  // a dedicated signal, set directly by handleEditorPointerDown's own
+  // pointerType==="touch" branch — never by mouse-compat events.
+  // Mobile-stability item 4: originally set ONLY by the deliberate
+  // margin-tap gesture (parity gap — a block read as titleless until the
+  // user found that gesture). Now set on ANY touch pointerdown inside a
+  // block (see handleEditorPointerDown), giving touch the same "tap it to
+  // see its title" parity desktop hover already has. Filtered through
+  // hoverClassTarget — the identical board/code-wrap-only filter the
+  // desktop hover effect above applies — so this stays the single
+  // stamping path for `.block-active-touch` regardless of which gesture
+  // (margin-tap or body-tap) set it.
   let touchActiveBoard = $state(null);
   let touchActiveBlockEl = null;
   $effect(() => {
-    const active = touchActiveBoard;
-    if (touchActiveBlockEl && touchActiveBlockEl !== active) {
+    const board = hoverClassTarget(touchActiveBoard);
+    if (touchActiveBlockEl && touchActiveBlockEl !== board) {
       touchActiveBlockEl.classList.remove("block-active-touch");
     }
-    if (active) {
-      active.classList.add("block-active-touch");
+    if (board) {
+      board.classList.add("block-active-touch");
     }
-    touchActiveBlockEl = active;
+    touchActiveBlockEl = board;
   });
 
   function clearLongPress() {
@@ -1123,16 +1152,32 @@
     // committed once the finger actually moves.
     const inMargin = !gutterless && e.clientX < editorRect.left + 32;
 
+    // Touch parity with desktop hover (mobile-stability, item 4): tapping a
+    // block ANYWHERE inside it reveals its title — a tap used to only do
+    // that via the deliberate margin gesture below, so a block read as
+    // having no title at all until the user discovered that gesture.
+    // Reuses the SAME touchActiveBoard state + $effect the margin-tap path
+    // already drove (see that effect for the class-stamping mechanism) —
+    // no second stamping path. hoverClassTarget is the identical filter
+    // the desktop hover path applies (block-shell / code-block-wrap only —
+    // see block-hover-guard.js) so a tap on some other top-level
+    // ProseMirror child (a dayMarker, say) doesn't stamp a class nothing
+    // reads. Assigning the raw (unfiltered) find here and filtering inside
+    // the effect mirrors hoveredMouseBlock's own shape exactly.
+    const block = findBlockAtY(e.clientY);
+    touchActiveBoard = block;
+    // Code-review fix (post-120d403): this path used to set
+    // touchActiveBoard without arming the same auto-hide timer the
+    // margin-tap and long-press paths both call — the reveal never
+    // cleared on its own and could sit up indefinitely while the user
+    // kept typing. Same timer, same TOUCH_HANDLE_REVEAL_MS, so a
+    // body-tap reveal behaves identically to every other touch reveal.
+    if (block) armTouchHandleHide();
+
     if (inMargin) {
-      const block = findBlockAtY(e.clientY);
       if (block) {
         revealHandleForBlock(block);
         armTouchHandleHide();
-        // Coordinator branch-review fix (item 2): only the deliberate
-        // margin-tap gesture reveals the title — see touchActiveBoard's
-        // declaration for why handleVisible/hoveredBlock alone aren't a
-        // safe signal for this.
-        touchActiveBoard = block;
       }
       return;
     }
@@ -1140,14 +1185,13 @@
     // Not in the margin → arm long-press for drag-to-reorder. Cancelled
     // by pointerup, pointercancel, or significant movement before the
     // 700ms timer fires.
-    const targetBlock = findBlockAtY(e.clientY);
-    if (!targetBlock) return;
+    if (!block) return;
     const startY = e.clientY;
     clearLongPress();
     longPressTimer = setTimeout(() => {
       // Verify the user hasn't already lifted / moved away. (Move/leave
       // handlers clear longPressTimer.)
-      startDrag(targetBlock, startY);
+      startDrag(block, startY);
     }, TOUCH_LONG_PRESS_MS);
   }
 
@@ -2613,7 +2657,11 @@
                 background var(--motion-fast);
   }
 
-  /* Block handles — inside the 32px left padding, left of text */
+  /* Block handles — inside the 32px left padding, left of text.
+     No padding/border trick expands the hit area beyond this box (unlike
+     the board-title-slot's D-6 history) — `display: flex` sizes the
+     container to exactly its visible content + padding + border, so it
+     never claims pointer-events over text it isn't visibly covering. */
   .block-handles {
     position: absolute;
     left: 2px;

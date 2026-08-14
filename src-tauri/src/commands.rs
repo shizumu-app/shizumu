@@ -39,8 +39,18 @@ fn load_page_with_lines(conn: &rusqlite::Connection, page: Page) -> Result<PageW
 pub fn get_or_create_today(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
 ) -> Result<PageWithLines, String> {
-    get_or_create_today_inner(&db, &engine)
+    let result = get_or_create_today_inner(&db, &engine)?;
+    // Only the create branch inside `_inner` actually emits an op (an
+    // existing today-page is a pure read) — wake unconditionally anyway,
+    // same as `save_page_content`: a wake when nothing was queued is a
+    // harmless no-op tick, and keeping the two conditions in sync here
+    // would be one more place for them to drift apart.
+    if let Ok(conn) = db.lock() {
+        schedule_sync_wake(&worker_slot, &conn);
+    }
+    Ok(result)
 }
 
 pub fn get_or_create_today_inner(
@@ -148,6 +158,7 @@ pub fn get_page(
 pub fn save_line(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     page_id: String,
     input: SaveLineInput,
 ) -> Result<Line, String> {
@@ -230,6 +241,7 @@ pub fn save_line(
             "state": &line.state,
         }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(line)
 }
@@ -238,9 +250,14 @@ pub fn save_line(
 pub fn create_new_page(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     date: String,
 ) -> Result<PageWithLines, String> {
-    create_new_page_inner(&db, &engine, &date)
+    let result = create_new_page_inner(&db, &engine, &date)?;
+    if let Ok(conn) = db.lock() {
+        schedule_sync_wake(&worker_slot, &conn);
+    }
+    Ok(result)
 }
 
 pub fn create_new_page_inner(
@@ -307,6 +324,7 @@ pub fn create_new_page_inner(
 pub fn clone_page_for_new_day(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     source_page_id: String,
     target_date: String,
 ) -> Result<PageWithLines, String> {
@@ -378,6 +396,7 @@ pub fn clone_page_for_new_day(
             "what_matters_now": &source.what_matters_now,
         }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(PageWithLines {
         page,
@@ -427,8 +446,18 @@ fn strip_pin_ids_in_place(node: &mut serde_json::Value) {
 pub fn cleanup_orphan_pages(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
 ) -> Result<i64, String> {
-    cleanup_orphan_pages_inner(&db, &engine)
+    let deleted = cleanup_orphan_pages_inner(&db, &engine)?;
+    // Only wake when something was actually tombstoned — this runs on
+    // every app boot, and most boots find nothing to sweep; waking the
+    // worker on every single launch regardless would be a needless tick.
+    if deleted > 0 {
+        if let Ok(conn) = db.lock() {
+            schedule_sync_wake(&worker_slot, &conn);
+        }
+    }
+    Ok(deleted)
 }
 
 /// True when a local sweep of this (already-confirmed-locally-empty) page
@@ -592,6 +621,7 @@ pub fn cleanup_orphan_pages_inner(db: &Db, engine: &op_log::OpLog) -> Result<i64
 pub fn update_what_matters_now(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     page_id: String,
     text: String,
 ) -> Result<(), String> {
@@ -617,6 +647,7 @@ pub fn update_what_matters_now(
         "update_what_matters_now",
         serde_json::json!({ "text": &text }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -625,6 +656,7 @@ pub fn update_what_matters_now(
 pub fn update_what_shifted(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     page_id: String,
     text: Option<String>,
 ) -> Result<(), String> {
@@ -667,6 +699,7 @@ pub fn update_what_shifted(
         "update_what_shifted",
         serde_json::json!({ "text": trimmed }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -814,6 +847,7 @@ pub fn get_trail_page_counts_inner(
 pub fn strike_line(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     line_id: String,
     state: String,
 ) -> Result<(), String> {
@@ -841,6 +875,7 @@ pub fn strike_line(
             "strike_line",
             serde_json::json!({ "line_id": &line_id, "state": &state }),
         );
+        schedule_sync_wake(&worker_slot, &conn);
     }
 
     Ok(())
@@ -886,6 +921,7 @@ pub fn check_onboarding_complete(db: State<'_, Db>) -> Result<bool, String> {
 pub fn mark_onboarding_complete(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
 ) -> Result<(), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
 
@@ -896,6 +932,7 @@ pub fn mark_onboarding_complete(
     .map_err(|e| e.to_string())?;
 
     op_log::emit_setting(&engine, &conn, "onboarding_complete", Some("true"));
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -1196,6 +1233,7 @@ pub fn get_setting(db: State<'_, Db>, key: String) -> Result<Option<String>, Str
 pub fn set_setting(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     key: String,
     value: String,
 ) -> Result<(), String> {
@@ -1208,6 +1246,7 @@ pub fn set_setting(
     .map_err(|e| e.to_string())?;
 
     op_log::emit_setting(&engine, &conn, &key, Some(&value));
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -1218,6 +1257,7 @@ pub fn set_close_to_tray(
     app: tauri::AppHandle,
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     enabled: bool,
 ) -> Result<(), String> {
     use crate::tray::CloseToTray;
@@ -1236,6 +1276,7 @@ pub fn set_close_to_tray(
     .map_err(|e| e.to_string())?;
 
     op_log::emit_setting(&engine, &conn, "close_to_tray", Some(val));
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -1334,6 +1375,7 @@ pub fn get_open_focuses(db: State<'_, Db>) -> Result<Vec<PageSummary>, String> {
 pub fn update_line_text(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     line_id: String,
     text: String,
 ) -> Result<(), String> {
@@ -1393,6 +1435,7 @@ pub fn update_line_text(
             "update_line_text",
             serde_json::json!({ "line_id": &line_id, "text": &text }),
         );
+        schedule_sync_wake(&worker_slot, &conn);
     }
 
     Ok(())
@@ -1570,6 +1613,7 @@ pub fn get_focus_picker_list(db: State<'_, Db>) -> Result<Vec<PageSummary>, Stri
 pub fn set_focus_parent(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     page_id: String,
     parent_id: String,
 ) -> Result<(), String> {
@@ -1589,6 +1633,7 @@ pub fn set_focus_parent(
         "set_focus_parent",
         serde_json::json!({ "parent_id": &parent_id }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -1927,11 +1972,16 @@ pub fn get_lineages(db: State<'_, Db>) -> Result<Vec<Lineage>, String> {
 pub fn create_lineage(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     name: String,
     mode: Option<String>,
     parent_id: Option<String>,
 ) -> Result<Lineage, String> {
-    create_lineage_inner(&db, &engine, name, mode, parent_id)
+    let result = create_lineage_inner(&db, &engine, name, mode, parent_id)?;
+    if let Ok(conn) = db.lock() {
+        schedule_sync_wake(&worker_slot, &conn);
+    }
+    Ok(result)
 }
 
 pub fn create_lineage_inner(
@@ -2009,10 +2059,15 @@ pub fn check_continuous_invariant(
 pub fn set_focus_lineage(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     page_id: String,
     lineage_id: Option<String>,
 ) -> Result<(), String> {
-    set_focus_lineage_inner(&db, &engine, &page_id, lineage_id)
+    set_focus_lineage_inner(&db, &engine, &page_id, lineage_id)?;
+    if let Ok(conn) = db.lock() {
+        schedule_sync_wake(&worker_slot, &conn);
+    }
+    Ok(())
 }
 
 pub fn set_focus_lineage_inner(
@@ -2125,6 +2180,7 @@ pub fn get_canonical_trail_page(
 pub fn delete_lineage(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     lineage_id: String,
     target_lineage_id: Option<String>,
 ) -> Result<(), String> {
@@ -2198,6 +2254,7 @@ pub fn delete_lineage(
                 }),
             },
         );
+        schedule_sync_wake(&worker_slot, &conn);
     }
 
     Ok(())
@@ -2257,6 +2314,7 @@ pub fn rename_lineage_inner(
 pub fn rename_lineage(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     lineage_id: String,
     new_name: String,
 ) -> Result<Lineage, String> {
@@ -2269,6 +2327,7 @@ pub fn rename_lineage(
         "rename_lineage",
         serde_json::json!({ "name": new_name.trim() }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
     Ok(result)
 }
 
@@ -2349,6 +2408,7 @@ pub fn set_lineage_parent_inner(
 pub fn set_lineage_parent(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     lineage_id: String,
     new_parent_id: Option<String>,
 ) -> Result<Lineage, String> {
@@ -2361,6 +2421,7 @@ pub fn set_lineage_parent(
         "set_lineage_parent",
         serde_json::json!({ "parent_id": &new_parent_id }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
     Ok(result)
 }
 
@@ -2491,6 +2552,7 @@ pub fn fold_lineage_inner(
 pub fn fold_lineage(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     source_id: String,
     target_id: String,
 ) -> Result<FoldResult, String> {
@@ -2511,6 +2573,7 @@ pub fn fold_lineage(
             }),
         },
     );
+    schedule_sync_wake(&worker_slot, &conn);
     Ok(result)
 }
 
@@ -2588,6 +2651,7 @@ pub fn get_trail_pages_inner(
 pub fn insert_line_at(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     page_id: String,
     position: i64,
     text: String,
@@ -2627,6 +2691,7 @@ pub fn insert_line_at(
             "text": &text,
         }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(line)
 }
@@ -2635,6 +2700,7 @@ pub fn insert_line_at(
 pub fn delete_line(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     line_id: String,
 ) -> Result<(), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
@@ -2670,6 +2736,7 @@ pub fn delete_line(
                 "position": position,
             }),
         );
+        schedule_sync_wake(&worker_slot, &conn);
     }
 
     Ok(())
@@ -2696,6 +2763,7 @@ pub fn update_block_item_text(
 pub fn reorder_lines(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     page_id: String,
     line_ids: Vec<String>,
 ) -> Result<(), String> {
@@ -2716,6 +2784,7 @@ pub fn reorder_lines(
         "reorder_lines",
         serde_json::json!({ "line_ids": &line_ids }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -2730,22 +2799,15 @@ pub fn save_page_content(
     yjs_state: Option<Vec<u8>>,
 ) -> Result<(), String> {
     save_page_content_inner(&db, &page_id, &content_json, yjs_state.as_deref())?;
-    let sync_delay_ms = {
+    {
         let conn = db.lock().map_err(|e| e.to_string())?;
         emit_page_op(&engine, &conn, &page_id, &content_json, yjs_state.as_deref());
-        // Default 2000ms — long enough that a `/`-command interaction
-        // (open menu, navigate, pick) coalesces with the user's
-        // continuing typing into one upload instead of shipping the
-        // half-typed-with-`/` intermediate state to the other device.
-        crate::sync::config::get_setting_i64(&conn, "sync_save_debounce_ms").unwrap_or(2000)
-    };
-    // Debounced wake: subsequent saves within the window reset the
-    // target, so a flurry of edits coalesces into one upload after the
-    // user has actually settled.
-    if let Ok(slot) = worker_slot.lock() {
-        if let Some(h) = slot.as_ref() {
-            h.wake_after(sync_delay_ms);
-        }
+        // Debounced wake: subsequent saves within the window reset the
+        // target, so a flurry of edits (including a `/`-command
+        // interaction — open menu, navigate, pick) coalesces into one
+        // upload after the user has actually settled, instead of shipping
+        // the half-typed intermediate state to the other device.
+        schedule_sync_wake(&worker_slot, &conn);
     }
     Ok(())
 }
@@ -3149,6 +3211,7 @@ fn extract_block_title(node: &serde_json::Value) -> Option<String> {
 pub fn save_trail_content(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     lineage_id: String,
     page_id: String,
     content_json: String,
@@ -3165,6 +3228,11 @@ pub fn save_trail_content(
             "content_json": &content_json,
         }),
     );
+    // Continuous-trail docs can grow to 50k+ words under one canonical
+    // page — this was save_page_content's sibling gap: the debounced
+    // wake existed only on the discrete/untrailed save path, so trail
+    // content sat unsent until the worker's next unforced tick.
+    schedule_sync_wake(&worker_slot, &conn);
     Ok(())
 }
 
@@ -3308,13 +3376,14 @@ pub fn get_pins_inner(db: &Db, lineage_id: Option<String>) -> Result<Vec<Pin>, S
 pub fn create_pin(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     lineage_id: Option<String>,
     source_page_id: String,
     object_type: String,
     content: String,
     title: Option<String>,
 ) -> Result<Pin, String> {
-    create_pin_inner(
+    let result = create_pin_inner(
         &db,
         &engine,
         lineage_id,
@@ -3322,7 +3391,11 @@ pub fn create_pin(
         object_type,
         content,
         title,
-    )
+    )?;
+    if let Ok(conn) = db.lock() {
+        schedule_sync_wake(&worker_slot, &conn);
+    }
+    Ok(result)
 }
 
 pub fn create_pin_inner(
@@ -3395,6 +3468,7 @@ pub fn create_pin_inner(
 pub fn update_pin_status(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     id: String,
     status: String,
 ) -> Result<(), String> {
@@ -3414,6 +3488,7 @@ pub fn update_pin_status(
         "update_pin_status",
         serde_json::json!({ "status": &status }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -3422,6 +3497,7 @@ pub fn update_pin_status(
 pub fn update_pin_scope(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     id: String,
     lineage_id: Option<String>,
 ) -> Result<(), String> {
@@ -3441,6 +3517,7 @@ pub fn update_pin_scope(
         "update_pin_scope",
         serde_json::json!({ "lineage_id": &lineage_id }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -3449,6 +3526,7 @@ pub fn update_pin_scope(
 pub fn update_pin_content(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     id: String,
     content: String,
     title: Option<String>,
@@ -3469,6 +3547,7 @@ pub fn update_pin_content(
         "update_pin_content",
         serde_json::json!({ "content": &content, "title": &title }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -3477,6 +3556,7 @@ pub fn update_pin_content(
 pub fn delete_pin(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     id: String,
 ) -> Result<(), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
@@ -3498,6 +3578,7 @@ pub fn delete_pin(
                 }),
             },
         );
+        schedule_sync_wake(&worker_slot, &conn);
     }
 
     Ok(())
@@ -3507,6 +3588,7 @@ pub fn delete_pin(
 pub fn update_pin_auto_insert(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     id: String,
     auto_insert: bool,
 ) -> Result<(), String> {
@@ -3527,6 +3609,7 @@ pub fn update_pin_auto_insert(
         "update_pin_auto_insert",
         serde_json::json!({ "auto_insert": auto_insert }),
     );
+    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -3667,6 +3750,7 @@ pub fn search_pins_for_mention(
 pub fn reorder_pins(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     ids: Vec<String>,
 ) -> Result<(), String> {
     reorder_pins_inner(&db, ids.clone())?;
@@ -3686,6 +3770,7 @@ pub fn reorder_pins(
             }),
         },
     );
+    schedule_sync_wake(&worker_slot, &conn);
     Ok(())
 }
 
@@ -3939,6 +4024,7 @@ pub fn get_lock_timeout(db: State<'_, Db>) -> Result<Option<i64>, String> {
 pub fn set_lock_timeout(
     db: State<'_, Db>,
     engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
     minutes: i64,
 ) -> Result<(), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
@@ -3949,6 +4035,7 @@ pub fn set_lock_timeout(
     )
     .map_err(|e| e.to_string())?;
     op_log::emit_setting(&engine, &conn, "lock_timeout_minutes", Some(&value));
+    schedule_sync_wake(&worker_slot, &conn);
     Ok(())
 }
 
@@ -4617,6 +4704,44 @@ pub fn get_page_for_mention(
 // thread, we extract the Arc, clone it, and move that.
 pub type SyncWorkerSlot = std::sync::Arc<std::sync::Mutex<Option<crate::sync::worker::WorkerHandle>>>;
 
+/// Debounced sync wake, shared by every command that just emitted a local
+/// op (a page save, a pin edit, a lineage rename, a setting flip, …).
+///
+/// Before this helper existed, `save_page_content` was the ONLY call site
+/// for `wake_after` — every other op-emitting command left the worker
+/// asleep until its next unforced tick (`DEFAULT_TICK`, up to 30s), so a
+/// pin, a trail rename, or a `what_matters_now` edit could sit unsent for
+/// half a minute even though the write itself was already durable and
+/// op-logged. Debounced (not immediate `.wake()`) for the same reason
+/// `save_page_content` debounces: a flurry of related local writes (e.g.
+/// several pin reorders, or a lineage rename immediately followed by a
+/// move) coalesces into one upload after things settle, instead of firing
+/// an upload pass per keystroke-adjacent command.
+///
+/// Reads the same `sync_save_debounce_ms` setting `save_page_content` uses
+/// (default 2000ms) so every write shares one tunable debounce window.
+/// Best-effort: no running worker (sync disabled, or the handle hasn't
+/// been installed yet) is a silent no-op, exactly like the existing
+/// `save_page_content` and `attachment_set_sync` wake call sites.
+pub(crate) fn schedule_sync_wake(worker_slot: &SyncWorkerSlot, conn: &rusqlite::Connection) {
+    let sync_delay_ms = sync_wake_delay_ms(conn);
+    if let Ok(slot) = worker_slot.lock() {
+        if let Some(h) = slot.as_ref() {
+            h.wake_after(sync_delay_ms);
+        }
+    }
+}
+
+/// The debounce window `schedule_sync_wake` schedules its wake at. Split
+/// out as its own (pure, DB-only) function so it's testable without a live
+/// `SyncWorkerSlot` — constructing a real `WorkerHandle` needs an actual
+/// spawned worker thread, which a unit test has no business standing up
+/// just to check a number. Default 2000ms; overridden by the
+/// `sync_save_debounce_ms` setting row when present.
+pub(crate) fn sync_wake_delay_ms(conn: &rusqlite::Connection) -> i64 {
+    crate::sync::config::get_setting_i64(conn, "sync_save_debounce_ms").unwrap_or(2000)
+}
+
 #[derive(serde::Serialize)]
 pub struct SyncStatusDto {
     pub relay_url: Option<String>,
@@ -5025,6 +5150,105 @@ pub fn sync_status_inner(db: &Db) -> Result<SyncStatusDto, String> {
         keys_at_rest_unprotected,
         revoked,
     })
+}
+
+/// Flush any pending uploads RIGHT NOW, inline and blocking, instead of
+/// waiting for the worker thread to wake and run its own tick.
+///
+/// Why this exists: `wake_after` (`schedule_sync_wake`) only sets a flag
+/// the worker's sleep loop notices next time it polls — on Android,
+/// backgrounding the app can freeze that thread before it ever gets
+/// scheduled again, so anything written in the seconds before the user
+/// switches away or locks the screen could sit unsent indefinitely, until
+/// the app is reopened. This command is the frontend's `visibilitychange`
+/// / `pagehide` handler's last chance to get bytes out the door before
+/// the OS suspends the process — it does the upload itself, on the
+/// command thread, rather than asking a thread that may never run again
+/// to do it.
+///
+/// Reuses `upload::run_pass` — the exact same call `worker::tick` makes —
+/// so this is not a second upload code path to keep in sync with the
+/// first; it is the first, invoked early. Deliberately narrower than a
+/// full `tick()`: no pull, no key-rotation housekeeping, no attachment
+/// object sweep — those are not "did the user's just-typed content reach
+/// the relay" and can wait for the worker's next real tick. A quick,
+/// synchronous "get pending ops out" is what a few seconds before
+/// suspension can actually afford.
+///
+/// Guarded to a fast no-op when sync isn't configured/enabled, or when
+/// this device has no keys yet (fresh install, never paired) — both
+/// normal states, not errors. Resilient by design: every failure path
+/// logs and returns `Ok(())` rather than propagating an error, because
+/// the caller is a best-effort lifecycle hook, not a user action waiting
+/// on a result — a promise rejection here must never block or throw
+/// during app teardown.
+#[tauri::command]
+pub fn sync_flush_now(db: State<'_, Db>) -> Result<(), String> {
+    sync_flush_now_inner(db.inner());
+    Ok(())
+}
+
+/// `&Db`-only body so it's callable without a `State` (tests, and any
+/// future non-command lifecycle hook). Never returns `Err` — see the
+/// doc comment on `sync_flush_now` for why every failure is logged and
+/// swallowed instead.
+pub fn sync_flush_now_inner(db: &Db) {
+    let (cfg, user_keys, device_keys) = {
+        let conn = match db.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("sync_flush_now: db mutex poisoned: {e}");
+                return;
+            }
+        };
+        let cfg = match crate::sync::config::load(&conn) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("sync_flush_now: config load failed: {e}");
+                return;
+            }
+        };
+        if !cfg.is_active() {
+            // Not configured, or the user has sync paused — a quiet,
+            // expected no-op, not something worth a log line on every
+            // background of an app that has never turned sync on.
+            return;
+        }
+        let user_keys = match crate::sync::keys::load_user_keys(&conn) {
+            Ok(k) => k,
+            Err(e) => {
+                log::warn!("sync_flush_now: user keys load failed: {e}");
+                return;
+            }
+        };
+        let device_keys = match crate::sync::keys::load_device_keys(&conn) {
+            Ok(k) => k,
+            Err(e) => {
+                log::warn!("sync_flush_now: device keys load failed: {e}");
+                return;
+            }
+        };
+        (cfg, user_keys, device_keys)
+    };
+    let (Some(user_keys), Some(device_keys)) = (user_keys, device_keys) else {
+        // is_active() checks relay_url/user_id/enabled, not whether keys
+        // are actually persisted — a config that's active by every other
+        // measure but has no keys yet (mid-setup) has nothing to sign
+        // uploads with.
+        return;
+    };
+    match crate::sync::upload::run_pass(db, &cfg, &user_keys, &device_keys) {
+        Ok(stats) if stats.ops_posted > 0 || stats.blobs_uploaded > 0 => {
+            log::info!(
+                "sync_flush_now: posted={} uploaded={} acked={}",
+                stats.ops_posted,
+                stats.blobs_uploaded,
+                stats.blobs_acked
+            );
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!("sync_flush_now: upload pass failed: {e}"),
+    }
 }
 
 /// Return the most recent entries from `sync_error_history` for the
@@ -6632,5 +6856,114 @@ mod tests {
         let conn = db.lock().unwrap();
         let v = crate::sync::config::get_setting_i64(&conn, "sync_revoked");
         assert!(v.is_none() || v == Some(0), "pair-again must clear the revoked flag");
+    }
+
+    // ─── schedule_sync_wake / sync_wake_delay_ms ────────────────────────
+    // A live SyncWorkerSlot needs an actual spawned worker thread
+    // (WorkerHandle's fields are all private, built only by the real
+    // spawn path) — not something a unit test should stand up just to
+    // check a number. `sync_wake_delay_ms` is the pure half of
+    // `schedule_sync_wake` (read the debounce setting; the wake-a-live-
+    // worker half is one `if let` around a method call, exercised for
+    // real by every golden-path test above that drives save_page_content
+    // end to end). This is the "the helper exists and computes the
+    // configured delay" proof the mobile-stability plan asked for.
+
+    #[test]
+    fn sync_wake_delay_ms_defaults_to_2000_when_unset() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        assert_eq!(sync_wake_delay_ms(&conn), 2000);
+    }
+
+    #[test]
+    fn sync_wake_delay_ms_honors_sync_save_debounce_ms() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_save_debounce_ms', '750')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(sync_wake_delay_ms(&conn), 750);
+    }
+
+    /// Every op-emitting command in this file is expected to call
+    /// `schedule_sync_wake` (or, pre-existing, `attachment_set_sync`'s own
+    /// wake path) after it commits — this is the count check that fails
+    /// loudly if a future op-emitting command is added without wiring it,
+    /// rather than silently falling back to the 30s unforced tick the way
+    /// every command except `save_page_content` did before this change.
+    #[test]
+    fn schedule_sync_wake_has_the_expected_number_of_call_sites() {
+        let needle = "schedule_sync_wake(&worker_slot, &conn)";
+        let src = include_str!("commands.rs");
+        let call_sites = src.matches(needle).count();
+        // save_page_content, get_or_create_today, save_line,
+        // create_new_page, clone_page_for_new_day, cleanup_orphan_pages,
+        // update_what_matters_now, update_what_shifted, strike_line,
+        // mark_onboarding_complete, set_setting, set_close_to_tray,
+        // update_line_text, set_focus_parent, create_lineage,
+        // set_focus_lineage, delete_lineage, rename_lineage,
+        // set_lineage_parent, fold_lineage, insert_line_at, delete_line,
+        // reorder_lines, save_trail_content, create_pin,
+        // update_pin_status, update_pin_scope, update_pin_content,
+        // delete_pin, update_pin_auto_insert, reorder_pins,
+        // set_lock_timeout — 32 real call sites at the time this test was
+        // written, PLUS one for this test's own `needle` literal above
+        // (include_str! reads this whole file, itself included) = 33.
+        // Bump both numbers (and the list above) when a new call site is
+        // deliberately added; don't loosen this to a `>=`, which would
+        // stop catching the regression it exists for.
+        assert_eq!(
+            call_sites, 33,
+            "expected call count changed — update this test's count (and the \
+             comment listing every wired command) if a command was added or \
+             removed, don't just bump the number blind"
+        );
+    }
+
+    // ─── sync_flush_now ──────────────────────────────────────────────────
+
+    /// The common case this command exists to be safe for: a device that
+    /// has never turned on sync backgrounds the app on every launch, and
+    /// `visibilitychange` fires `sync_flush_now` every single time. It
+    /// must be an instant, silent no-op — no panic, no error surfaced to
+    /// the frontend (a rejected promise here must not block or throw
+    /// during app teardown), no attempted network call.
+    #[test]
+    fn sync_flush_now_is_a_noop_when_sync_is_unconfigured() {
+        let db = test_db();
+        // fresh test_db(): no sync_state row written, no keys persisted —
+        // exactly a fresh install that has never seen the sync setup flow.
+        sync_flush_now_inner(&db);
+        // Must not have touched anything that would make a later real
+        // `sync_setup` see stale state; a crude but sufficient proof for
+        // "did nothing" is that the db is still readable and unchanged.
+        let conn = db.lock().unwrap();
+        let configured = crate::sync::keys::load_user_keys(&conn).unwrap().is_some();
+        assert!(!configured, "an unconfigured device must stay unconfigured");
+    }
+
+    /// `cfg.is_active()` requires `enabled = true` in addition to a
+    /// relay_url/user_id — a device that has relay details persisted but
+    /// has sync switched off (sync_pause) must also flush as a no-op, not
+    /// attempt a network call the user explicitly paused.
+    #[test]
+    fn sync_flush_now_is_a_noop_when_sync_is_configured_but_disabled() {
+        let db = test_db();
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO sync_state (id, relay_url, user_id, last_seen_user_seq, enabled) \
+                 VALUES (1, 'https://relay.example', 'u1', 0, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        // No panic, no attempted network call (there is no network in this
+        // test environment — a call attempt would hang or error instead of
+        // returning promptly).
+        sync_flush_now_inner(&db);
     }
 }

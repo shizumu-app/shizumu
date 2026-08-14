@@ -15,6 +15,10 @@ export function fakeWindow({ visual = 800, inner = 800, scrollY = 0 } = {}) {
   const doc = {
     documentElement: el,
     visibilityState: "visible",
+    // Settable by tests that need to simulate a focused field (e.g. the
+    // scroll-reset-fights-the-IME guard in keyboard-state.js) — defaults to
+    // null (nothing focused), same as a real document with no active field.
+    activeElement: null,
     addEventListener: (t, f) => { (listeners.doc[t] ||= []).push(f); },
     removeEventListener: (t, f) => {
       listeners.doc[t] = (listeners.doc[t] || []).filter((g) => g !== f);

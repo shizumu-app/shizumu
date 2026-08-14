@@ -15,6 +15,17 @@ vi.mock("../../lib/api.js", () => ({
   foldLineage: vi.fn(() => Promise.resolve(null)),
 }));
 
+// Controls isCoarsePointer() for the tap-to-type focus-gating tests below —
+// everything else in responsive.js stays real (importOriginal), so
+// isPhoneViewport/watchPhoneViewport behave exactly as they do in jsdom
+// (no matchMedia stub -> desktop dropdown, not the phone BottomSheet),
+// keeping this test independent from that unrelated branch.
+const responsiveState = vi.hoisted(() => ({ coarse: false }));
+vi.mock("../../lib/responsive.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, isCoarsePointer: () => responsiveState.coarse };
+});
+
 import LineageSelector from "../LineageSelector.svelte";
 
 afterEach(cleanupAll);
@@ -93,5 +104,48 @@ describe("LineageSelector", () => {
     await settle();
     expect(target.querySelector(".lineage-badge")?.textContent).toContain("book");
     expect(target.querySelector(".trigger-chip")).toBeNull();
+  });
+
+  // Programmatic focus on a mobile webview cannot be relied on to raise the
+  // IME (see focus-field.js) — a direct user tap always does. On a coarse
+  // (touch) pointer the sheet must open with the search field NOT
+  // auto-focused, so the user taps it and types; a fine pointer (desktop)
+  // keeps the old autofocus-on-open behavior.
+  describe("tap-to-type focus gating (touch)", () => {
+    afterEach(() => { responsiveState.coarse = false; });
+
+    // Spy on the SPECIFIC input this render produced, not
+    // HTMLElement.prototype globally: focusField's real .focus() call is
+    // deferred one rAF tick behind its scheduling effect, so a prototype-
+    // wide spy can catch a still-pending call from an EARLIER test's own
+    // (already unmounted) input leaking into this test's rAF-flush wait —
+    // a false failure with nothing wrong in the gating itself. Scoping to
+    // this render's own element makes that cross-test leakage impossible.
+    it("does not programmatically focus the search field on a coarse pointer", async () => {
+      responsiveState.coarse = true;
+      const { target } = render(LineageSelector, { ...base, onLineageChange: vi.fn() });
+      await settle();
+      target.querySelector(".trigger-chip").click();
+      await settle();
+      const input = target.querySelector(".lineage-search");
+      const focusSpy = vi.spyOn(input, "focus");
+      // Give any (wrongly) scheduled rAF focus a chance to fire.
+      await new Promise((r) => requestAnimationFrame(() => r()));
+      expect(focusSpy).not.toHaveBeenCalled();
+      focusSpy.mockRestore();
+    });
+
+    it("still programmatically focuses the search field on a fine pointer (desktop)", async () => {
+      responsiveState.coarse = false;
+      const { target } = render(LineageSelector, { ...base, onLineageChange: vi.fn() });
+      await settle();
+      target.querySelector(".trigger-chip").click();
+      await settle();
+      const input = target.querySelector(".lineage-search");
+      const focusSpy = vi.spyOn(input, "focus");
+      await new Promise((r) => requestAnimationFrame(() => r()));
+      expect(focusSpy).toHaveBeenCalled();
+      focusSpy.mockRestore();
+    });
   });
 });

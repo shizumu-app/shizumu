@@ -104,6 +104,65 @@ export const STATE_DRIVERS = {
     await page.locator(".strip-toggle").first().click();
     await settle(page);
   },
+
+  // Code-review fix (post-120d403): tapping a board block on touch reveals
+  // its title. A reviewer found the reveal painted over the block's own
+  // first line (no reserved space above the content) and never auto-hid on
+  // this specific path (armTouchHandleHide wasn't called here, unlike the
+  // margin-tap and long-press paths). This is the state that would show
+  // either regression: the title visible AND the block's first two lines
+  // still fully legible beneath it.
+  [STATES.BLOCK_TITLE_TOUCH]: async (page) => {
+    const wrapper = page.locator(".tiptap-wrapper").first();
+    await wrapper.waitFor({ state: "visible" });
+    const wrapBox = await wrapper.boundingBox();
+    const block = page.locator(".tiptap-wrapper .ProseMirror > .block-shell").first();
+    await block.waitFor({ state: "visible" });
+    const box = await block.boundingBox();
+    if (!box || box.y < wrapBox.y || box.y + box.height > wrapBox.y + wrapBox.height) {
+      throw new Error("block-title-touch: block is not inside the editor viewport");
+    }
+
+    // Tap the BODY of the block, at least 32px from the left edge, so this
+    // exercises the body-tap path (handleEditorPointerDown's unconditional
+    // `touchActiveBoard = block`) and not the separate deliberate
+    // margin-tap gesture — the two paths used to arm the auto-hide
+    // differently, which is exactly the regression this state guards.
+    // pointerType MUST be "touch" — handleEditorPointerDown returns
+    // immediately for anything else (see BLOCK_HANDLES above).
+    const x = box.x + Math.min(60, box.width / 2);
+    const y = box.y + box.height / 2;
+    const opts = { pointerType: "touch", pointerId: 1, isPrimary: true, clientX: x, clientY: y, bubbles: true };
+    await page.dispatchEvent(".tiptap-wrapper", "pointerdown", opts);
+    // Release well before TOUCH_LONG_PRESS_MS (700ms) — a long-press here
+    // would arm drag-to-reorder instead of a plain tap-to-reveal.
+    await settle(page, 150);
+    await page.dispatchEvent(".tiptap-wrapper", "pointerup", opts);
+    await settle(page);
+
+    const titleSlot = block.locator(".board-title-slot").first();
+    await titleSlot.waitFor({ state: "visible" });
+    const titleBox = await titleSlot.boundingBox();
+    if (!titleBox || titleBox.width === 0 || titleBox.height === 0) {
+      throw new Error("block-title-touch: the title never revealed");
+    }
+    // The hard constraint under test: the revealed title must not cover
+    // any part of the block's own content box (must sit at/above its
+    // top edge), and the block's own top must not have moved from where
+    // it measured before the tap (nothing shifts on reveal).
+    const boxAfter = await block.boundingBox();
+    if (Math.abs(boxAfter.y - box.y) > 0.5) {
+      throw new Error(
+        `block-title-touch: block moved on reveal (${box.y} -> ${boxAfter.y})`,
+      );
+    }
+    if (titleBox.y + titleBox.height > boxAfter.y + 0.5) {
+      throw new Error(
+        `block-title-touch: title bottom (${titleBox.y + titleBox.height}) ` +
+        `overlaps the block's content top (${boxAfter.y})`,
+      );
+    }
+  },
 };
 
 export function driverFor(state) {

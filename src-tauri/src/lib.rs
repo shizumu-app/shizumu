@@ -443,6 +443,7 @@ pub fn run() {
             commands::sync_set_enabled,
             commands::sync_force_reupload,
             commands::sync_status,
+            commands::sync_flush_now,
             commands::sync_error_history,
             commands::sync_pause,
             commands::sync_resume,

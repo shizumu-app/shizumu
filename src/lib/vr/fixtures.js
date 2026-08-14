@@ -133,6 +133,40 @@ export async function deadImageRef(invoke) {
   });
 }
 
+// A page carrying a board block (blockquote) — the class of node the
+// touch tap-to-reveal-title path (TipTapEditor.svelte's
+// handleEditorPointerDown, `.block-active-touch > .board-title-slot`) only
+// ever fires on (`.block-shell` / `.code-block-wrap`; see
+// block-hover-guard.js's hoverClassTarget). `doc()` above only ever emits
+// bare paragraphs, which never carry a title slot at all — none of the
+// existing scenes exercise this path, so a dedicated fixture is needed for
+// its VR interaction state.
+export async function pageWithBoardContent(invoke) {
+  const { page } = await invoke("get_or_create_today", {});
+  await invoke("update_what_matters_now", {
+    pageId: page.id,
+    text: "a block with a title, tapped on touch",
+  });
+  await invoke("save_page_content", {
+    pageId: page.id,
+    contentJson: JSON.stringify({
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "a line before the block." }] },
+        {
+          type: "blockquote",
+          attrs: { blockTitle: "a quoted aside" },
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "the first line of the block — this must stay fully visible when its title reveals." }] },
+            { type: "paragraph", content: [{ type: "text", text: "a second line, so a covered first line would be obvious against it." }] },
+          ],
+        },
+        { type: "paragraph", content: [{ type: "text", text: "a line after the block." }] },
+      ],
+    }),
+  });
+}
+
 export async function continuousTrail(invoke) {
   const { page } = await invoke("get_or_create_today", {});
   await invoke("update_what_matters_now", { pageId: page.id, text: "the book" });
@@ -159,6 +193,7 @@ export async function continuousTrail(invoke) {
 export const FIXTURES = {
   emptyPage,
   pageWithContent,
+  pageWithBoardContent,
   memoryWithPages,
   pinsRich,
   continuousTrail,

@@ -207,7 +207,11 @@
       max-width: 100%;
       padding: 1.25rem 1.25rem 1.5rem;
       margin-bottom: 0;
-      max-height: calc(100dvh - 2rem);
+      /* --app-height (keyboard-state.js) is the VISIBLE viewport, not the
+         layout one 100dvh resolves against — this surface hosts the
+         adopt-as-trail name input, so the same keyboard-occlusion bug as
+         Modal.svelte applies here (see that file's phone block comment). */
+      max-height: calc(var(--app-height, 100dvh) - 2rem);
       overflow-y: auto;
       /* Universal bar-clearance rule: this is the real scroll container
          (the .overlay it centers in doesn't itself clip content), and

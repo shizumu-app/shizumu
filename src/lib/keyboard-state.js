@@ -49,7 +49,20 @@ export function startKeyboardState(win = typeof window !== "undefined" ? window 
     // Under resizes-visual the browser scrolls the layout viewport to keep
     // a focused field visible; the shell is exactly the visible height, so
     // any offset is the shell dragged out from under the user — put it back.
-    if (win.scrollY) win.scrollTo(0, 0);
+    // EXCEPT while a text field has focus: that scroll is the browser
+    // legitimately revealing the field the user is typing into, and it
+    // fires a whole stream of vv resize/scroll events while Android
+    // animates the IME open. Yanking scrollY back to 0 on each of those
+    // fights the animation and can drop focus mid-type (the trail sheet's
+    // "keyboard appears then collapses" bug) — so defer to the focused
+    // field instead of fighting it.
+    const active = win.document.activeElement;
+    const isTextField = active && (
+      active.tagName === "INPUT" ||
+      active.tagName === "TEXTAREA" ||
+      active.isContentEditable
+    );
+    if (win.scrollY && !isTextField) win.scrollTo(0, 0);
   };
 
   // Rotation and app-resume invalidate the learned baseline — the next

@@ -104,3 +104,43 @@ describe("startKeyboardState — rotation and resume reset the baseline", () => 
     expect(get(keyboardOpen)).toBe(false);
   });
 });
+
+// The IME-fight bug: while Android animates the keyboard open, the browser
+// legitimately scrolls the layout viewport to keep the focused field
+// visible. apply() used to yank that back with scrollTo(0, 0) on every vv
+// event fired during the animation, fighting the IME and dropping focus.
+// The fix: skip the reset while a text field has focus.
+describe("startKeyboardState — scroll reset defers to a focused field", () => {
+  it("does not call scrollTo when an input has focus (browser is legitimately revealing it)", () => {
+    const { win, fire } = fakeWindow({ visual: 800, inner: 800, scrollY: 40 });
+    win.document.activeElement = { tagName: "INPUT" };
+    startKeyboardState(win);
+
+    win.visualViewport.height = 400;
+    fire("vv", "resize");
+
+    expect(win.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("does not call scrollTo when a contenteditable element has focus", () => {
+    const { win, fire } = fakeWindow({ visual: 800, inner: 800, scrollY: 40 });
+    win.document.activeElement = { tagName: "DIV", isContentEditable: true };
+    startKeyboardState(win);
+
+    win.visualViewport.height = 400;
+    fire("vv", "resize");
+
+    expect(win.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("still calls scrollTo when nothing text-like has focus", () => {
+    const { win, fire } = fakeWindow({ visual: 800, inner: 800, scrollY: 40 });
+    win.document.activeElement = null;
+    startKeyboardState(win);
+
+    win.visualViewport.height = 400;
+    fire("vv", "resize");
+
+    expect(win.scrollTo).toHaveBeenCalledWith(0, 0);
+  });
+});

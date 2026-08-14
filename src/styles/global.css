@@ -583,15 +583,52 @@ body {
    also stamps `.block-active-touch` on the block (see the $effect in
    TipTapEditor.svelte mirroring handleVisible + hoveredBlock). Scoped to
    `(hover: none)` so it never fires on hover-capable devices (redundant
-   with the hover rule above there) and, critically, is driven by the
-   deliberate margin-tap gesture rather than any tap inside the block
-   body — the first-tap-steals-focus bug (D-6) stays fixed. */
+   with the hover rule above there).
+   Mobile-stability item 4: the stamp is no longer limited to the
+   margin-tap gesture — a touch pointerdown ANYWHERE inside the block now
+   stamps it too (TipTapEditor.svelte's handleEditorPointerDown), giving
+   touch the same "tap it to see its title" parity desktop hover already
+   has. That is exactly why this rule can no longer use the hover/focus
+   reveal's flow layout (max-height + margin, above): a tap can land
+   directly on the block's own text, and pushing the content DOWN to make
+   room for the title (the D-6 bug's original shape) would move that text
+   out from under the finger mid-tap and land the caret in the wrong
+   place. `position: absolute` against the block shell's own top edge
+   (already `position: relative`) takes the slot out of flow entirely —
+   revealing it overlays the space above the content instead of expanding
+   into it, so the content never moves regardless of where inside the
+   block the tap landed.
+   Code-review fix (post-120d403): the ORIGINAL shape of this rule (`top:
+   0` plus an opaque `background` "masking" whatever first line sat under
+   it) painted over up to ~32px of live content — `.block-shell` reserved
+   no top padding, so the revealed slot sat directly on top of the block's
+   own text, and the auto-hide it depended on wasn't even armed on this
+   path (see the body-tap fix in TipTapEditor.svelte). Covering the user's
+   text is never acceptable, masked or not.
+   Fix: `.block-shell`/`.code-block-wrap` reserve a PERMANENT top margin on
+   touch (below, `prose.css`) sized to the slot's own `max-height: 2.6em`
+   (0.78em font-size * 1.9 line-height * 2.6 ≈ 32.4px at the 16px default
+   `--editor-font-size` — both values share the same em chain, so the
+   reserved space tracks the slot's real height whatever the user's font
+   size is). Because that margin is constant whether or not the title is
+   revealed, nothing shifts on reveal. The slot itself is anchored with
+   `bottom: 100%` instead of `top: 0` — its bottom edge sits exactly at the
+   block's own border-box top (block-shell has no top border/padding), so
+   it renders entirely inside the reserved margin, above the content box,
+   never over it. No masking background needed; kept for visual polish
+   only (a quiet chip against the canvas), not to hide an overlap. */
 @media (hover: none) {
   .ProseMirror .block-shell.block-active-touch > .board-title-slot,
   .ProseMirror .code-block-wrap.block-active-touch > .board-title-slot {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    z-index: 1;
+    background: var(--canvas-bg);
     max-height: 2.6em;
     opacity: 0.85;
-    margin: 0.125rem 0 0.25rem;
+    margin: 0;
     transform: translateY(0);
     pointer-events: auto;
   }

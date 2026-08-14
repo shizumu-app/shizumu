@@ -318,7 +318,11 @@
     .modal {
       width: 100%;
       max-width: 100%;
-      max-height: calc(100dvh - 2rem);
+      /* --app-height (keyboard-state.js) is the VISIBLE viewport; 100dvh is
+         the layout one and doesn't shrink for the soft keyboard — this
+         modal edits a textarea, so it hits the same occlusion bug as
+         Modal.svelte's phone block (see that file's comment). */
+      max-height: calc(var(--app-height, 100dvh) - 2rem);
       border-radius: 0.875rem;
     }
   }

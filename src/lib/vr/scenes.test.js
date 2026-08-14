@@ -4,7 +4,7 @@ import { SCENES, THEMES, getScene } from "./scenes.js";
 describe("vr scenes", () => {
   it("defines the initial catalog", () => {
     expect(Object.keys(SCENES).sort()).toEqual(
-      ["dead-image-ref", "memory-list", "onboarding", "page-blank", "page-content", "pin-view", "trail-continuous"].sort()
+      ["dead-image-ref", "memory-list", "onboarding", "page-blank", "page-board-content", "page-content", "pin-view", "trail-continuous"].sort()
     );
   });
 
