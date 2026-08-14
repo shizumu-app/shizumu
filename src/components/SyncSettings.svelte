@@ -545,6 +545,36 @@
     }
   }
 
+  /// Revoked-device recovery: clear credentials + the revoked flag
+  /// (sync_reset — content is never touched) then land the user in
+  /// the pairing wizard's join-a-new-device entry step. The worker
+  /// has already exited by the time this runs (backend stops it on
+  /// the 401 that set the revoked flag); pair_new_join /
+  /// pair_new_complete replace the worker slot themselves, so no
+  /// worker-restart call belongs here.
+  async function pairAgain() {
+    errorMsg = "";
+    working = true;
+    try {
+      await syncReset();
+      await refresh();
+      cancelWizard();
+      // The revoked note can be triggered from any tab (it overrides
+      // the whole sync-pane). The join wizard only renders under the
+      // "account" tab's step==="idle" branch — without this reset, a
+      // pair-again clicked from "devices"/"timing"/etc. leaves that
+      // tab selected and its own `status?.configured` gate (now false
+      // post-reset) shows its "configured under account first"
+      // dead-end instead of the wizard the user just asked for.
+      syncTab = "account";
+      pairStep = "new_input";
+    } catch (e) {
+      errorMsg = String(e);
+    } finally {
+      working = false;
+    }
+  }
+
   function handleRevoke(deviceId, label) {
     confirmRevokeTarget = { id: deviceId, label: label || "this device" };
     confirmKind = "revoke";
@@ -851,7 +881,12 @@
     </div>
 
     <div class="sync-pane">
-      {#if syncTab === "account"}
+      {#if status?.revoked}
+        <div class="revoked-note">
+          <p>this device was revoked from the account. its local pages are untouched — syncing has stopped.</p>
+          <Button variant="accent" onClick={pairAgain} disabled={working}>pair again</Button>
+        </div>
+      {:else if syncTab === "account"}
         {#if step === "idle"}
           {#if !status?.configured}
             <Row description="you're the first device. we generate a recovery phrase — write it down to add your other devices later.">
@@ -1856,6 +1891,26 @@
     background: color-mix(in srgb, #c44 5%, transparent);
     border-left: 2px solid color-mix(in srgb, #c44 50%, transparent);
     border-radius: 0.375rem;
+  }
+  /* Revoked-device note — same weight as .error-callout (this is the
+     "sync is broken until you act" case) but its own class since the
+     content is a paragraph + action button, not a label/text pair. */
+  .revoked-note {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.625rem;
+    margin: 0.75rem 0;
+    padding: 0.875rem;
+    background: color-mix(in srgb, #c44 5%, transparent);
+    border-left: 2px solid color-mix(in srgb, #c44 50%, transparent);
+    border-radius: 0.375rem;
+  }
+  .revoked-note p {
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: color-mix(in srgb, var(--ink) 70%, #c44 30%);
   }
   .error-callout-label {
     font-family: "Inter", sans-serif;

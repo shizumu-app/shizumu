@@ -11,6 +11,7 @@
   } from "../lib/api.js";
   import { buildTreeList, isItemVisible, getDescendantIds } from "../lib/trail-utils.js";
   import { isPhoneViewport, watchPhoneViewport } from "../lib/responsive.js";
+  import { focusField } from "../lib/focus-field.js";
   import BottomSheet from "../lib/ui/BottomSheet.svelte";
   import TriggerChip from "../lib/ui/TriggerChip.svelte";
   import Icon from "../lib/ui/Icon.svelte";
@@ -56,10 +57,8 @@
   // the keyboard up, which in turn triggers the sheet's existing lift.
   let searchInputEl = $state();
   $effect(() => {
-    if (isOpen && searchInputEl) {
-      const el = searchInputEl;
-      requestAnimationFrame(() => { try { el.focus(); } catch {} });
-    }
+    if (isOpen && searchInputEl) focusField(searchInputEl);
+    else if (!isOpen && searchInputEl) focusField.reset(searchInputEl);
   });
   let currentLineage = $state(null);
   let selectedParent = $state(null);
@@ -170,10 +169,8 @@
   // won't raise the mobile keyboard when the rename input mounts.
   let renameInputEl = $state();
   $effect(() => {
-    if (renamingTrail && renameInputEl) {
-      const el = renameInputEl;
-      requestAnimationFrame(() => { try { el.focus(); el.select?.(); } catch {} });
-    }
+    if (renamingTrail && renameInputEl) focusField(renameInputEl, { select: true });
+    else if (!renamingTrail && renameInputEl) focusField.reset(renameInputEl);
   });
   let renameError = $state("");
   let movingTrail = $state(null);

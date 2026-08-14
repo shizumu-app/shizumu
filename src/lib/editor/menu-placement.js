@@ -20,7 +20,7 @@ const MARGIN = 8;
  * @param {{top:number, bottom:number, left:number}} a.caretRect  caret rect, viewport coords
  * @param {number}  a.menuH      the menu's natural (unclamped) height
  * @param {number}  a.menuW      the menu's width
- * @param {number}  a.vh         visible viewport height — visualViewport when the keyboard is up
+ * @param {number}  a.vh         visible viewport height — the visible-viewport height when the keyboard is up
  * @param {number}  a.vw         visible viewport width
  * @param {number} [a.safeTop]   status-bar / notch inset
  * @param {number} [a.safeBottom] home-indicator inset

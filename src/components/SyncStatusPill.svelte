@@ -82,6 +82,11 @@
       listen("sync-error", () => refresh()),
       listen("sync-status-changed", () => refresh()),
       listen("sync-quota", () => refresh()),
+      // The worker emits this once, right before its loop exits after
+      // a 401 device_revoked — re-poll immediately so the pill flips
+      // to "revoked" without waiting on the 30s fallback poll (the
+      // worker itself is gone by then, so no further event follows).
+      listen("sync-revoked", () => refresh()),
     ]);
   });
 
@@ -121,6 +126,10 @@
 
   let label = $derived.by(() => {
     if (!status || !status.configured) return null;
+    // Revoked takes priority over every other state — the account
+    // severed this device, so "paused" / "offline" would undersell
+    // it and the worker is already gone (nothing left to retry).
+    if (status.revoked) return "revoked";
     if (!status.enabled) return "paused";
     if (status.last_error) {
       return isQuotaError(status.last_error) ? "full" : "offline";
@@ -169,6 +178,7 @@
 
   let tooltip = $derived.by(() => {
     if (!status || !status.configured) return "";
+    if (status.revoked) return "this device was revoked — tap to pair again";
     if (!status.enabled) return "sync paused — tap to resume";
     if (status.last_error) {
       if (isQuotaError(status.last_error)) {
@@ -196,6 +206,7 @@
       class:offline={label === "offline"}
       class:paused={label === "paused"}
       class:full={label === "full"}
+      class:revoked={label === "revoked"}
       class:active={popoverOpen}
       title={tooltip}
       onclick={handleClick}
@@ -334,6 +345,12 @@
   /* Paused — present but quiet. User chose this state. */
   .pill.paused {
     color: color-mix(in srgb, var(--ink) 45%, transparent);
+  }
+  /* Revoked — same weight as offline (the account severed this
+     device; nothing left to retry, the user needs to act). */
+  .pill.revoked {
+    color: color-mix(in srgb, var(--ink) 50%, #b95 50%);
+    border-color: color-mix(in srgb, var(--ink) 18%, #b95 30%);
   }
   @keyframes pulse {
     0%, 100% { opacity: 0.6; }

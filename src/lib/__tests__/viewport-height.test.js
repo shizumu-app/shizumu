@@ -1,34 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { syncAppHeight } from "../viewport-height.js";
-
-function fakeWindow({ visual = 800, inner = 800, scrollY = 0 } = {}) {
-  const listeners = { win: {}, vv: {} };
-  const root = { style: new Map() };
-  const el = {
-    style: {
-      setProperty: (k, v) => root.style.set(k, v),
-    },
-  };
-  const win = {
-    document: { documentElement: el },
-    innerHeight: inner,
-    scrollY,
-    scrollTo: vi.fn((x, y) => { win.scrollY = y; }),
-    visualViewport: visual == null ? undefined : {
-      height: visual,
-      addEventListener: (t, f) => { (listeners.vv[t] ||= []).push(f); },
-      removeEventListener: (t, f) => {
-        listeners.vv[t] = (listeners.vv[t] || []).filter((g) => g !== f);
-      },
-    },
-    addEventListener: (t, f) => { (listeners.win[t] ||= []).push(f); },
-    removeEventListener: (t, f) => {
-      listeners.win[t] = (listeners.win[t] || []).filter((g) => g !== f);
-    },
-  };
-  const fire = (scope, type) => (listeners[scope][type] || []).forEach((f) => f());
-  return { win, get: (k) => root.style.get(k), fire, listeners };
-}
+import { fakeWindow } from "./fake-window.js";
 
 describe("syncAppHeight", () => {
   it("sets --app-height from the visible viewport immediately", () => {

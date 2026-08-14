@@ -5,8 +5,9 @@
 //
 // There used to be a module-level canNewPage flag here as well, mirrored
 // out of Page.svelte so App.svelte's right-edge gesture could read it at
-// gesture time. That gesture now navigates the rail instead of creating a
-// page (lib/swipe-intent.js), which left the flag with no readers.
+// gesture time. The flag is gone, but the gesture still creates a page on
+// a right-edge swipe from the last page (handleRailNew in App.svelte),
+// re-checking canCreateNewPage below directly instead of a cached mirror.
 
 /**
  * Whether "new page" is valid right now. The ONLY rule is the date: new

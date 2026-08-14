@@ -1,4 +1,5 @@
 import { placeMenu } from "./editor/menu-placement.js";
+import { getViewportHeight } from "./keyboard-state.js";
 import { Extension } from "@tiptap/core";
 import { Suggestion } from "@tiptap/suggestion";
 import { PluginKey, TextSelection } from "@tiptap/pm/state";
@@ -527,10 +528,9 @@ function renderRow(item, i, selectedIndex, onSelect, container) {
 
 // Place the menu below the caret by default; flip above or clamp to the
 // viewport so the full list is always reachable even near window edges.
-// On mobile, the visualViewport API reports the actual visible area
-// (excluding the soft keyboard) — using it as the height bound makes
-// the menu flip above the caret when the keyboard would otherwise
-// cover it.
+// On mobile, the visible viewport (excluding the soft keyboard) is used
+// as the height bound — making the menu flip above the caret when the
+// keyboard would otherwise cover it.
 function positionMenu(menuEl, rect) {
   if (!menuEl || !rect) return;
   menuEl.style.visibility = "hidden";
@@ -539,7 +539,6 @@ function positionMenu(menuEl, rect) {
   menuEl.style.maxHeight = "";
   menuEl.style.display = "block";
 
-  const vv = window.visualViewport;
   const cs = getComputedStyle(document.documentElement);
   const px = (v) => {
     const n = parseFloat(v);
@@ -550,8 +549,10 @@ function positionMenu(menuEl, rect) {
     caretRect: rect,
     menuH: menuEl.offsetHeight,
     menuW: menuEl.offsetWidth,
-    vh: (vv && vv.height) || window.innerHeight,
-    vw: (vv && vv.width) || window.innerWidth,
+    // getViewportHeight() reads --app-height, kept current by
+    // keyboard-state.js (the app's single viewport-state owner).
+    vh: getViewportHeight(),
+    vw: window.innerWidth,
     // Read the insets through the same --safe-* variables the rest of the
     // app uses, so the VR harness's ?inset=notch override reaches here too.
     safeTop: px(cs.getPropertyValue("--safe-top")),

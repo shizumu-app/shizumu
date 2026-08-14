@@ -32,6 +32,30 @@ pub const MIN_BACKOFF: Duration = Duration::from_secs(1);
 /// hammer the relay.
 pub const MAX_BACKOFF: Duration = Duration::from_secs(300);
 
+/// The relay embeds this literal in every auth rejection for a revoked
+/// device (relay auth.rs), and the live channel's closed event carries it
+/// as a reason. String-level match on purpose: it must catch the message
+/// wherever in the error chain it appears.
+pub fn is_device_revoked_err(msg: &str) -> bool {
+    msg.contains("device_revoked")
+}
+
+/// True once this session has completed one successful pull pass. The
+/// launch-time orphan sweeper refuses to run before that when sync is
+/// enabled: a just-synced page is empty until its content ops merge, and
+/// sweeping it broadcasts a tombstone that destroys the other device's
+/// writes (observed: 24 parked page_blob ops after seq-180 GC tombstone).
+///
+/// Process-global, not per-connection or per-test: `cargo test` runs test
+/// functions in parallel threads within one process, so any future test
+/// that combines `sync::config::set_enabled(&conn, true)` with
+/// `cleanup_orphan_pages_inner` must explicitly reset this flag
+/// (`FIRST_PULL_DONE.store(false, Ordering::SeqCst)`) at its own start
+/// rather than assume the default `false` — another test in the same run
+/// may have already flipped it to `true`.
+pub static FIRST_PULL_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Outcome of one `tick()` call. Replaces the old `bool` return so
 /// the worker loop can branch on wire failures and honour
 /// `Retry-After` hints (the `Throttled` variant of `WireError`).
@@ -370,6 +394,7 @@ pub fn tick(
 
     match pull::run_pass(db, &cfg, user_keys, device_keys) {
         Ok(stats) => {
+            FIRST_PULL_DONE.store(true, Ordering::SeqCst);
             if stats.ops_fetched > 0 {
                 log::info!(
                     "sync pull: batches={} fetched={} received={} dup_skip={} decrypt_skip={}",
@@ -537,6 +562,13 @@ pub struct WorkerCallbacks {
     /// Fires when the relay returns a quota / storage error. Subset
     /// of `on_error` — the UI can route this to a distinct popover.
     pub on_quota: Option<Box<dyn Fn() + Send>>,
+    /// Fires once, from the worker loop, the tick a wire failure's
+    /// error message classifies as `is_device_revoked_err`. The loop
+    /// breaks immediately after — every further call would just 401 —
+    /// so this is guaranteed to fire at most once per worker lifetime.
+    /// Distinct from `on_error`/`on_quota`: the UI routes this to a
+    /// re-pairing prompt, not a transient-failure popover.
+    pub on_revoked: Option<Box<dyn Fn() + Send>>,
 }
 
 impl WorkerHandle {
@@ -615,6 +647,7 @@ pub fn spawn(
         on_error,
         on_status_changed,
         on_quota,
+        on_revoked,
     } = cbs;
     let join = std::thread::spawn(move || {
         let mut backoff = Backoff::new();
@@ -644,6 +677,30 @@ pub fn spawn(
                         retry_after,
                         error_message,
                     } => {
+                        // Revocation check comes first and short-circuits
+                        // everything else: a revoked device's every future
+                        // call would just 401 again, so there is no
+                        // backoff schedule worth recording and no
+                        // on_error/on_quota popover worth showing — only
+                        // the UI's re-pairing prompt matters from here.
+                        let revoked = error_message
+                            .as_deref()
+                            .is_some_and(is_device_revoked_err);
+                        if revoked {
+                            // This device was revoked. Persist the state,
+                            // tell the UI, and stop ticking — every
+                            // further call would just 401.
+                            if let Ok(conn) = db.lock() {
+                                let _ = conn.execute(
+                                    "INSERT OR REPLACE INTO settings (key, value, applied_hlc_ts) VALUES ('sync_revoked','1',0)",
+                                    [],
+                                );
+                            }
+                            if let Some(ref cb) = on_revoked {
+                                cb();
+                            }
+                            break;
+                        }
                         backoff.record_failure(Instant::now(), retry_after);
                         fire_status_changed = true;
                         if let Some(ref cb) = on_error {
@@ -1194,5 +1251,79 @@ mod tests {
         // Immediate shutdown is fine — sleep slices are 250ms so the
         // worker will exit promptly.
         handle.as_mut().unwrap().shutdown();
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Revoked-device detection
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn revoked_classifier_matches_relay_error_strings() {
+        assert!(is_device_revoked_err("wire: 401 device_revoked"));
+        assert!(is_device_revoked_err(r#"closed {"reason":"device_revoked"}"#));
+        assert!(!is_device_revoked_err("wire: 500 internal"));
+        assert!(!is_device_revoked_err("network unreachable"));
+    }
+
+    /// A tick whose pull fails with a `device_revoked` wire error must:
+    /// persist the `sync_revoked` settings flag, fire `on_revoked`, and
+    /// stop the worker loop for good — not just back off and retry. The
+    /// mock relay keeps answering 401 device_revoked forever, so if the
+    /// loop kept ticking it would hammer that endpoint repeatedly; the
+    /// hit-count assertion after a multi-tick-interval wait is what
+    /// proves it stopped rather than merely slowed down.
+    #[test]
+    fn worker_stops_and_persists_flag_on_device_revoked() {
+        let server = MockServer::start();
+        let db = test_db();
+        active_db_config(&db, &server.base_url());
+
+        let ops_mock = server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops");
+            then.status(401).json_body(json!({
+                "error": { "code": "device_revoked", "message": "this device was revoked" }
+            }));
+        });
+
+        let m = generate_seed_phrase();
+        let uk = user_keys_from_phrase(&m);
+        let dk = generate_device_keys();
+
+        let revoked_fired = std::sync::Arc::new(AtomicBool::new(false));
+        let revoked_fired_cb = revoked_fired.clone();
+        let cbs = WorkerCallbacks {
+            on_revoked: Some(Box::new(move || {
+                revoked_fired_cb.store(true, Ordering::SeqCst);
+            })),
+            ..Default::default()
+        };
+
+        let mut handle = spawn(
+            db.clone(),
+            uk,
+            dk,
+            engine_for(&db),
+            Duration::from_millis(30),
+            cbs,
+        );
+
+        // Poll for on_revoked to fire, budget generously above a handful
+        // of tick intervals.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !revoked_fired.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(revoked_fired.load(Ordering::SeqCst), "on_revoked never fired");
+
+        // Give the loop several more would-be tick intervals to prove it
+        // actually stopped rather than merely slowed its backoff.
+        std::thread::sleep(Duration::from_millis(300));
+        handle.shutdown();
+
+        ops_mock.assert_hits(1);
+
+        let conn = db.lock().unwrap();
+        let v = crate::sync::config::get_setting_i64(&conn, "sync_revoked");
+        assert_eq!(v, Some(1), "revocation must persist the sync_revoked flag");
     }
 }

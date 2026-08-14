@@ -44,4 +44,21 @@ describe("swipeIntent", () => {
   it("defaults navDepth to zero", () => {
     expect(swipeIntent({ edge: "left", space: "page" })).toBe("prev");
   });
+
+  describe("at the end of the rail", () => {
+    it("right swipe on the LAST page creates a new page", () => {
+      // The reported bug: this used to map to "next", which no-ops when
+      // there's nothing further along the rail to pull in.
+      expect(swipeIntent({ edge: "right", space: "page", navDepth: 0, atLastPage: true })).toBe("create");
+    });
+
+    it("right swipe mid-stack still navigates", () => {
+      expect(swipeIntent({ edge: "right", space: "page", navDepth: 0, atLastPage: false })).toBe("next");
+    });
+  });
+
+  it("keyboard open suppresses every swipe", () => {
+    expect(swipeIntent({ edge: "right", space: "page", navDepth: 0, atLastPage: true, keyboardOpen: true })).toBe(null);
+    expect(swipeIntent({ edge: "left", space: "page", navDepth: 0, keyboardOpen: true })).toBe(null);
+  });
 });

@@ -1,6 +1,12 @@
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { bootstrapVR } from "./lib/vr/bootstrap.js";
+import { installFocusTrace } from "./lib/focus-field.js";
+
+// Dev-only: logs every focusin/focusout with target + call-site stack so the
+// mobile "keyboard flashes and disappears" blur thief is identifiable
+// on-device. Stripped from production builds by import.meta.env.DEV.
+if (import.meta.env.DEV) installFocusTrace(window);
 
 // bootstrapVR() must finish before mount so the VR harness has installed its
 // seeded invoke / config before App's onMount issues any api calls. It is a

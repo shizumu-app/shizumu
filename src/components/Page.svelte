@@ -25,9 +25,10 @@
   import PagesChip from "../lib/ui/PagesChip.svelte";
   import Icon from "../lib/ui/Icon.svelte";
   import { isPhoneViewport, watchPhoneViewport, watchKeyboardOpen } from "../lib/responsive.js";
-  import { navPush, navClose } from "../lib/navstack.js";
+  import { navPush, navClose, subscribe as navSubscribe } from "../lib/navstack.js";
   import { verticalFlick } from "../lib/gestures.js";
   import { canCreateNewPage } from "../lib/pageCapabilities.js";
+  import { atLastPage } from "../lib/page-rail-state.js";
   import {
     getOrCreateToday,
     saveLine,
@@ -309,6 +310,19 @@
     else openSettings();
   }
 
+  // Mirrors App.svelte's navSnap pattern (App.svelte:241-245). Page needs
+  // navSnap.depth itself so the swipe-up-to-memory flick's overlayOpen
+  // gate (gesture-arming.js) can see any open navstack entry — pin panel
+  // (SharedObjectsPanel pushes "shared-objects-panel"), trail index,
+  // settings-section, pin note/artifact modals, sheets — not just
+  // showSettings. App.svelte already owns initNavStack()'s popstate
+  // wiring; Page only needs the snapshot.
+  let navSnap = $state({ depth: 0, top: null, hideBar: false, has: () => false });
+  $effect(() => {
+    const un = navSubscribe((s) => { navSnap = s; });
+    return () => un();
+  });
+
   // Settings is a navstack entry: hardware back / the browser back button
   // closes it exactly like the in-UI close control. App.svelte reads
   // navSnap.has("settings") to know settings is open — the old
@@ -334,18 +348,34 @@
   // rail's right edge on today; that's the desktop behavior being mirrored,
   // not the old "every right swipe makes a page".
   function handleSwipeNavPrev() { navigatePrev(); }
-  // A swipe navigates; it never creates. Ctrl/Cmd+Right creating a page at
-  // the rail's end is a deliberate keypress meaning "keep writing forward".
-  // An edge swipe is exploratory, easy to trigger by accident, and on a
-  // single-page day it is ALWAYS at the end — so mapping it to the same
-  // handler made every right-swipe spawn a page.
+  // Mid-rail, a swipe navigates and never creates — Ctrl/Cmd+Right creating
+  // a page at the rail's end is a deliberate keypress meaning "keep writing
+  // forward", and an edge swipe is exploratory/easy to trigger by accident.
+  // App.svelte only routes here when swipeIntent() says "next", i.e. there
+  // IS a next page to pull in.
   function handleSwipeNavNext() { navigateNext({ allowCreate: false }); }
+  // At the rail's right edge there's nothing for "next" to pull in — that
+  // used to make the swipe a silent no-op (the reported bug). App.svelte's
+  // swipeIntent() now routes that case to "create" instead, which lands
+  // here on the exact same handler the pages sheet's "+ new page" button
+  // calls — no second creation path.
+  function handleSwipeNavCreate() { handleRailNew(); }
+
+  // Mirror the rail's "no next page" boundary out to lib/page-rail-state.js
+  // so App.svelte's edge-swipe gesture — which lives outside this
+  // component's tree — can tell swipeIntent() whether a right swipe should
+  // navigate or create. Same boundary navigateNext() already uses.
+  $effect(() => {
+    const idx = railIndexOfCurrent();
+    atLastPage.set(idx >= 0 && idx === railFocuses.length - 1);
+  });
 
   onMount(() => {
     if (typeof window === "undefined") return;
     window.addEventListener("shizumu:toggle-settings", handleToggleSettings);
     window.addEventListener("shizumu:nav-prev", handleSwipeNavPrev);
     window.addEventListener("shizumu:nav-next", handleSwipeNavNext);
+    window.addEventListener("shizumu:nav-create", handleSwipeNavCreate);
   });
 
   onDestroy(() => {
@@ -355,10 +385,15 @@
     // navstack entry is still live — close it so the stack doesn't carry
     // a dangling entry whose onClose would set state on an unmounted component.
     if (settingsNavId !== null) navClose(settingsNavId);
+    // Reset so a stale "true" can't survive into a space where nothing
+    // re-derives it (App.svelte only ever reads this while space === "page",
+    // but leaving it latched true would be a landmine for the next reader).
+    atLastPage.set(false);
     if (typeof window === "undefined") return;
     window.removeEventListener("shizumu:toggle-settings", handleToggleSettings);
     window.removeEventListener("shizumu:nav-prev", handleSwipeNavPrev);
     window.removeEventListener("shizumu:nav-next", handleSwipeNavNext);
+    window.removeEventListener("shizumu:nav-create", handleSwipeNavCreate);
   });
 
   // Returns continuous-trail canonicals whose content_json contains a
@@ -1123,6 +1158,20 @@
     // its body bubbled to this flick and jumped to memory — pronounced once the
     // pairing wizard makes the pane taller than the viewport and it can scroll.
     ignoreSelector: ".tiptap-editor, .thread-scroll, .scrollable, .panel-list, .memory-list, .sheet, .modal, .modal-body, textarea, input",
+    // Allowlist (gesture-arming.js): armed only when nothing is open —
+    // navSnap.depth catches every navstack entry (pin panel, trail index,
+    // settings-section, pin modals, sheets); showSettings is read directly
+    // too because navPush("settings") lands one effect tick after
+    // showSettings flips, and a touchstart landing in that gap must still
+    // see settings as open — AND the editor's own scroll container was
+    // already at its bottom boundary when the touch started. ignoreSelector
+    // above stays as belt-and-braces for touches starting inside a
+    // scrollable directly.
+    overlayOpen: () => showSettings || navSnap.depth > 0,
+    // The soft keyboard being open means the user is typing — a flick must
+    // never fire mid-keystroke.
+    keyboardOpen: () => keyboardOpen,
+    scrollEl: () => flowModeRef?.getScrollEl?.() ?? null,
   }}
 >
 
@@ -1533,8 +1582,11 @@
       padding:
         12px
         max(var(--safe-right), var(--space-4))
-        var(--mobile-bar-h)
+        0
         max(var(--safe-left), var(--space-4));
+      /* The bar hides under the keyboard, so its clearance yields to the
+         keyboard inset (same shape as Modal.svelte's padding). */
+      padding-bottom: max(0px, calc(var(--mobile-bar-h) - var(--kb-inset, 0px)));
     }
   }
 

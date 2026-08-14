@@ -37,6 +37,7 @@
   import { isYjsEnabled } from "../lib/yjs/feature-flag.js";
   import { isCoarsePointer, isPhoneViewport } from "../lib/responsive.js";
   import { placeHandleBar } from "../lib/editor/handle-placement.js";
+  import { getViewportHeight, keyboardOpen } from "../lib/keyboard-state.js";
   import { getSchema } from "@tiptap/core";
   import SharePopup from "./SharePopup.svelte";
   import FindBar from "./FindBar.svelte";
@@ -158,11 +159,12 @@
     const left = Math.min(Math.max(4, rawLeft), maxLeft);
 
     const viewportRelativeTop = coords.top - wrapperRect.top;
-    // Flipping below is only allowed when the space below isn't covered
-    // by the soft keyboard (visualViewport shrinks when the IME is up).
-    const vvBottom = window.visualViewport
-      ? window.visualViewport.offsetTop + window.visualViewport.height
-      : window.innerHeight;
+    // Flipping below is only allowed when the space below isn't covered by
+    // the soft keyboard. getViewportHeight() reads --app-height, kept
+    // current by keyboard-state.js (the app's single viewport-state
+    // owner) — already the bottom edge of what's visible, since that
+    // module resets scrollY to 0 whenever the visible viewport moves.
+    const vvBottom = getViewportHeight();
     const canFlipBelow = coords.bottom + 56 < vvBottom;
 
     if (viewportRelativeTop < 50 && canFlipBelow) {
@@ -567,11 +569,11 @@
     window.addEventListener("shizumu:open-find", onOpenFind);
     window.addEventListener("shizumu:quick-pin", onQuickPin);
 
-    // Phone IME-aware caret tracking: when the soft keyboard opens,
-    // scroll the active selection into view so the cursor isn't hidden
-    // behind the keyboard. visualViewport.resize fires on IME open/close.
-    const onViewportResize = () => {
-      if (typeof window === "undefined" || !window.visualViewport) return;
+    // Phone IME-aware caret tracking: when the soft keyboard opens or
+    // closes, scroll the active selection into view so the cursor isn't
+    // left hidden behind it. keyboardOpen (keyboard-state.js, the app's
+    // single viewport-state owner) fires on every open/close transition.
+    const onKeyboardChange = () => {
       if (!editor || !editor.isFocused) return;
       // The IME just covered (or revealed) area below. Defer one frame
       // so layout settles, then nudge ProseMirror's built-in scroll.
@@ -579,17 +581,13 @@
         try { editor?.commands.scrollIntoView(); } catch {}
       });
     };
-    if (typeof window !== "undefined" && window.visualViewport) {
-      window.visualViewport.addEventListener("resize", onViewportResize);
-    }
+    const unsubKeyboardOpen = keyboardOpen.subscribe(onKeyboardChange);
 
     return () => {
       wrapperEl?.removeEventListener("keydown", onWrapperKeydown, true);
       window.removeEventListener("shizumu:open-find", onOpenFind);
       window.removeEventListener("shizumu:quick-pin", onQuickPin);
-      if (typeof window !== "undefined" && window.visualViewport) {
-        window.visualViewport.removeEventListener("resize", onViewportResize);
-      }
+      unsubKeyboardOpen();
     };
   });
 
@@ -2059,6 +2057,13 @@
 
   export function getEditor() {
     return editor;
+  }
+
+  /// The editor's own scroll container (`.tiptap-wrapper`) — exposed so
+  /// Page.svelte's swipe-up-to-memory flick can check whether the canvas
+  /// is scrolled to its bottom boundary before arming (gesture-arming.js).
+  export function getScrollEl() {
+    return wrapperEl;
   }
 
   /// Replace the editor's content with a fresh JSON doc, preserving the

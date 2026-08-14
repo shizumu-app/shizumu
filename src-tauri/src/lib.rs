@@ -268,6 +268,12 @@ pub fn run() {
                         let _ = h.emit("sync-quota", ());
                     })
                 }),
+                on_revoked: Some({
+                    let h = handle.clone();
+                    Box::new(move || {
+                        let _ = h.emit("sync-revoked", ());
+                    })
+                }),
             };
             let worker_slot: commands::SyncWorkerSlot = std::sync::Arc::new(
                 match sync::worker::spawn_if_configured(

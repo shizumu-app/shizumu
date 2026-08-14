@@ -1,34 +1,14 @@
 <script>
   import { updateWhatShifted } from "../lib/api.js";
-  import { isPhoneViewport } from "../lib/responsive.js";
 
   /** @type {{ pageId: string, value: string | null, complete: boolean, readonly: boolean, hasParent: boolean, onClose: () => void }} */
   let { pageId, value = null, complete = false, readonly = false, hasParent = false, onClose = () => {} } = $props();
 
   let expanded = $state(false);
   let text = $state("");
-  let liftPx = $state(0);
 
   $effect(() => {
     text = value || "";
-  });
-
-  $effect(() => {
-    if (!expanded || typeof window === "undefined" || !window.visualViewport) return;
-    if (!isPhoneViewport()) return;
-    const vv = window.visualViewport;
-    const update = () => {
-      const keyboardPx = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      liftPx = keyboardPx > 80 ? keyboardPx : 0;
-    };
-    update();
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
-    return () => {
-      liftPx = 0;
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
-    };
   });
 
   let hasText = $derived(text.trim().length > 0);
@@ -77,7 +57,7 @@
   }
 </script>
 
-<div class="what-shifted" class:filled={savedHasText} class:lifted={liftPx > 0} style:transform={liftPx ? `translateY(-${liftPx}px)` : ""}>
+<div class="what-shifted" class:filled={savedHasText} class:expanded={expanded}>
   {#if !expanded}
     <button class="strip-toggle label" onclick={toggle}>
       {#if savedHasText}
@@ -114,11 +94,20 @@
     transition: transform var(--motion-fast);
   }
 
-  .what-shifted.lifted {
-    background: var(--canvas-bg);
-    z-index: 30;
-    border-radius: var(--radius-md) var(--radius-md) 0 0;
-    box-shadow: 0 -0.5rem 1.5rem var(--card-shadow);
+  /* Float the strip above the soft keyboard on phone. --kb-inset
+     (keyboard-state.js, the app's single viewport-state owner) is the
+     keyboard's height when it's covering the field, 0px otherwise — so
+     the transform below is a no-op with the keyboard down. Scoped to the
+     phone/landscape-phone media query (mirrors isPhoneViewport()) so a
+     desktop window never picks it up. */
+  @media (max-width: 480px), (orientation: landscape) and (max-height: 480px) {
+    .what-shifted.expanded {
+      background: var(--canvas-bg);
+      z-index: 30;
+      border-radius: var(--radius-md) var(--radius-md) 0 0;
+      box-shadow: 0 -0.5rem 1.5rem var(--card-shadow);
+      transform: translateY(calc(-1 * var(--kb-inset, 0px)));
+    }
   }
 
   .strip-toggle {

@@ -12,6 +12,8 @@
 // All thresholds and constants live here as a single source of truth for
 // gesture behavior across the app.
 
+import { gestureArmed, atScrollBoundary } from "./gesture-arming.js";
+
 export const EDGE_ZONE_PX = 24;
 export const EDGE_THRESHOLD_PX = 80;
 export const FLICK_Y_MIN_PX = 60;
@@ -180,7 +182,7 @@ export function edgeSwipe(node, params = {}) {
  *  vertical motion). */
 export function verticalFlick(node, params = {}) {
   let opts = { enabled: () => true, ignoreSelector: null, ...params };
-  let startX = 0, startY = 0, startT = 0, ignore = false;
+  let startX = 0, startY = 0, startT = 0, ignore = false, armed = true;
 
   function onTouchStart(e) {
     const t = e.touches?.[0];
@@ -193,10 +195,24 @@ export function verticalFlick(node, params = {}) {
     ignore = inEdgeZone ||
       !!(opts.ignoreSelector && e.target instanceof Element &&
          e.target.closest(opts.ignoreSelector));
+    // Allowlist, decided once at touchstart (not touchend): never inside
+    // an overlay, never while the soft keyboard is up (the user is
+    // typing), and only when the scroll container was already at its
+    // boundary — scroll wins over the flick. Absent opts.overlayOpen /
+    // opts.keyboardOpen / opts.scrollEl (other callers) fall back to the
+    // old always-armed behavior.
+    armed = gestureArmed({
+      overlayOpen: typeof opts.overlayOpen === "function" ? opts.overlayOpen() : false,
+      keyboardOpen: typeof opts.keyboardOpen === "function" ? opts.keyboardOpen() : false,
+      scrollAtBoundary: atScrollBoundary(
+        typeof opts.scrollEl === "function" ? opts.scrollEl() : null,
+        "up",
+      ),
+    });
   }
 
   function onTouchEnd(e) {
-    if (ignore || !opts.enabled()) return;
+    if (ignore || !armed || !opts.enabled()) return;
     const t = e.changedTouches?.[0];
     if (!t) return;
     const dx = t.clientX - startX;

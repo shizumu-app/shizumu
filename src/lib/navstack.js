@@ -53,20 +53,44 @@ export function navPush(tag, onClose, opts = {}) {
   return entry.id;
 }
 
-export function navClose(id) {
-  const entry = stack.find((e) => e.id === id && !e.closed);
-  if (!entry) return;
-  entry.closed = true;
-  // Rewind history for every closed entry sitting on top of the stack.
+// Shared by navClose and navPopAll: once an entry is marked closed, rewind
+// history for every closed entry sitting on top of the stack (a single
+// history.go(-N) fires exactly one popstate regardless of N).
+function popTrailingClosed() {
   let trailing = 0;
   while (stack.length && stack.at(-1).closed) {
     stack.pop();
     trailing += 1;
   }
   if (trailing > 0 && typeof window !== "undefined" && window.history) {
-    suppress += 1; // history.go(-N) fires exactly ONE popstate regardless of N
+    suppress += 1;
     window.history.go(-trailing);
   }
+}
+
+export function navClose(id) {
+  const entry = stack.find((e) => e.id === id && !e.closed);
+  if (!entry) return;
+  entry.closed = true;
+  popTrailingClosed();
+  emit();
+}
+
+// Sweeps every live entry matching `pred` — closing it through its own
+// onClose (so its owner's state actually unwinds, exactly like a hardware-
+// back dismiss) and dropping it from the stack. Used on top-level space
+// switches (MobileActionBar's pages/memory/settings callbacks) to sweep
+// hideBar entries a sheet left behind: a stale hideBar entry is exactly
+// what latched the bar hidden until restart, so a survivor here is a bug,
+// never a case to special-case around.
+export function navPopAll(pred = () => true) {
+  const targets = stack.filter((e) => !e.closed && pred(e));
+  if (targets.length === 0) return;
+  for (const e of targets) {
+    try { e.onClose?.(); } catch {}
+    e.closed = true;
+  }
+  popTrailingClosed();
   emit();
 }
 

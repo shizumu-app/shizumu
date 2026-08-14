@@ -80,7 +80,7 @@
   function handleScrim() {
     // If a form input inside the sheet has focus, the user is typing —
     // ignore the click. Android's soft keyboard can fire a synthetic
-    // click on the layout viewport just outside the visualViewport
+    // click on the layout viewport just outside the visible viewport
     // (which is where the scrim now lives), so this catches a common
     // false dismiss while typing in a sheet's search input.
     if (sheetEl && document.activeElement && sheetEl.contains(document.activeElement)) {
@@ -127,32 +127,6 @@
       document.body.classList.add("shizumu-bottom-sheet-open");
       return () => document.body.classList.remove("shizumu-bottom-sheet-open");
     }
-  });
-
-  // Reposition the sheet above the soft keyboard when it opens. The
-  // sheet's static `bottom: 3.5rem` (clear of the MobileActionBar)
-  // gets covered by the IME otherwise. visualViewport tracks the
-  // keyboard's slide-in; subtract its bottom inset from the window.
-  const SHEET_REST_BOTTOM = "0px";
-  let sheetBottom = $state(SHEET_REST_BOTTOM);
-  $effect(() => {
-    if (!open || typeof window === "undefined" || !window.visualViewport) return;
-    const vv = window.visualViewport;
-    const update = () => {
-      const keyboardPx = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      if (keyboardPx > 80) {
-        sheetBottom = `${keyboardPx}px`;
-      } else {
-        sheetBottom = SHEET_REST_BOTTOM;
-      }
-    };
-    update();
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
-    return () => {
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
-    };
   });
 
   // Backstop for Android WebView quirks (Samsung's WebView sometimes
@@ -208,7 +182,6 @@
     aria-modal="true"
     aria-label={title || "sheet"}
     bind:this={sheetEl}
-    style:bottom={sheetBottom}
     style:transform={dragDy ? `translateY(${dragDy}px)` : ""}
   >
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -248,8 +221,11 @@
     right: 0;
     /* Extend to the very bottom of the viewport (above the gesture
        safe-area). MobileActionBar hides itself while a sheet is open
-       via body.shizumu-bottom-sheet-open. */
-    bottom: 0;
+       via body.shizumu-bottom-sheet-open. Above the soft keyboard: --kb-inset
+       (keyboard-state.js, the app's single viewport-state owner) is the
+       keyboard's height when it's covering the sheet, 0px otherwise. */
+    bottom: var(--kb-inset, 0px);
+    transition: bottom 160ms cubic-bezier(0.2, 0, 0, 1);
     z-index: 9999;
     background: var(--canvas-bg);
     border-top: 1px solid var(--card-border);

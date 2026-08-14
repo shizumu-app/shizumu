@@ -431,8 +431,50 @@ pub fn cleanup_orphan_pages(
     cleanup_orphan_pages_inner(&db, &engine)
 }
 
+/// True when `op_log` holds any op referencing `page_id` from a device
+/// other than this one. Remote ops carry `device_id != ''` but leave the
+/// plaintext `doc_id` column empty (the page id only lives inside the
+/// decrypted `payload_blob` JSON), so the match goes through
+/// `json_extract` on the payload instead of the indexed `doc_id` column.
+fn page_touched_by_foreign_device(conn: &rusqlite::Connection, page_id: &str) -> bool {
+    match conn.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM op_log
+            WHERE device_id IS NOT NULL AND device_id != ''
+              AND json_extract(CAST(payload_blob AS TEXT), '$.page_id') = ?1)",
+        params![page_id],
+        |r| r.get::<_, i64>(0).map(|v| v != 0),
+    ) {
+        Ok(touched) => touched,
+        // Fail closed: this guard exists to stop a tombstone broadcast, so
+        // a query error (e.g. a non-JSON payload_blob poisoning json1 for
+        // the whole EXISTS, not just its own row) must be treated as
+        // "assume touched, skip the sweep" rather than silently reporting
+        // untouched for every candidate.
+        Err(e) => {
+            log::warn!("cleanup: foreign-touch query failed for {page_id}: {e} — treating as touched");
+            true
+        }
+    }
+}
+
 pub fn cleanup_orphan_pages_inner(db: &Db, engine: &op_log::OpLog) -> Result<i64, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
+
+    // Sync race guard: before the first pull of this session, an empty row
+    // may be a synced page whose content ops haven't merged yet. Sweeping
+    // it would tombstone another device's page. Sweep normally when sync
+    // is off (fresh installs) or after the first pull pass completes.
+    let sync_enabled: bool = conn
+        .query_row("SELECT enabled FROM sync_state WHERE id = 1", [], |r| {
+            r.get::<_, i64>(0).map(|v| v != 0)
+        })
+        .unwrap_or(false);
+    if sync_enabled
+        && !crate::sync::worker::FIRST_PULL_DONE.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Ok(0);
+    }
 
     // See the doc comment above for the full orphan definition. Runs in
     // onMount before loadToday so the user's current page hasn't been
@@ -458,6 +500,11 @@ pub fn cleanup_orphan_pages_inner(db: &Db, engine: &op_log::OpLog) -> Result<i64
     let mut deleted = 0i64;
     for (id, content_json) in candidates {
         if !is_page_empty(&content_json) {
+            continue;
+        }
+        // Never sweep a page another device has ops for — its emptiness
+        // here says nothing about its state there.
+        if page_touched_by_foreign_device(&conn, &id) {
             continue;
         }
         // Defensive cascade — the SQL filter already excludes pages with
@@ -4545,6 +4592,11 @@ pub struct SyncStatusDto {
     /// instead of the OS keyring (keyring-unavailable fallback). The UI
     /// warns the user; see security audit H3.
     pub keys_at_rest_unprotected: bool,
+    /// True once the worker has seen a `device_revoked` wire error and
+    /// stopped ticking (settings key `sync_revoked`). The UI offers
+    /// re-pairing instead of treating this like a transient wire
+    /// failure; `sync_reset` (pair-again) is what clears it.
+    pub revoked: bool,
 }
 
 /// One row from `sync_error_history`. The status pill's popover
@@ -4921,6 +4973,7 @@ pub fn sync_status_inner(db: &Db) -> Result<SyncStatusDto, String> {
         && crate::sync::keys::load_device_keys(&conn)?.is_some();
     let keys_at_rest_unprotected =
         configured && crate::sync::keys::secrets_unprotected_at_rest(&conn);
+    let revoked = crate::sync::config::get_setting_i64(&conn, "sync_revoked") == Some(1);
     Ok(SyncStatusDto {
         relay_url: cfg.relay_url,
         user_id: cfg.user_id,
@@ -4931,6 +4984,7 @@ pub fn sync_status_inner(db: &Db) -> Result<SyncStatusDto, String> {
         last_sync_at_ms: cfg.last_sync_at_ms,
         last_error: cfg.last_error,
         keys_at_rest_unprotected,
+        revoked,
     })
 }
 
@@ -5303,6 +5357,16 @@ pub fn sync_reset(
     db: State<'_, Db>,
     worker_slot: State<'_, SyncWorkerSlot>,
 ) -> Result<(), String> {
+    sync_reset_inner(db.inner())?;
+    // Shut down the worker; the slot drop signals it.
+    let mut slot = worker_slot.lock().map_err(|e| e.to_string())?;
+    *slot = None;
+    Ok(())
+}
+
+/// `sync_reset`'s DB-only body, split out so tests can drive it without
+/// a Tauri `State<SyncWorkerSlot>` (which needs a running app).
+pub fn sync_reset_inner(db: &Db) -> Result<(), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
     conn.execute_batch(
         "UPDATE sync_state SET enabled=0, user_id=NULL, device_id=NULL, \
@@ -5311,12 +5375,9 @@ pub fn sync_reset(
          DELETE FROM sync_keys; \
          UPDATE op_log SET state='local_only', ciphertext=NULL, user_seq=NULL \
          WHERE state IN ('committed', 'pending_upload'); \
-         DELETE FROM op_log_meta WHERE key='backfill_complete';"
+         DELETE FROM op_log_meta WHERE key='backfill_complete'; \
+         DELETE FROM settings WHERE key = 'sync_revoked';"
     ).map_err(|e| e.to_string())?;
-    drop(conn);
-    // Shut down the worker; the slot drop signals it.
-    let mut slot = worker_slot.lock().map_err(|e| e.to_string())?;
-    *slot = None;
     Ok(())
 }
 
@@ -6363,5 +6424,100 @@ mod tests {
             )
             .unwrap();
         assert_eq!(still_there, 0, "a genuinely empty page must actually be deleted");
+    }
+
+    // ─── cleanup_orphan_pages: sync-aware guards ───────────────────────
+    // Regression coverage for a real bug: the launch-time sweeper deleted a
+    // synced page that was empty-at-that-instant (its content ops hadn't
+    // merged yet) and broadcast a tombstone for it, destroying the other
+    // device's writes (diagnosed: desktop DB op_log seq 180, then 24
+    // refused edits). Two guards: never sweep a page any other device has
+    // ops for; never sweep before this session's first successful pull
+    // when sync is enabled.
+
+    #[test]
+    fn cleanup_skips_a_page_touched_by_another_device() {
+        let db = test_db();
+        let engine = engine_for(&db);
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, created_at, updated_at) VALUES ('p1','2026-08-13',1,'t','t')",
+            [],
+        ).unwrap();
+        // A remote op that references p1: device_id set, page_id only in payload.
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('r1','page_blob','', ?, 1, 'other-device', 'committed', 0, 0)",
+            rusqlite::params![br#"{"op":"save_page_content","page_id":"p1","fields":{}}"#.to_vec()],
+        ).unwrap();
+        drop(conn);
+        let deleted = cleanup_orphan_pages_inner(&db, &engine).unwrap();
+        assert_eq!(deleted, 0, "a foreign-touched page must never be swept");
+        let conn = db.lock().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM pages WHERE id='p1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "the foreign-touched page row must survive cleanup_orphan_pages");
+    }
+
+    #[test]
+    fn cleanup_waits_for_first_pull_when_sync_enabled() {
+        use std::sync::atomic::Ordering;
+        let db = test_db();
+        let engine = engine_for(&db);
+        {
+            let conn = db.lock().unwrap();
+            conn.execute("INSERT INTO pages (id, date, page_number, created_at, updated_at) VALUES ('p2','2026-08-13',1,'t','t')", []).unwrap();
+            crate::sync::config::set_enabled(&conn, true).unwrap();
+        }
+        crate::sync::worker::FIRST_PULL_DONE.store(false, Ordering::SeqCst);
+        let deleted = cleanup_orphan_pages_inner(&db, &engine).unwrap();
+        assert_eq!(deleted, 0, "no sweep before the session's first pull");
+        crate::sync::worker::FIRST_PULL_DONE.store(true, Ordering::SeqCst);
+        let deleted = cleanup_orphan_pages_inner(&db, &engine).unwrap();
+        assert_eq!(deleted, 1, "after first pull the empty local-only page sweeps normally");
+    }
+
+    #[test]
+    fn cleanup_treats_a_foreign_touch_query_error_as_touched() {
+        // A malformed foreign payload makes json_extract error for the WHOLE
+        // EXISTS query, not just its own row; fail-open here (unwrap_or(false))
+        // silently disabled the guard for the entire sweep pass. Fail-closed =
+        // assume touched, skip the sweep.
+        let db = test_db();
+        let engine = engine_for(&db);
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, created_at, updated_at) VALUES ('p3','2026-08-13',1,'t','t')",
+            [],
+        ).unwrap();
+        // A remote op with a payload_blob that isn't valid JSON at all —
+        // json_extract errors on this, poisoning the EXISTS query.
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('r3','page_blob','', ?, 1, 'other-device', 'committed', 0, 0)",
+            rusqlite::params![b"not json at all".to_vec()],
+        ).unwrap();
+        drop(conn);
+        let deleted = cleanup_orphan_pages_inner(&db, &engine).unwrap();
+        assert_eq!(deleted, 0, "a foreign-touch query error must fail closed, not silently disable the guard");
+        let conn = db.lock().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM pages WHERE id='p3'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "the page must survive when the foreign-touch check itself errors");
+    }
+
+    // ─── sync_reset: revoked flag ──────────────────────────────────────
+
+    #[test]
+    fn sync_reset_clears_the_revoked_flag() {
+        let db = test_db();
+        {
+            let conn = db.lock().unwrap();
+            conn.execute("INSERT OR REPLACE INTO settings (key, value, applied_hlc_ts) VALUES ('sync_revoked','1',0)", []).unwrap();
+        }
+
+        sync_reset_inner(&db).unwrap();
+
+        let conn = db.lock().unwrap();
+        let v = crate::sync::config::get_setting_i64(&conn, "sync_revoked");
+        assert!(v.is_none() || v == Some(0), "pair-again must clear the revoked flag");
     }
 }

@@ -209,6 +209,13 @@
       margin-bottom: 0;
       max-height: calc(100dvh - 2rem);
       overflow-y: auto;
+      /* Universal bar-clearance rule: this is the real scroll container
+         (the .overlay it centers in doesn't itself clip content), and
+         nothing here registers a navstack hideBar entry, so the fixed
+         MobileActionBar can sit on top of it — reserve its height so the
+         last line / the "what shifted" note never sits underneath. Same
+         clearance pattern as Memory.svelte and SidebarShell. */
+      padding-bottom: calc(var(--mobile-bar-h) + 0.5rem);
     }
   }
 

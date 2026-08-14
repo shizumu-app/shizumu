@@ -269,8 +269,11 @@
          action row of the pairing wizard — can scroll clear of the bar instead
          of sitting hidden behind pages/memory/settings. --mobile-bar-h already
          folds in the bottom safe-area. Same clearance pattern as Memory and
-         SidebarShell. */
-      padding-bottom: calc(var(--mobile-bar-h) + 0.75rem);
+         SidebarShell. Also clear the soft keyboard when it's taller than the
+         bar (--kb-inset from keyboard-state.js, the app's single
+         viewport-state owner) — otherwise a focused field near the bottom of
+         a phone modal sits behind the IME instead of above it. */
+      padding-bottom: calc(max(var(--mobile-bar-h), var(--kb-inset, 0px)) + 0.75rem);
       padding-left: max(1rem, var(--safe-left));
       padding-right: max(1rem, var(--safe-right));
       box-shadow: none;

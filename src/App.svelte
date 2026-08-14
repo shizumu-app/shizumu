@@ -8,11 +8,15 @@
   import { checkOnboardingComplete, getSetting, checkEncryptionStatus, createNewPage } from "./lib/api.js";
   import { getLocalDateStr } from "./lib/utils.js";
   import MobileActionBar from "./components/MobileActionBar.svelte";
-  import { isMobileNav, watchMobileNav } from "./lib/responsive.js";
+  import { isMobileNav, watchMobileNav, watchKeyboardOpen } from "./lib/responsive.js";
   import { syncAppHeight } from "./lib/viewport-height.js";
   import { edgeSwipe } from "./lib/gestures.js";
   import { swipeIntent } from "./lib/swipe-intent.js";
-  import { initNavStack, navPush, navClose, navBack, subscribe as navSubscribe } from "./lib/navstack.js";
+  import { initNavStack, navPush, navClose, navPopAll, navBack, subscribe as navSubscribe } from "./lib/navstack.js";
+  import { get } from "svelte/store";
+  import { keyboardOpen } from "./lib/keyboard-state.js";
+  import { atLastPage } from "./lib/page-rail-state.js";
+  import { barVisible } from "./lib/bar-visibility.js";
 
   function resolveSystemTone() {
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -230,6 +234,12 @@
   let mobileNav = $state(isMobileNav());
   $effect(() => watchMobileNav((m) => { mobileNav = m; }));
 
+  // MobileActionBar visibility (see lib/bar-visibility.js) needs the live
+  // keyboard state alongside navSnap.hideBar — same watchKeyboardOpen
+  // wrapper Page.svelte already uses for its own keyboard-coupled state.
+  let kbOpen = $state(false);
+  $effect(() => watchKeyboardOpen((open) => { kbOpen = open; }));
+
   // Pin the shell to the visible viewport (see lib/viewport-height.js).
   // Its own effect rather than onMount: that hook returns early for
   // playground and VR mode, and every mount needs a correct shell height.
@@ -285,18 +295,37 @@
   // Page.svelte's navigatePrev / navigateNext. The rule for which gesture
   // means what lives in lib/swipe-intent.js so it can be tested without a
   // pointer; back still wins the left edge whenever something is open.
+  // atLastPage/keyboardOpen are read fresh at gesture time (not tracked as
+  // local reactive state) since nothing here needs to re-render on them —
+  // Page.svelte and keyboard-state.js are the owners.
+  function currentSwipeIntent(edge) {
+    return swipeIntent({ edge, space, navDepth: navSnap.depth, atLastPage: get(atLastPage), keyboardOpen: get(keyboardOpen) });
+  }
+
   function runSwipeIntent(edge) {
-    const intent = swipeIntent({ edge, space, navDepth: navSnap.depth });
+    const intent = currentSwipeIntent(edge);
     if (intent === "back") navBack();
     else if (intent === "prev") window.dispatchEvent(new CustomEvent("shizumu:nav-prev"));
     else if (intent === "next") window.dispatchEvent(new CustomEvent("shizumu:nav-next"));
+    // On the last page a right swipe means "give me a fresh page", same as
+    // the pages sheet's "+ new page" — routed through the identical
+    // handler in Page.svelte (handleRailNew), no second creation path.
+    else if (intent === "create") window.dispatchEvent(new CustomEvent("shizumu:nav-create"));
   }
 
   function swipeEnabled() {
     return mobileNav && !isLocked && !!onboardingComplete;
   }
 
+  // Every top-level bar tap sweeps stale hideBar entries first — a sheet
+  // left open under the surface being switched away from (or, for
+  // settings, nested under settings itself) closes through its own
+  // onClose so its owner unwinds cleanly, and can never survive as an
+  // orphan hideBar entry that latches the bar hidden (the bug this whole
+  // module exists to close off). Unconditional on all three: there is no
+  // "sheet legitimately survives a bar tap" case.
   function barPages() {
+    navPopAll((e) => e.hideBar);
     if (space !== "page") {
       space = "page";
       return;
@@ -305,9 +334,11 @@
     window.dispatchEvent(new CustomEvent("shizumu:open-pages"));
   }
   function barMemory() {
+    navPopAll((e) => e.hideBar);
     if (space !== "memory") space = "memory";
   }
   function barSettings() {
+    navPopAll((e) => e.hideBar);
     if (space !== "page") space = "page";
     requestAnimationFrame(() => {
       window.dispatchEvent(new CustomEvent("shizumu:toggle-settings"));
@@ -365,7 +396,7 @@
         if (!swipeEnabled()) return false;
         // Same rule that decides what the gesture does, so a swipe is never
         // armed for an action that would then be a no-op.
-        return swipeIntent({ edge, space, navDepth: navSnap.depth }) !== null;
+        return currentSwipeIntent(edge) !== null;
       },
       // edgeSwipe's callbacks are named for the drag DIRECTION, not the
       // edge: onRight fires for a LEFT-edge drag pulled rightward.
@@ -424,7 +455,7 @@
 
   {#if mobileNav && !isLocked && onboardingComplete}
     <MobileActionBar
-      hidden={navSnap.hideBar}
+      hidden={!barVisible({ hideBarNav: navSnap.hideBar, keyboardOpen: kbOpen })}
       onPages={barPages}
       onMemory={barMemory}
       onSettings={barSettings}
@@ -438,8 +469,9 @@
 <style>
   .app-shell {
     width: 100%;
-    /* --app-height is visualViewport.height, kept current by
-       lib/viewport-height.js. The dvh/vh pair below it is the pre-script
+    /* --app-height is the visible-viewport height, kept current by
+       lib/keyboard-state.js (re-exported under its original name by
+       lib/viewport-height.js). The dvh/vh pair below it is the pre-script
        fallback (and covers the first paint).
 
        Why not dvh alone: dvh resolves against the LAYOUT viewport, and
@@ -448,8 +480,8 @@
        windowSoftInputMode we can't set — the manifest lives in the
        generated gen/ tree CI rebuilds. When it doesn't shrink, the shell
        stays taller than the screen and focusing the bottom bar scrolls the
-       header and the whole page off the top. visualViewport.height means
-       "what's visible" in every mode. */
+       header and the whole page off the top. The visible viewport's height
+       means "what's visible" in every mode. */
     height: 100vh;
     height: 100dvh;
     height: var(--app-height, 100dvh);

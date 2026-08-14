@@ -358,6 +358,36 @@ fn merge_page(
             // a newer HLC is SkippedStaleHlc. Only a present, older row is
             // updated.
             if let Some(skip) = stale_or_missing_page(conn, page_id, hlc_ts)? {
+                // A missing row that a cleanup_orphan_page tombstone explains
+                // is a GC guess, not a user delete. An edit with a NEWER HLC
+                // disproves the guess: resurrect the page at its original
+                // date/page_number and apply the edit. (Replay of parked
+                // merge_error rows routes back through here each worker
+                // tick, so previously-refused edits self-heal.)
+                let missing = matches!(skip, MergeOutcome::SkippedMalformed);
+                let resurrect = missing
+                    && gc_tombstone_hlc(conn, page_id).is_some_and(|t| hlc_ts > t);
+                if resurrect {
+                    if let Some((date, page_number)) = create_op_fields(conn, page_id) {
+                        insert_page_with_collision_resolution(
+                            conn, page_id, &date, page_number, None,
+                            Some(content), None, None, hlc_ts, &now,
+                        )?;
+                        // Mirror the backfill arm: a GC tombstone is precisely
+                        // the event that orphaned this page's pins
+                        // (shared_objects.status='orphaned') and swept its
+                        // attachments — the resurrected row must repair both
+                        // now, not wait for a future save to notice.
+                        if let Err(e) = check_pin_divergence(conn, page_id) {
+                            log::warn!("pin divergence check failed for page {page_id}: {e}");
+                        }
+                        if let Err(e) = rescue_orphaned_pins(conn, page_id, content) {
+                            log::warn!("pin orphan rescue failed for page {page_id}: {e}");
+                        }
+                        rearm_swept_attachments_of_row(conn, PAGE_CONTENT_SQL, page_id);
+                        return Ok(MergeOutcome::Applied);
+                    }
+                }
                 return Ok(skip);
             }
             conn.execute(
@@ -443,6 +473,43 @@ fn ensure_page_exists(conn: &Connection, page_id: &str, hlc_ts: i64) -> rusqlite
         params![page_id, &today, page_number, &now, &now, hlc_ts],
     )?;
     Ok(())
+}
+
+/// The HLC of the newest cleanup_orphan_page tombstone for this page, or
+/// None. A GC tombstone means "this looked like garbage at launch" — it is
+/// a guess, and a later edit disproves it. User-intent deletes use other
+/// tombstone ops and are never overridden here.
+fn gc_tombstone_hlc(conn: &Connection, page_id: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT MAX(hlc_ts) FROM op_log
+          WHERE op_kind = 'tombstone'
+            AND json_extract(CAST(payload_blob AS TEXT), '$.op') = 'cleanup_orphan_page'
+            AND json_extract(CAST(payload_blob AS TEXT), '$.page_id') = ?1",
+        params![page_id],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+/// date + page_number from the page's create/backfill op, for placing a
+/// resurrected row. None when no create was ever seen — then there is
+/// nothing principled to resurrect onto and the edit stays refused.
+fn create_op_fields(conn: &Connection, page_id: &str) -> Option<(String, i64)> {
+    conn.query_row(
+        "SELECT json_extract(CAST(payload_blob AS TEXT), '$.fields.date'),
+                json_extract(CAST(payload_blob AS TEXT), '$.fields.page_number')
+           FROM op_log
+          WHERE op_kind = 'page_blob'
+            AND json_extract(CAST(payload_blob AS TEXT), '$.page_id') = ?1
+            AND json_extract(CAST(payload_blob AS TEXT), '$.op')
+                IN ('get_or_create_today','create_new_page','backfill_page_initial_state')
+          ORDER BY hlc_ts ASC LIMIT 1",
+        params![page_id],
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?)),
+    )
+    .ok()
+    .and_then(|(d, n)| Some((d?, n?)))
 }
 
 /// Classify a page-targeting LWW op against the target row before it
@@ -1538,6 +1605,121 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 0, "no phantom row created");
+    }
+
+    /// A page GC-tombstoned by `cleanup_orphan_page` (the launch sweeper's
+    /// guess that an orphaned row was garbage) must not stay dead forever
+    /// once a newer edit proves the guess wrong. This is the parked
+    /// merge_error self-heal path: a device that kept editing after a
+    /// remote GC tombstone should resurrect the row instead of parking the
+    /// edit as skipped_malformed indefinitely.
+    #[test]
+    fn save_content_resurrects_a_gc_tombstoned_page() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        // The page was created (op in the log), then GC-tombstoned at hlc 100,
+        // and the row is GONE locally.
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('c1','page_blob','pgx', ?, 50, '', 'committed', 't', 't')",
+            params![br#"{"op":"get_or_create_today","page_id":"pgx","fields":{"date":"2026-08-13","page_number":1},"hlc_ts":50}"#.to_vec()],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('t1','tombstone','pgx', ?, 100, 'phone', 'committed', 't', 't')",
+            params![br#"{"op":"cleanup_orphan_page","page_id":"pgx","hlc_ts":100}"#.to_vec()],
+        ).unwrap();
+        // An edit NEWER than the GC tombstone arrives.
+        let payload = json!({
+            "op": "save_page_content", "page_id": "pgx", "hlc_ts": 200,
+            "fields": { "content_json": "{\"type\":\"doc\",\"content\":[]}" }
+        });
+        let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
+        assert!(matches!(out, MergeOutcome::Applied), "newer edit must resurrect, got {out:?}");
+        let (date, n): (String, i64) = conn.query_row(
+            "SELECT date, page_number FROM pages WHERE id='pgx'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((date.as_str(), n), ("2026-08-13", 1));
+    }
+
+    /// The GC tombstone that made the page eligible for resurrection is the
+    /// exact same event that orphaned its pins (deleting a page flips its
+    /// pins to status='orphaned', source_page_id=NULL — see
+    /// commands.rs's delete handlers). A resurrect must repair that
+    /// side-table state itself, not wait for a future save to happen to
+    /// touch it: the pin's pinId is still sitting inside the resurrected
+    /// content_json right now.
+    #[test]
+    fn save_content_resurrect_rescues_orphaned_pins() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('c1','page_blob','pgz', ?, 50, '', 'committed', 't', 't')",
+            params![br#"{"op":"get_or_create_today","page_id":"pgz","fields":{"date":"2026-08-13","page_number":1},"hlc_ts":50}"#.to_vec()],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('t1','tombstone','pgz', ?, 100, 'phone', 'committed', 't', 't')",
+            params![br#"{"op":"cleanup_orphan_page","page_id":"pgz","hlc_ts":100}"#.to_vec()],
+        ).unwrap();
+        // The GC delete orphaned this pin: status flipped to 'orphaned' and
+        // source_page_id cleared (mirrors commands.rs's delete-page handler).
+        conn.execute(
+            "INSERT INTO shared_objects (id, source_page_id, object_type, content, status, position, created_at, updated_at)
+             VALUES ('PIN1', NULL, 'note', 'x', 'orphaned', 0, '0', '0')",
+            [],
+        ).unwrap();
+        // An edit NEWER than the GC tombstone arrives, and its content
+        // still references PIN1 via a pinId attr.
+        let payload = json!({
+            "op": "save_page_content", "page_id": "pgz", "hlc_ts": 200,
+            "fields": { "content_json": r#"{"type":"doc","content":[{"type":"list","attrs":{"pinId":"PIN1"},"content":[]}]}"# }
+        });
+        let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
+        assert!(matches!(out, MergeOutcome::Applied), "newer edit must resurrect, got {out:?}");
+        let (status, source_page_id): (String, Option<String>) = conn.query_row(
+            "SELECT status, source_page_id FROM shared_objects WHERE id='PIN1'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(status, "open", "resurrect must un-orphan a pin still referenced by the content");
+        assert_eq!(source_page_id.as_deref(), Some("pgz"), "rescue_orphaned_pins re-stamps a NULL source_page_id to the page that now carries it");
+    }
+
+    /// Without any GC tombstone in the log, a missing row for
+    /// `save_page_content` stays refused — there is nothing that
+    /// establishes this was ever a legitimate page, so resurrecting would
+    /// fabricate a phantom row (the case
+    /// `save_page_content_for_unknown_page_does_not_create_phantom_row`
+    /// already covers, restated here to pin the tombstone-absent branch of
+    /// the new resurrection logic specifically).
+    #[test]
+    fn save_content_still_refuses_when_no_gc_tombstone_explains_the_gap() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        let payload = json!({
+            "op": "save_page_content", "page_id": "ghost", "hlc_ts": 200,
+            "fields": { "content_json": "{}" }
+        });
+        let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
+        assert!(matches!(out, MergeOutcome::SkippedMalformed));
+    }
+
+    /// An edit OLDER than the GC tombstone does not resurrect the page —
+    /// it doesn't disprove the tombstone's guess, it predates it.
+    #[test]
+    fn save_content_older_than_the_gc_tombstone_stays_dead() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('t2','tombstone','pgy', ?, 300, 'phone', 'committed', 't', 't')",
+            params![br#"{"op":"cleanup_orphan_page","page_id":"pgy","hlc_ts":300}"#.to_vec()],
+        ).unwrap();
+        let payload = json!({
+            "op": "save_page_content", "page_id": "pgy", "hlc_ts": 200,
+            "fields": { "content_json": "{}" }
+        });
+        let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
+        assert!(matches!(out, MergeOutcome::SkippedMalformed));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { placeMenu } from "../editor/menu-placement.js";
+import { getViewportHeight } from "../keyboard-state.js";
 import { Extension } from "@tiptap/core";
 import { Suggestion } from "@tiptap/suggestion";
 import { PluginKey } from "@tiptap/pm/state";
@@ -216,7 +217,6 @@ function positionMenu(menuEl, rect) {
   menuEl.style.maxHeight = "";
   menuEl.style.display = "block";
 
-  const vv = window.visualViewport;
   const cs = getComputedStyle(document.documentElement);
   const px = (v) => {
     const n = parseFloat(v);
@@ -227,10 +227,12 @@ function positionMenu(menuEl, rect) {
     caretRect: rect,
     menuH: menuEl.offsetHeight,
     menuW: menuEl.offsetWidth,
-    // visualViewport, not innerHeight: the layout viewport's keyboard
-    // behaviour is engine-dependent, and this menu is opened by typing.
-    vh: (vv && vv.height) || window.innerHeight,
-    vw: (vv && vv.width) || window.innerWidth,
+    // The visible viewport height, not innerHeight: the layout viewport's
+    // keyboard behaviour is engine-dependent, and this menu is opened by
+    // typing. getViewportHeight() reads --app-height, kept current by
+    // keyboard-state.js (the app's single viewport-state owner).
+    vh: getViewportHeight(),
+    vw: window.innerWidth,
     safeTop: px(cs.getPropertyValue("--safe-top")),
     safeBottom: px(cs.getPropertyValue("--safe-bottom")),
   });

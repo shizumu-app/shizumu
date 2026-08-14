@@ -3,7 +3,6 @@ import {
   isCoarsePointer,
   isPhoneViewport,
   isTabletViewport,
-  isKeyboardOpen,
   watchMedia,
   PHONE_QUERY,
   TABLET_QUERY,
@@ -36,7 +35,6 @@ beforeEach(async () => {
 
 afterEach(() => {
   delete window.matchMedia;
-  delete window.visualViewport;
 });
 
 // A phone doesn't stop being a phone when you turn it sideways. Landscape
@@ -125,119 +123,39 @@ describe("isTabletViewport", () => {
   });
 });
 
+// The baseline/threshold arithmetic that used to live here (resizes-visual
+// vs. resizes-content, re-baselining on rotation, the slack threshold) now
+// lives in keyboard-state.js's computeKeyboardState — see
+// lib/__tests__/keyboard-state.test.js. isKeyboardOpen()/watchKeyboardOpen()
+// are thin wrappers around its `keyboardOpen` store, so these tests only
+// need to confirm the wrapping, not re-derive the arithmetic.
 describe("isKeyboardOpen", () => {
-  it("returns true when visualViewport is much shorter than innerHeight", async () => {
-    window.visualViewport = { height: 400 };
-    Object.defineProperty(window, "innerHeight", { value: 800, configurable: true });
+  it("reads the current value of the keyboardOpen store", async () => {
+    const { keyboardOpen } = await import("./keyboard-state.js");
     const m = await import("./responsive.js");
+    expect(m.isKeyboardOpen()).toBe(false);
+    keyboardOpen.set(true);
     expect(m.isKeyboardOpen()).toBe(true);
-  });
-
-  it("returns false when visualViewport is close to innerHeight", async () => {
-    window.visualViewport = { height: 750 };
-    Object.defineProperty(window, "innerHeight", { value: 800, configurable: true });
-    const m = await import("./responsive.js");
+    keyboardOpen.set(false);
     expect(m.isKeyboardOpen()).toBe(false);
   });
+});
 
-  it("returns false when visualViewport is unavailable", async () => {
-    delete window.visualViewport;
+describe("watchKeyboardOpen", () => {
+  it("fires immediately with the current value and on every store change", async () => {
+    const { keyboardOpen } = await import("./keyboard-state.js");
     const m = await import("./responsive.js");
-    expect(m.isKeyboardOpen()).toBe(false);
-  });
+    const seen = [];
+    const unsubscribe = m.watchKeyboardOpen((open) => seen.push(open));
+    expect(seen).toEqual([false]);
 
-  // index.html asks for `interactive-widget=resizes-content`, which makes
-  // the keyboard shrink the LAYOUT viewport, not just the visual one. Under
-  // that mode visualViewport.height tracks innerHeight, so the original
-  // vv-vs-innerHeight comparison reports "no keyboard" forever — which
-  // would silently kill the header collapse.
-  describe("under interactive-widget=resizes-content", () => {
-    it("detects the keyboard from innerHeight dropping below its baseline", async () => {
-      window.visualViewport = { height: 900 };
-      Object.defineProperty(window, "innerHeight", { value: 900, configurable: true });
-      const m = await import("./responsive.js");
-      // Establish the no-keyboard baseline.
-      expect(m.isKeyboardOpen()).toBe(false);
+    keyboardOpen.set(true);
+    expect(seen).toEqual([false, true]);
 
-      // Keyboard opens: both viewports shrink together.
-      window.visualViewport = { height: 400 };
-      Object.defineProperty(window, "innerHeight", { value: 400, configurable: true });
-      expect(m.isKeyboardOpen()).toBe(true);
-    });
-
-    it("goes back to false when the keyboard closes", async () => {
-      window.visualViewport = { height: 900 };
-      Object.defineProperty(window, "innerHeight", { value: 900, configurable: true });
-      const m = await import("./responsive.js");
-      m.isKeyboardOpen();
-
-      Object.defineProperty(window, "innerHeight", { value: 400, configurable: true });
-      window.visualViewport = { height: 400 };
-      expect(m.isKeyboardOpen()).toBe(true);
-
-      Object.defineProperty(window, "innerHeight", { value: 900, configurable: true });
-      window.visualViewport = { height: 900 };
-      expect(m.isKeyboardOpen()).toBe(false);
-    });
-
-    it("re-baselines upward so a taller viewport never reads as a keyboard", async () => {
-      // e.g. rotating to landscape, or the address bar collapsing.
-      window.visualViewport = { height: 400 };
-      Object.defineProperty(window, "innerHeight", { value: 400, configurable: true });
-      const m = await import("./responsive.js");
-      m.isKeyboardOpen();
-
-      Object.defineProperty(window, "innerHeight", { value: 900, configurable: true });
-      window.visualViewport = { height: 900 };
-      expect(m.isKeyboardOpen()).toBe(false);
-    });
-
-    // The existing re-baseline test only covers rotation that makes the
-    // viewport TALLER. Portrait to landscape makes it shorter, and the
-    // baseline only ever grew — so the shrink read as a keyboard that never
-    // closed, leaving the header collapsed for as long as the phone was in
-    // landscape with no keyboard on screen. A soft keyboard never changes
-    // the viewport width; a rotation always does.
-    it("re-baselines on rotation that makes the viewport SHORTER", async () => {
-      Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
-      Object.defineProperty(window, "innerHeight", { value: 800, configurable: true });
-      window.visualViewport = { height: 800 };
-      const m = await import("./responsive.js");
-      m._resetKeyboardBaseline();
-      expect(m.isKeyboardOpen()).toBe(false);
-
-      // Rotate: shorter AND wider, with no keyboard.
-      Object.defineProperty(window, "innerWidth", { value: 800, configurable: true });
-      Object.defineProperty(window, "innerHeight", { value: 390, configurable: true });
-      window.visualViewport = { height: 390 };
-      expect(m.isKeyboardOpen()).toBe(false);
-    });
-
-    it("still detects a keyboard when the width is unchanged", async () => {
-      Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
-      Object.defineProperty(window, "innerHeight", { value: 800, configurable: true });
-      window.visualViewport = { height: 800 };
-      const m = await import("./responsive.js");
-      m._resetKeyboardBaseline();
-      m.isKeyboardOpen();
-
-      // Keyboard opens: shorter, same width.
-      Object.defineProperty(window, "innerHeight", { value: 400, configurable: true });
-      window.visualViewport = { height: 400 };
-      expect(m.isKeyboardOpen()).toBe(true);
-    });
-
-    it("ignores a shrink too small to be a keyboard", async () => {
-      window.visualViewport = { height: 900 };
-      Object.defineProperty(window, "innerHeight", { value: 900, configurable: true });
-      const m = await import("./responsive.js");
-      m.isKeyboardOpen();
-
-      // A 40px system-bar change, not a keyboard.
-      Object.defineProperty(window, "innerHeight", { value: 860, configurable: true });
-      window.visualViewport = { height: 860 };
-      expect(m.isKeyboardOpen()).toBe(false);
-    });
+    unsubscribe();
+    keyboardOpen.set(false);
+    // Unsubscribed — the close transition must not reach a stale callback.
+    expect(seen).toEqual([false, true]);
   });
 });
 

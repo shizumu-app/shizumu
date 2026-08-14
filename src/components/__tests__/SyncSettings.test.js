@@ -58,6 +58,7 @@ import {
   attachmentList,
   attachmentLocalBytes,
   syncQuota,
+  syncReset,
 } from "../../lib/api.js";
 import { ATTACHMENT_LOCALITY_NOTE, PIN_RETENTION_NOTE } from "../../lib/attachment-locality.js";
 import SyncSettings from "../SyncSettings.svelte";
@@ -97,6 +98,76 @@ describe("SyncSettings", () => {
     const { target } = render(SyncSettings, {});
     await settle();
     expect(target.textContent).toContain("relay.example");
+  });
+
+  // ===== revoked device =====
+  // Task 4 (mobile-stability): the backend flips `revoked: true` in the
+  // sync_status DTO once the worker sees a 401 device_revoked and stops
+  // ticking. The UI must show the note instead of the normal paired
+  // surface, and "pair again" must clear credentials (sync_reset) and
+  // land the user in the pairing wizard's join step — never try to
+  // resurrect the worker, which has already exited by this point.
+  it("shows the revoked note instead of the paired surface, and pair-again clears credentials into the pairing wizard", async () => {
+    syncStatus
+      .mockResolvedValueOnce({
+        configured: true,
+        enabled: false,
+        revoked: true,
+        relay_url: "https://relay.example",
+        device_id: "device-1234567890",
+      })
+      .mockResolvedValueOnce({ configured: false });
+
+    const { target } = render(SyncSettings, {});
+    await settle();
+
+    expect(target.textContent).toContain(
+      "this device was revoked from the account. its local pages are untouched — syncing has stopped.",
+    );
+    // The normal paired surface (relay row) must not render underneath.
+    expect(target.textContent).not.toContain("relay.example");
+
+    byText(target, "button", "pair again").click();
+    await settleMany();
+
+    expect(syncReset).toHaveBeenCalledTimes(1);
+    expect(syncStatus).toHaveBeenCalledTimes(2);
+    // Lands in the pairing wizard's join-a-new-device entry step.
+    expect(target.textContent).toContain(
+      'on the existing device, hit "add device" and read the pairing info.',
+    );
+  });
+
+  // The tab bar stays clickable while the revoked note is showing (it
+  // overrides the pane content, not the tabs), so pair-again must not
+  // assume the user is still on "account" — it has to reset syncTab
+  // itself, or the join wizard renders under a tab whose own
+  // status?.configured gate (now false post-reset) shows its
+  // "configured under account first" dead-end instead.
+  it("pair-again resets the active tab so the join wizard renders even when triggered from a non-account tab", async () => {
+    syncStatus
+      .mockResolvedValueOnce({
+        configured: true,
+        enabled: false,
+        revoked: true,
+        relay_url: "https://relay.example",
+        device_id: "device-1234567890",
+      })
+      .mockResolvedValueOnce({ configured: false });
+
+    const { target } = render(SyncSettings, {});
+    await settle();
+
+    byText(target, "button", "devices").click();
+    await settle();
+
+    byText(target, "button", "pair again").click();
+    await settleMany();
+
+    expect(target.textContent).toContain(
+      'on the existing device, hit "add device" and read the pairing info.',
+    );
+    expect(target.textContent).not.toContain("configured under account first");
   });
 
   it("generates a phrase and advances to the phrase step on setup", async () => {

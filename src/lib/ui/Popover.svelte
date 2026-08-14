@@ -14,6 +14,7 @@
   import { placePopover } from "./popover-place.js";
   import BottomSheet from "./BottomSheet.svelte";
   import { isMobileNav, watchMobileNav } from "../responsive.js";
+  import { keyboardOpen } from "../keyboard-state.js";
 
   /** @type {{
     anchor: HTMLElement | null,
@@ -118,19 +119,17 @@
     window.addEventListener("resize", onScrollOrResize);
     document.addEventListener("pointerdown", handleDocClick);
     document.addEventListener("keydown", handleKeydown);
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", onScrollOrResize);
-      window.visualViewport.addEventListener("scroll", onScrollOrResize);
-    }
+    // Soft-keyboard open/close can shift what's visible without a window
+    // resize event (resizes-visual mode) — re-place on every transition.
+    // keyboardOpen is published by keyboard-state.js, the app's single
+    // viewport-state owner.
+    const unsubKeyboardOpen = keyboardOpen.subscribe(onScrollOrResize);
     return () => {
       window.removeEventListener("scroll", onScrollOrResize, true);
       window.removeEventListener("resize", onScrollOrResize);
       document.removeEventListener("pointerdown", handleDocClick);
       document.removeEventListener("keydown", handleKeydown);
-      if (window.visualViewport) {
-        window.visualViewport.removeEventListener("resize", onScrollOrResize);
-        window.visualViewport.removeEventListener("scroll", onScrollOrResize);
-      }
+      unsubKeyboardOpen();
     };
   });
 </script>

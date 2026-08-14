@@ -144,6 +144,41 @@ describe("verticalFlick", () => {
     expect(onUp).not.toHaveBeenCalled();
     action.destroy();
   });
+
+  // Allowlist wiring (gesture-arming.js): armed is decided once at
+  // touchstart from overlayOpen()/scrollEl(), not re-checked at touchend —
+  // a settings panel open at touchstart must not arm even if it closes
+  // mid-gesture.
+  it("does not fire onUp when overlayOpen() is true at touchstart", () => {
+    const onUp = vi.fn();
+    let overlayNow = true;
+    const action = verticalFlick(node, { onUp, overlayOpen: () => overlayNow });
+    fireTouch(node, "touchstart", 200, 400);
+    overlayNow = false; // closes mid-gesture — armed was already decided at touchstart
+    fireTouch(node, "touchend", 200, 400 - FLICK_Y_MIN_PX - 10);
+    expect(onUp).not.toHaveBeenCalled();
+    action.destroy();
+  });
+
+  it("does not fire onUp when the scroll container is not at its bottom boundary", () => {
+    const onUp = vi.fn();
+    const scrollEl = { scrollTop: 0, clientHeight: 600, scrollHeight: 2000 };
+    const action = verticalFlick(node, { onUp, overlayOpen: () => false, scrollEl: () => scrollEl });
+    fireTouch(node, "touchstart", 200, 400);
+    fireTouch(node, "touchend", 200, 400 - FLICK_Y_MIN_PX - 10);
+    expect(onUp).not.toHaveBeenCalled();
+    action.destroy();
+  });
+
+  it("fires onUp when no overlay is open and the scroll container is at its bottom boundary", () => {
+    const onUp = vi.fn();
+    const scrollEl = { scrollTop: 1400, clientHeight: 600, scrollHeight: 2000 };
+    const action = verticalFlick(node, { onUp, overlayOpen: () => false, scrollEl: () => scrollEl });
+    fireTouch(node, "touchstart", 200, 400);
+    fireTouch(node, "touchend", 200, 400 - FLICK_Y_MIN_PX - 10);
+    expect(onUp).toHaveBeenCalled();
+    action.destroy();
+  });
 });
 
 describe("drawerSwipe", () => {
