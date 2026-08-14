@@ -632,6 +632,20 @@ body {
     transform: translateY(0);
     pointer-events: auto;
   }
+  /* An UNTITLED nested board reserves no strip (prose.css reserves only for
+     `.board-content .block-shell[data-block-title]`), so revealing its empty
+     "+ title" affordance would render it into the previous row's content —
+     the exact overlap this whole fix exists to prevent. So it simply does not
+     reveal on touch. A titled nested board DOES reserve space and reveals
+     normally, which is the case that matters: a title that exists must be
+     readable. Setting a title on a nested board is still possible on desktop,
+     where the reveal is in-flow and shifts nothing under a finger. */
+  .ProseMirror .board-content .block-shell:not([data-block-title]).block-active-touch > .board-title-slot,
+  .ProseMirror .board-content .code-block-wrap:not([data-block-title]).block-active-touch > .board-title-slot {
+    max-height: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
 }
 .ProseMirror .board-title-slot::placeholder {
   font-style: italic;
