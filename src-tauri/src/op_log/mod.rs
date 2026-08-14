@@ -269,13 +269,30 @@ fn apply_attachment_payload(
         .map_err(|e| format!("attachment_blob op_log apply failed: {e}"))
 }
 
-/// Call-site sugar for setting mutations.
+/// Settings keys that must never leave this device. `sync_revoked` is the
+/// load-bearing case: it's this device's own record that the relay 401'd
+/// it for a revoked device_id (see `sync::worker`'s revocation handling).
+/// Broadcasting it would (a) tell every other device — including healthy
+/// ones — that they're revoked too, since settings are LWW-replicated by
+/// key, not scoped per-device, and (b) get silently cleared and re-synced
+/// on re-enrollment, defeating the whole point of the flag. Checked at
+/// every boundary a setting can cross: emit (this device → relay),
+/// backfill (first-launch replay of pre-op-log state), and merge (an
+/// incoming op from a peer, defense-in-depth).
+pub const LOCAL_ONLY_SETTINGS: &[&str] = &["sync_revoked"];
+
+/// Call-site sugar for setting mutations. No-ops for keys in
+/// `LOCAL_ONLY_SETTINGS` — those never leave this device (see its doc
+/// comment).
 pub fn emit_setting(
     engine: &OpLog,
     conn: &rusqlite::Connection,
     key: &str,
     value: Option<&str>,
 ) {
+    if LOCAL_ONLY_SETTINGS.contains(&key) {
+        return;
+    }
     engine.try_apply(
         conn,
         Op {
@@ -392,5 +409,40 @@ mod emit_tests {
             stored.map(|v| !v.is_empty()).unwrap_or(false),
             "yjs_state must be populated after emit + merge round-trip"
         );
+    }
+
+    /// `sync_revoked` is device-local (see `LOCAL_ONLY_SETTINGS`'s doc
+    /// comment). Calling `emit_setting` for it must produce no op_log row
+    /// at all — not even a skipped/malformed one — so a healthy device
+    /// that re-enrolls never rebroadcasts this device's revocation flag.
+    #[test]
+    fn emit_setting_is_a_no_op_for_a_local_only_key() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        let engine: OpLog = std::sync::Arc::new(OpLogEngine::load(&conn).unwrap());
+
+        emit_setting(&engine, &conn, "sync_revoked", Some("1"));
+
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM op_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "sync_revoked must never produce an op_log row");
+    }
+
+    /// A normal setting key is unaffected by the local-only skip list —
+    /// this is the control case proving the guard is key-specific, not a
+    /// blanket no-op.
+    #[test]
+    fn emit_setting_still_emits_for_a_normal_key() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        let engine: OpLog = std::sync::Arc::new(OpLogEngine::load(&conn).unwrap());
+
+        emit_setting(&engine, &conn, "lock_timeout_minutes", Some("30"));
+
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM op_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }

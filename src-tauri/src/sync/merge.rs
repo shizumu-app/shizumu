@@ -247,6 +247,15 @@ fn merge_setting(
     let Some(key) = payload.get("key").and_then(|v| v.as_str()) else {
         return Ok(MergeOutcome::SkippedMalformed);
     };
+    // Defense-in-depth: emit_setting and backfill both already refuse to
+    // produce an op for a local-only key (sync_revoked), but a peer must
+    // never be able to overwrite this device's own local flag even if one
+    // somehow arrives — no HLC, however large, wins here. Reuses
+    // SkippedStaleHlc, the same "row survives, local state wins" shape
+    // delete_pin and cleanup_orphan_page already use for a refused write.
+    if crate::op_log::LOCAL_ONLY_SETTINGS.contains(&key) {
+        return Ok(MergeOutcome::SkippedStaleHlc);
+    }
     let value: Option<&str> = payload.get("value").and_then(|v| v.as_str());
     match value {
         Some(v) => {
@@ -359,14 +368,37 @@ fn merge_page(
             // updated.
             if let Some(skip) = stale_or_missing_page(conn, page_id, hlc_ts)? {
                 // A missing row that a cleanup_orphan_page tombstone explains
-                // is a GC guess, not a user delete. An edit with a NEWER HLC
-                // disproves the guess: resurrect the page at its original
-                // date/page_number and apply the edit. (Replay of parked
-                // merge_error rows routes back through here each worker
-                // tick, so previously-refused edits self-heal.)
+                // is a GC guess, not a user delete — it means "this page
+                // looked empty at launch". Real, non-empty writing disproves
+                // that guess REGARDLESS of the tombstone's own HLC: an edit
+                // that happens to carry an older HLC than the tombstone
+                // (offline queue, lagging device clock, etc.) is still real
+                // writing the sweeper never saw. So the gate is content
+                // emptiness, not "newer than the tombstone" — deliberately
+                // dropping the `hlc_ts > t` comparison that used to live
+                // here. (Replay of parked merge_error rows routes back
+                // through here each worker tick, so previously-refused
+                // edits self-heal.)
+                //
+                // That inversion has its own bound, though (FINDING 1,
+                // whole-branch-review follow-up): "writing wins over the
+                // tombstone's HLC" must not mean "writing wins over EVERY
+                // hlc" — a draft can be superseded by a later save that
+                // itself converged the page (possibly to empty) before the
+                // tombstone ever ran. Gating only against the tombstone let
+                // such a stale draft resurrect and silently discard the
+                // converged state. `max_content_op_hlc` is the second
+                // bound: this op must be at least as new as the newest
+                // content op ever logged for the page, i.e. not itself
+                // superseded. None (no content op ever logged) imposes no
+                // bound — nothing to be superseded by.
                 let missing = matches!(skip, MergeOutcome::SkippedMalformed);
+                let not_superseded = max_content_op_hlc(conn, page_id)
+                    .map_or(true, |max| hlc_ts >= max);
                 let resurrect = missing
-                    && gc_tombstone_hlc(conn, page_id).is_some_and(|t| hlc_ts > t);
+                    && gc_tombstone_hlc(conn, page_id).is_some()
+                    && !crate::commands::is_page_empty(&Some(content.to_string()))
+                    && not_superseded;
                 if resurrect {
                     if let Some((date, page_number)) = create_op_fields(conn, page_id) {
                         insert_page_with_collision_resolution(
@@ -484,6 +516,37 @@ fn gc_tombstone_hlc(conn: &Connection, page_id: &str) -> Option<i64> {
         "SELECT MAX(hlc_ts) FROM op_log
           WHERE op_kind = 'tombstone'
             AND json_extract(CAST(payload_blob AS TEXT), '$.op') = 'cleanup_orphan_page'
+            AND json_extract(CAST(payload_blob AS TEXT), '$.page_id') = ?1",
+        params![page_id],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+/// The highest hlc_ts among all content-bearing ops (`save_page_content`,
+/// `backfill_page_initial_state`) ever logged for this page — the newest
+/// content state any device has committed, independent of whether the
+/// tombstone later erased the row that held it. None when no content op
+/// has ever been logged.
+///
+/// Guards the GC-tombstone resurrect gate against FINDING 1 of the
+/// whole-branch-review follow-up: a stale draft can outlive its own
+/// supersession. Sequence: create → a legit save converges the page to
+/// (possibly empty) content → cleanup tombstone deletes the now-converged
+/// row → a stale, non-empty draft with an OLDER hlc_ts than that save
+/// arrives late. Non-empty content still beats the tombstone's HLC (the
+/// approved inversion — see `gc_tombstone_hlc`'s sibling comment), but it
+/// must not beat a LATER content op the tombstone only happened to be the
+/// messenger for deleting. The bound: resurrect only when this op is at
+/// least as new as the newest content op ever logged — i.e. it is not
+/// itself superseded.
+fn max_content_op_hlc(conn: &Connection, page_id: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT MAX(hlc_ts) FROM op_log
+          WHERE op_kind = 'page_blob'
+            AND json_extract(CAST(payload_blob AS TEXT), '$.op')
+                IN ('save_page_content', 'backfill_page_initial_state')
             AND json_extract(CAST(payload_blob AS TEXT), '$.page_id') = ?1",
         params![page_id],
         |r| r.get::<_, Option<i64>>(0),
@@ -1042,6 +1105,29 @@ fn merge_tombstone(
             let Some(page_id) = payload.get("page_id").and_then(|v| v.as_str()) else {
                 return Ok(MergeOutcome::SkippedMalformed);
             };
+            // A GC tombstone is a guess ("this page looked empty at
+            // launch"), not a user delete. If the local row now holds
+            // non-empty content, that guess is disproven and the delete
+            // must be refused outright — independent of HLC ordering,
+            // mirroring the resurrect gate in merge_page's
+            // save_page_content arm. Only an empty row is eligible for
+            // this delete at all.
+            let content_json: Option<Option<String>> = conn
+                .query_row(
+                    "SELECT content_json FROM pages WHERE id = ?",
+                    params![page_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(content) = &content_json {
+                if !crate::commands::is_page_empty(content) {
+                    log::info!(
+                        "sync merge: GC tombstone for page {page_id} refused — \
+                         local row is non-empty, the emptiness guess is disproven"
+                    );
+                    return Ok(MergeOutcome::SkippedStaleHlc);
+                }
+            }
             // HLC-gate the delete like the other tombstones (delete_pin /
             // delete_lineage). Without this, a stale or forged cleanup op
             // could remove a page that a newer write already revived. This
@@ -1533,6 +1619,32 @@ mod tests {
         assert_eq!(n, 0);
     }
 
+    /// Defense-in-depth: even if a peer somehow sends a `sync_revoked`
+    /// setting op (it never should — `emit_setting` and backfill both
+    /// refuse to produce one), the receive side must not let it overwrite
+    /// this device's own local flag. A peer's incoming HLC would normally
+    /// win with a big-enough timestamp; the local-only skip bypasses HLC
+    /// comparison entirely for these keys, so an existing local value is
+    /// never touched by this row.
+    #[test]
+    fn merge_setting_ignores_incoming_op_for_a_local_only_key() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value, applied_hlc_ts) VALUES ('sync_revoked', '1', 0)",
+            [],
+        )
+        .unwrap();
+        // A huge HLC that would trivially win any ordinary LWW comparison.
+        let payload = json!({"op":"set", "key":"sync_revoked", "value": "0", "hlc_ts": 9_999_999_i64});
+        let out = apply(&conn, "setting_op", &serde_json::to_vec(&payload).unwrap()).unwrap();
+        assert_eq!(out, MergeOutcome::SkippedStaleHlc, "reuses the skip-variant delete_pin/cleanup_orphan_page already use for a policy-refused write");
+        let v: String = conn
+            .query_row("SELECT value FROM settings WHERE key='sync_revoked'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, "1", "local sync_revoked flag must survive an incoming peer op");
+    }
+
     // ---- page_blob ----
 
     #[test]
@@ -1629,10 +1741,12 @@ mod tests {
              VALUES ('t1','tombstone','pgx', ?, 100, 'phone', 'committed', 't', 't')",
             params![br#"{"op":"cleanup_orphan_page","page_id":"pgx","hlc_ts":100}"#.to_vec()],
         ).unwrap();
-        // An edit NEWER than the GC tombstone arrives.
+        // An edit NEWER than the GC tombstone arrives, carrying real text —
+        // non-empty content is what disproves the GC guess (an empty save
+        // would not resurrect; see the empty-stays-dead test below).
         let payload = json!({
             "op": "save_page_content", "page_id": "pgx", "hlc_ts": 200,
-            "fields": { "content_json": "{\"type\":\"doc\",\"content\":[]}" }
+            "fields": { "content_json": r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"real writing"}]}]}"# }
         });
         let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
         assert!(matches!(out, MergeOutcome::Applied), "newer edit must resurrect, got {out:?}");
@@ -1670,10 +1784,13 @@ mod tests {
             [],
         ).unwrap();
         // An edit NEWER than the GC tombstone arrives, and its content
-        // still references PIN1 via a pinId attr.
+        // still references PIN1 via a pinId attr. Also carries real text
+        // alongside the pin node — the resurrect gate requires non-empty
+        // content now, and a pin reference with no text is not itself
+        // "writing" under is_page_empty's definition.
         let payload = json!({
             "op": "save_page_content", "page_id": "pgz", "hlc_ts": 200,
-            "fields": { "content_json": r#"{"type":"doc","content":[{"type":"list","attrs":{"pinId":"PIN1"},"content":[]}]}"# }
+            "fields": { "content_json": r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"kept"}]},{"type":"list","attrs":{"pinId":"PIN1"},"content":[]}]}"# }
         });
         let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
         assert!(matches!(out, MergeOutcome::Applied), "newer edit must resurrect, got {out:?}");
@@ -1703,10 +1820,19 @@ mod tests {
         assert!(matches!(out, MergeOutcome::SkippedMalformed));
     }
 
-    /// An edit OLDER than the GC tombstone does not resurrect the page —
-    /// it doesn't disprove the tombstone's guess, it predates it.
+    /// DELIBERATE INVERSION (user-approved, whole-branch-review followup
+    /// commit 1): this test used to be
+    /// `save_content_older_than_the_gc_tombstone_stays_dead` and asserted
+    /// the opposite outcome. A GC tombstone is a *guess* that a page was
+    /// empty at launch — it is not a user delete. Real, non-empty writing
+    /// disproves that guess regardless of which side of the tombstone's
+    /// HLC it lands on: an edit that happened to be assigned an older HLC
+    /// (e.g. queued offline, or from a device whose clock lagged) is still
+    /// real writing the sweeper never saw. Gating the resurrect on HLC
+    /// order let a legitimate edit stay parked forever just because of
+    /// clock/queue timing. Non-empty content always wins now.
     #[test]
-    fn save_content_older_than_the_gc_tombstone_stays_dead() {
+    fn save_content_older_than_the_gc_tombstone_still_resurrects_when_non_empty() {
         let db = test_db();
         let conn = db.lock().unwrap();
         conn.execute(
@@ -1714,12 +1840,138 @@ mod tests {
              VALUES ('t2','tombstone','pgy', ?, 300, 'phone', 'committed', 't', 't')",
             params![br#"{"op":"cleanup_orphan_page","page_id":"pgy","hlc_ts":300}"#.to_vec()],
         ).unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('c2','page_blob','pgy', ?, 50, '', 'committed', 't', 't')",
+            params![br#"{"op":"get_or_create_today","page_id":"pgy","fields":{"date":"2026-08-13","page_number":1},"hlc_ts":50}"#.to_vec()],
+        ).unwrap();
         let payload = json!({
             "op": "save_page_content", "page_id": "pgy", "hlc_ts": 200,
-            "fields": { "content_json": "{}" }
+            "fields": { "content_json": r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"real writing"}]}]}"# }
         });
         let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
-        assert!(matches!(out, MergeOutcome::SkippedMalformed));
+        assert!(matches!(out, MergeOutcome::Applied), "non-empty edit must resurrect regardless of HLC order, got {out:?}");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pages WHERE id='pgy'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "resurrected row must exist");
+    }
+
+    /// The mirror case: an OLDER save whose content is ALSO empty does
+    /// NOT resurrect. The GC guess ("this page was empty") stands when
+    /// the incoming edit doesn't disprove it — an empty edit is not
+    /// writing.
+    #[test]
+    fn save_content_older_than_the_gc_tombstone_and_empty_stays_dead() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('t3','tombstone','pgw', ?, 300, 'phone', 'committed', 't', 't')",
+            params![br#"{"op":"cleanup_orphan_page","page_id":"pgw","hlc_ts":300}"#.to_vec()],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('c3','page_blob','pgw', ?, 50, '', 'committed', 't', 't')",
+            params![br#"{"op":"get_or_create_today","page_id":"pgw","fields":{"date":"2026-08-13","page_number":1},"hlc_ts":50}"#.to_vec()],
+        ).unwrap();
+        let payload = json!({
+            "op": "save_page_content", "page_id": "pgw", "hlc_ts": 200,
+            "fields": { "content_json": "{\"type\":\"doc\",\"content\":[]}" }
+        });
+        let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
+        assert!(matches!(out, MergeOutcome::SkippedMalformed), "empty edit must not resurrect, got {out:?}");
+    }
+
+    /// FINDING 1 (whole-branch-review follow-up, Critical, reviewer repro).
+    /// The resurrect gate must not consider only the incoming op vs. the
+    /// tombstone — it must also check whether the incoming op has itself
+    /// been SUPERSEDED by a later content op that the sweeper's tombstone
+    /// legitimately erased. Sequence: create@10 → a legit empty
+    /// save@100 converges the page to empty (the page is genuinely empty
+    /// at that point) → cleanup tombstone@300 deletes the now-empty row →
+    /// a STALE non-empty draft@50 (older than both the empty save AND the
+    /// tombstone) arrives late. Resurrecting with it would discard the
+    /// converged empty state and silently resurface a draft the user had
+    /// already superseded. It must stay dead.
+    #[test]
+    fn save_content_resurrect_refuses_a_draft_superseded_by_a_later_empty_save() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('c-sup','page_blob','pgv', ?, 10, '', 'committed', 't', 't')",
+            params![br#"{"op":"get_or_create_today","page_id":"pgv","fields":{"date":"2026-08-13","page_number":1},"hlc_ts":10}"#.to_vec()],
+        ).unwrap();
+        // The legit empty save@100 — already applied and logged before the
+        // tombstone. This is the converged state the tombstone erased.
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('s-sup','page_blob','pgv', ?, 100, '', 'committed', 't', 't')",
+            params![br#"{"op":"save_page_content","page_id":"pgv","fields":{"content_json":"{\"type\":\"doc\",\"content\":[]}"},"hlc_ts":100}"#.to_vec()],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('t-sup','tombstone','pgv', ?, 300, 'phone', 'committed', 't', 't')",
+            params![br#"{"op":"cleanup_orphan_page","page_id":"pgv","hlc_ts":300}"#.to_vec()],
+        ).unwrap();
+        // A stale non-empty draft, older than the save it was superseded by.
+        let payload = json!({
+            "op": "save_page_content", "page_id": "pgv", "hlc_ts": 50,
+            "fields": { "content_json": r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"superseded draft"}]}]}"# }
+        });
+        let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
+        assert!(
+            !matches!(out, MergeOutcome::Applied),
+            "a draft superseded by a later converged-empty save must not resurrect, got {out:?}"
+        );
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pages WHERE id='pgv'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "the converged-empty deletion must stand");
+    }
+
+    /// Control for FINDING 1: a non-empty draft that is OLDER than the
+    /// tombstone but NEWER than the last content op (the empty save@100)
+    /// still resurrects — this is the approved HLC-independent-of-
+    /// tombstone inversion surviving the supersession refinement. Without
+    /// this control, FIX 1 could silently regress to gating on the
+    /// tombstone's HLC instead of the content-op HLC.
+    #[test]
+    fn save_content_resurrect_still_ignores_tombstone_hlc_when_not_superseded() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('c-ctl','page_blob','pgu', ?, 10, '', 'committed', 't', 't')",
+            params![br#"{"op":"get_or_create_today","page_id":"pgu","fields":{"date":"2026-08-13","page_number":1},"hlc_ts":10}"#.to_vec()],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('s-ctl','page_blob','pgu', ?, 100, '', 'committed', 't', 't')",
+            params![br#"{"op":"save_page_content","page_id":"pgu","fields":{"content_json":"{\"type\":\"doc\",\"content\":[]}"},"hlc_ts":100}"#.to_vec()],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('t-ctl','tombstone','pgu', ?, 300, 'phone', 'committed', 't', 't')",
+            params![br#"{"op":"cleanup_orphan_page","page_id":"pgu","hlc_ts":300}"#.to_vec()],
+        ).unwrap();
+        // Newer than the last content op (100) but OLDER than the
+        // tombstone (300) — must still resurrect under the approved
+        // writing-wins-over-tombstone-HLC semantics.
+        let payload = json!({
+            "op": "save_page_content", "page_id": "pgu", "hlc_ts": 150,
+            "fields": { "content_json": r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"not superseded"}]}]}"# }
+        });
+        let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
+        assert!(
+            matches!(out, MergeOutcome::Applied),
+            "a draft newer than the last content op must resurrect even though it's older than the tombstone, got {out:?}"
+        );
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pages WHERE id='pgu'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "resurrected row must exist");
     }
 
     #[test]
@@ -2623,6 +2875,62 @@ mod tests {
         let payload = json!({"op":"delete_galaxy","target":"andromeda"});
         let out = apply(&conn, "tombstone", &payload_bytes(payload)).unwrap();
         assert_eq!(out, MergeOutcome::SkippedUnknownOp);
+    }
+
+    /// A `cleanup_orphan_page` tombstone is a guess made at launch — "this
+    /// row looked empty". If, by the time the tombstone arrives, the local
+    /// row holds real (non-empty) content, that guess is disproven and the
+    /// delete must be refused outright, independent of the HLC gate. The
+    /// existing HLC gate (`applied_hlc_ts < hlc_ts`) still governs the
+    /// empty-row case — see the sibling test below — but a non-empty row
+    /// is never eligible for this delete at all.
+    ///
+    /// Reuses `SkippedStaleHlc` for the outcome: no dedicated variant
+    /// exists for "op refused because local state disproves its premise",
+    /// and this is the closest existing shape — "the row survives, the op
+    /// is recorded, local state wins" — the same contract
+    /// `tombstone_does_not_delete_pin_with_newer_hlc` already asserts for
+    /// the sibling `delete_pin` op.
+    #[test]
+    fn tombstone_cleanup_orphan_page_refuses_to_delete_non_empty_row() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, content_json, created_at, updated_at)
+             VALUES ('pg-live', '2026-08-13', 1, ?, '0', '0')",
+            params![r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"still writing"}]}]}"#],
+        )
+        .unwrap();
+        // hlc_ts is far newer than the row's implicit applied_hlc_ts (0),
+        // so the HLC gate alone would allow this delete through.
+        let payload = json!({"op":"cleanup_orphan_page","page_id":"pg-live","hlc_ts": 500_i64});
+        let out = apply(&conn, "tombstone", &serde_json::to_vec(&payload).unwrap()).unwrap();
+        assert_eq!(out, MergeOutcome::SkippedStaleHlc, "non-empty local writing must refuse the GC delete");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pages WHERE id='pg-live'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "row with real content must survive a GC tombstone");
+    }
+
+    /// The mirror case: an empty row IS eligible for the GC delete, gated
+    /// by HLC exactly like the other tombstones.
+    #[test]
+    fn tombstone_cleanup_orphan_page_deletes_empty_row_when_newer() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, content_json, created_at, updated_at)
+             VALUES ('pg-empty', '2026-08-13', 1, NULL, '0', '0')",
+            [],
+        )
+        .unwrap();
+        let payload = json!({"op":"cleanup_orphan_page","page_id":"pg-empty","hlc_ts": 500_i64});
+        let out = apply(&conn, "tombstone", &serde_json::to_vec(&payload).unwrap()).unwrap();
+        assert_eq!(out, MergeOutcome::Applied);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pages WHERE id='pg-empty'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "empty row is still swept");
     }
 
     #[test]

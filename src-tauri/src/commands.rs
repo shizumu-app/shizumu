@@ -431,26 +431,63 @@ pub fn cleanup_orphan_pages(
     cleanup_orphan_pages_inner(&db, &engine)
 }
 
-/// True when `op_log` holds any op referencing `page_id` from a device
-/// other than this one. Remote ops carry `device_id != ''` but leave the
-/// plaintext `doc_id` column empty (the page id only lives inside the
-/// decrypted `payload_blob` JSON), so the match goes through
-/// `json_extract` on the payload instead of the indexed `doc_id` column.
-fn page_touched_by_foreign_device(conn: &rusqlite::Connection, page_id: &str) -> bool {
-    match conn.query_row(
-        "SELECT EXISTS(
-           SELECT 1 FROM op_log
-            WHERE device_id IS NOT NULL AND device_id != ''
-              AND json_extract(CAST(payload_blob AS TEXT), '$.page_id') = ?1)",
-        params![page_id],
-        |r| r.get::<_, i64>(0).map(|v| v != 0),
-    ) {
-        Ok(touched) => touched,
+/// True when a local sweep of this (already-confirmed-locally-empty) page
+/// must be BLOCKED because of what another device has done to it.
+///
+/// A GC tombstone is a guess about emptiness (see the resurrect-gate
+/// comments in `sync::merge`), not a user delete — and that framing
+/// applies just as much to what OTHER devices have said about a page as
+/// to what this device says. So the decision isn't "has any foreign
+/// device ever touched this page" (that made a page permanently
+/// unsweepable the moment any peer so much as created it) — it's "what
+/// was the other device's LAST WORD on this page". If the newest foreign
+/// op is itself a `cleanup_orphan_page` tombstone, the other device's own
+/// conclusion was "this is garbage" — a local sweep of a locally-empty
+/// row agrees with that, not destroys anything. Any other newest foreign
+/// op (a save, a create with no matching GC, etc.) means the other side's
+/// last word was real activity, and the sweep must yield to it exactly as
+/// before.
+///
+/// FINDING 2 of the whole-branch-review follow-up: without this
+/// refinement, a page that FIX 1b (see `sync::merge::merge_tombstone`)
+/// correctly refused to GC-delete — because it held non-empty content at
+/// the time — would, once it later legitimately converged to empty, sit
+/// forever: this device's own edits are foreign from the tombstone
+/// sender's point of view, so the blanket guard treated "touched by a
+/// foreign device" (true, permanently) as reason enough to never sweep
+/// it, even after both sides agreed it was garbage.
+///
+/// Remote ops carry `device_id != ''` but leave the plaintext `doc_id`
+/// column empty (the page id only lives inside the decrypted
+/// `payload_blob` JSON), so the match goes through `json_extract` on the
+/// payload instead of the indexed `doc_id` column. Ordering is by the
+/// op_log row's own `hlc_ts` column, not payload-embedded HLC — this
+/// mirrors `gc_tombstone_hlc` / `max_content_op_hlc` in `sync::merge`.
+fn foreign_touch_blocks_sweep(conn: &rusqlite::Connection, page_id: &str) -> bool {
+    let newest: Result<Option<(String, Option<String>)>, rusqlite::Error> = conn
+        .query_row(
+            "SELECT op_kind, json_extract(CAST(payload_blob AS TEXT), '$.op')
+               FROM op_log
+              WHERE device_id IS NOT NULL AND device_id != ''
+                AND json_extract(CAST(payload_blob AS TEXT), '$.page_id') = ?1
+              ORDER BY hlc_ts DESC
+              LIMIT 1",
+            params![page_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+        )
+        .optional();
+    match newest {
+        // No foreign op at all — nothing to block on.
+        Ok(None) => false,
+        Ok(Some((op_kind, op))) => {
+            let newest_is_gc_tombstone =
+                op_kind == "tombstone" && op.as_deref() == Some("cleanup_orphan_page");
+            !newest_is_gc_tombstone
+        }
         // Fail closed: this guard exists to stop a tombstone broadcast, so
         // a query error (e.g. a non-JSON payload_blob poisoning json1 for
-        // the whole EXISTS, not just its own row) must be treated as
-        // "assume touched, skip the sweep" rather than silently reporting
-        // untouched for every candidate.
+        // this row) must be treated as "assume touched, skip the sweep"
+        // rather than silently reporting untouched for every candidate.
         Err(e) => {
             log::warn!("cleanup: foreign-touch query failed for {page_id}: {e} — treating as touched");
             true
@@ -502,9 +539,11 @@ pub fn cleanup_orphan_pages_inner(db: &Db, engine: &op_log::OpLog) -> Result<i64
         if !is_page_empty(&content_json) {
             continue;
         }
-        // Never sweep a page another device has ops for — its emptiness
-        // here says nothing about its state there.
-        if page_touched_by_foreign_device(&conn, &id) {
+        // Never sweep a page whose newest foreign op wasn't itself a GC
+        // tombstone — unless the other device's own last word here was
+        // "this is garbage" too, in which case a local sweep agrees with
+        // it rather than destroying anything. See foreign_touch_blocks_sweep.
+        if foreign_touch_blocks_sweep(&conn, &id) {
             continue;
         }
         // Defensive cascade — the SQL filter already excludes pages with
@@ -4168,7 +4207,7 @@ pub fn cleanup_empty_day_markers(db: State<'_, Db>) -> Result<i64, String> {
 /// dropped-in photo is real content, even before the user types anything
 /// next to it. See contains_media_node: extract_text_from_tiptap alone
 /// can't see these, since they're atom nodes with no "text" field.
-fn is_page_empty(content_json: &Option<String>) -> bool {
+pub(crate) fn is_page_empty(content_json: &Option<String>) -> bool {
     let Some(s) = content_json else { return true; };
     if s.trim().is_empty() { return true; }
     match serde_json::from_str::<serde_json::Value>(s) {
@@ -6474,6 +6513,80 @@ mod tests {
         crate::sync::worker::FIRST_PULL_DONE.store(true, Ordering::SeqCst);
         let deleted = cleanup_orphan_pages_inner(&db, &engine).unwrap();
         assert_eq!(deleted, 1, "after first pull the empty local-only page sweeps normally");
+    }
+
+    /// FINDING 2 (whole-branch-review follow-up, Critical, reviewer repro).
+    /// If the OTHER device's own last word on this page was "it's garbage"
+    /// (a cleanup_orphan_page tombstone), a local sweep of a locally-empty
+    /// row is aligned with that device's own conclusion, not destructive
+    /// of anything. The old blanket "any foreign op ever = touched" guard
+    /// made a tombstone-refused page (commit 1's FIX 1b: local writing
+    /// disproves a GC guess, so the delete is refused and the row
+    /// survives) permanently unsweepable even after it later legitimately
+    /// converged to empty — the row would sit forever, and the sweeper's
+    /// own generic foreign-touch guard blocked the only path that could
+    /// ever clear it.
+    #[test]
+    fn cleanup_sweeps_when_the_newest_foreign_op_is_its_own_gc_tombstone() {
+        let db = test_db();
+        let engine = engine_for(&db);
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, created_at, updated_at) VALUES ('p4','2026-08-13',1,'t','t')",
+            [],
+        ).unwrap();
+        // The other device created it...
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('r4a','page_blob','', ?, 1, 'other-device', 'committed', 0, 0)",
+            rusqlite::params![br#"{"op":"get_or_create_today","page_id":"p4","fields":{"date":"2026-08-13","page_number":1}}"#.to_vec()],
+        ).unwrap();
+        // ...then GC-swept it itself. This is the NEWEST foreign op.
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('r4b','tombstone','', ?, 2, 'other-device', 'committed', 0, 0)",
+            rusqlite::params![br#"{"op":"cleanup_orphan_page","page_id":"p4"}"#.to_vec()],
+        ).unwrap();
+        drop(conn);
+        let deleted = cleanup_orphan_pages_inner(&db, &engine).unwrap();
+        assert_eq!(deleted, 1, "both sides agree this page is garbage — the local sweep may proceed");
+        let conn = db.lock().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM pages WHERE id='p4'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "the row must actually be swept");
+    }
+
+    /// Control for FINDING 2: the newest foreign op is a `save_page_content`
+    /// that arrives AFTER an earlier foreign GC tombstone — the other
+    /// device un-GC'd the page by writing to it again. Ordering matters,
+    /// not just "does a tombstone appear anywhere in the log" — the sweep
+    /// must still be blocked here.
+    #[test]
+    fn cleanup_still_skips_when_newest_foreign_op_is_a_save_after_an_older_tombstone() {
+        let db = test_db();
+        let engine = engine_for(&db);
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, created_at, updated_at) VALUES ('p5','2026-08-13',1,'t','t')",
+            [],
+        ).unwrap();
+        // The other device GC-swept it first...
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('r5a','tombstone','', ?, 1, 'other-device', 'committed', 0, 0)",
+            rusqlite::params![br#"{"op":"cleanup_orphan_page","page_id":"p5"}"#.to_vec()],
+        ).unwrap();
+        // ...then wrote to it again — the NEWEST foreign op is real writing.
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES ('r5b','page_blob','', ?, 2, 'other-device', 'committed', 0, 0)",
+            rusqlite::params![br#"{"op":"save_page_content","page_id":"p5","fields":{}}"#.to_vec()],
+        ).unwrap();
+        drop(conn);
+        let deleted = cleanup_orphan_pages_inner(&db, &engine).unwrap();
+        assert_eq!(deleted, 0, "the other device's last word here was writing, not garbage — must not sweep");
+        let conn = db.lock().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM pages WHERE id='p5'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "row must survive");
     }
 
     #[test]

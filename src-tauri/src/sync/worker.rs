@@ -56,6 +56,45 @@ pub fn is_device_revoked_err(msg: &str) -> bool {
 pub static FIRST_PULL_DONE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Runs the launch-time orphan sweep exactly once — on the false→true
+/// transition of `flag`. `swap` both flips the flag and reports its
+/// previous value atomically, so this fires exactly once per process
+/// even if two callers raced here, and it fires deterministically at the
+/// tick a pull first succeeds — rather than depending on the frontend's
+/// mount-time call having already run (which may itself have raced the
+/// first pull and skipped, per `cleanup_orphan_pages_inner`'s own race
+/// guard, and prior to this fix nothing retried it for the rest of the
+/// session).
+///
+/// Factored out of `tick()`'s pull-success arm — where `db` and `engine`
+/// are both already in scope — so the transition logic can be exercised
+/// against a private `AtomicBool` in tests instead of the process-global
+/// `FIRST_PULL_DONE`. `FIRST_PULL_DONE` is shared across every test in
+/// the binary (`cargo test` runs test fns in parallel threads within one
+/// process — see the flag's own doc comment above), and this transition
+/// involves real wall-clock time in production callers (a live pull just
+/// completed over HTTP); an integration test that resets the global flag
+/// and then calls through a mocked `tick()` has an open window for
+/// concurrently-running tests' own successful ticks to flip the shared
+/// flag first, making the assertion flaky under the full parallel suite.
+/// Testing this helper directly with a scoped `AtomicBool` removes that
+/// window entirely while still proving the transition logic itself.
+fn sweep_on_first_pull_transition(
+    flag: &std::sync::atomic::AtomicBool,
+    db: &Db,
+    engine: &crate::op_log::OpLog,
+) {
+    if !flag.swap(true, Ordering::SeqCst) {
+        match crate::commands::cleanup_orphan_pages_inner(db, engine) {
+            Ok(n) if n > 0 => {
+                log::info!("sync tick: first-pull orphan sweep removed {n} page(s)")
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("sync tick: first-pull orphan sweep failed: {e}"),
+        }
+    }
+}
+
 /// Outcome of one `tick()` call. Replaces the old `bool` return so
 /// the worker loop can branch on wire failures and honour
 /// `Retry-After` hints (the `Throttled` variant of `WireError`).
@@ -394,7 +433,7 @@ pub fn tick(
 
     match pull::run_pass(db, &cfg, user_keys, device_keys) {
         Ok(stats) => {
-            FIRST_PULL_DONE.store(true, Ordering::SeqCst);
+            sweep_on_first_pull_transition(&FIRST_PULL_DONE, db, engine);
             if stats.ops_fetched > 0 {
                 log::info!(
                     "sync pull: batches={} fetched={} received={} dup_skip={} decrypt_skip={}",
@@ -1137,6 +1176,113 @@ mod tests {
             "got {outcome:?}"
         );
     }
+
+    // ──────────────────────────────────────────────────────────────
+    // Orphan sweep on the first-pull transition (fix round: no race)
+    // ──────────────────────────────────────────────────────────────
+    //
+    // These test `sweep_on_first_pull_transition` directly against a
+    // private `AtomicBool`, NOT `tick()` against the process-global
+    // `FIRST_PULL_DONE`. An earlier version of this test drove it through
+    // `tick()` with a mocked relay, resetting the global flag and then
+    // asserting on its post-tick value — and it was genuinely flaky under
+    // `cargo test`'s parallel execution: the mocked HTTP round trip inside
+    // `tick()` opens a wall-clock window during which a concurrently
+    // running test's own successful `tick()` can flip the SAME global
+    // flag first, so this test's own transition either double-fires or
+    // never fires from its point of view. A scoped `AtomicBool` removes
+    // that window while still exercising the exact same logic `tick()`
+    // calls in production.
+
+    /// The mount-time orphan sweeper (`cleanup_orphan_pages_inner`)
+    /// refuses to run while sync is enabled and the first-pull flag is
+    /// still false — sweeping before the first pull risks tombstoning a
+    /// page whose content ops from another device haven't merged yet.
+    /// Before this fix, nothing ever retried the sweep once the first
+    /// pull *did* land later in the session: the frontend's one mount-time
+    /// call had already run (and skipped), so a launch that raced the
+    /// first pull left orphan pages unswept for the rest of the session.
+    #[test]
+    fn sweep_on_first_pull_transition_sweeps_on_false_to_true() {
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        let db = test_db();
+        // An orphan candidate: untrailed, no focus, no lines, no content —
+        // exactly what insert_page seeds and cleanup_orphan_pages_inner's
+        // SQL filter targets.
+        let orphan_id = {
+            let conn = db.lock().unwrap();
+            crate::test_helpers::insert_page(&conn, "2026-08-14", 1)
+        };
+
+        sweep_on_first_pull_transition(&flag, &db, &engine_for(&db));
+
+        assert!(flag.load(Ordering::SeqCst), "the flag must end up true");
+        let conn = db.lock().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pages WHERE id = ?1",
+                rusqlite::params![&orphan_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            n, 0,
+            "the orphan sweep must run on the false→true transition"
+        );
+    }
+
+    /// Calling the helper when the flag is ALREADY true (no transition —
+    /// this isn't the first successful pull of the session) must not
+    /// sweep. Pins the trigger to the transition specifically, not "any
+    /// call".
+    #[test]
+    fn sweep_on_first_pull_transition_is_a_no_op_when_already_true() {
+        let flag = std::sync::atomic::AtomicBool::new(true);
+        let db = test_db();
+        let orphan_id = {
+            let conn = db.lock().unwrap();
+            crate::test_helpers::insert_page(&conn, "2026-08-14", 1)
+        };
+
+        sweep_on_first_pull_transition(&flag, &db, &engine_for(&db));
+
+        assert!(flag.load(Ordering::SeqCst), "stays true");
+        let conn = db.lock().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pages WHERE id = ?1",
+                rusqlite::params![&orphan_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "no transition, no sweep");
+    }
+
+    /// Wiring check: a real tick with a successful (empty) pull flips the
+    /// process-global `FIRST_PULL_DONE` — proving `tick()` actually calls
+    /// through to the transition helper, without asserting on ordering
+    /// against other concurrently-running tests (see the section note
+    /// above for why that assertion belongs on the helper, not here).
+    #[test]
+    fn tick_with_successful_pull_flips_first_pull_done() {
+        let server = MockServer::start();
+        let db = test_db();
+        active_db_config(&db, &server.base_url());
+        mock_empty_pull(&server);
+
+        let m = generate_seed_phrase();
+        let uk = user_keys_from_phrase(&m);
+        let dk = generate_device_keys();
+        let outcome = tick(&db, &uk, &dk, &engine_for(&db));
+
+        assert!(matches!(outcome, TickOutcome::Ok { .. }), "got {outcome:?}");
+        assert!(
+            FIRST_PULL_DONE.load(Ordering::SeqCst),
+            "a successful pull must leave the flag true, whoever set it"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────
     // Backoff — phase 14.23
     // ──────────────────────────────────────────────────────────────
 

@@ -336,6 +336,16 @@ fn backfill_settings(conn: &rusqlite::Connection, engine: &OpLog) -> Result<usiz
         rs
     };
 
+    // sync_revoked and friends never leave this device — see
+    // LOCAL_ONLY_SETTINGS's doc comment. emit_setting already no-ops for
+    // these, but skipping them here too keeps the returned count honest
+    // (a backfill that "processed" a row that produced no op is
+    // misleading) and keeps the intent visible at the call site that
+    // actually walks the settings table.
+    let rows: Vec<(String, String)> = rows
+        .into_iter()
+        .filter(|(key, _)| !super::LOCAL_ONLY_SETTINGS.contains(&key.as_str()))
+        .collect();
     let n = rows.len();
     for (key, value) in rows {
         emit_setting(engine, conn, &key, Some(&value));
@@ -425,6 +435,47 @@ mod tests {
         let emitted_again = run(&db, &engine).unwrap();
         assert_eq!(emitted_again, 0);
         assert_eq!(count_op_log(&db), 5);
+    }
+
+    /// `sync_revoked` is device-local (`LOCAL_ONLY_SETTINGS`). A device
+    /// that upgrades into the op-log system with that flag already set
+    /// (revoked, then user re-enrolled and the flag lingers, or any other
+    /// path that leaves it in `settings`) must not backfill it into
+    /// op_log — that would broadcast the revocation to every peer on next
+    /// sync.
+    #[test]
+    fn backfill_settings_skips_local_only_keys() {
+        let db = test_db();
+        let engine = make_engine(&db);
+
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('sync_revoked', '1')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('lock_timeout_minutes', '30')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let emitted = run(&db, &engine).unwrap();
+        // Only the normal setting counts — sync_revoked is skipped, not
+        // just emitted-and-later-filtered.
+        assert_eq!(emitted, 1);
+
+        let conn = db.lock().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM op_log WHERE json_extract(CAST(payload_blob AS TEXT), '$.key') = 'sync_revoked'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "sync_revoked must never appear in op_log");
     }
 
     /// Chunked semantics: with a small batch size, run_batch processes
