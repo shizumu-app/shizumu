@@ -29,6 +29,7 @@
   import { verticalFlick } from "../lib/gestures.js";
   import { canCreateNewPage } from "../lib/pageCapabilities.js";
   import { atLastPage } from "../lib/page-rail-state.js";
+  import { shouldCollapseHeader } from "../lib/header-collapse.js";
   import {
     getOrCreateToday,
     saveLine,
@@ -82,7 +83,13 @@
     const unwatch = watchKeyboardOpen((open) => { keyboardOpen = open; });
     return unwatch;
   });
-  let headerCollapsed = $derived(isPhone && keyboardOpen);
+  // Not a bare `isPhone && keyboardOpen`: collapsing applies display:none to
+  // the header row that hosts the trail sheet, which un-focuses whatever is
+  // inside it and drops the keyboard. See header-collapse.js for the full
+  // account. navSnap.depth is the navstack depth (declared below).
+  let headerCollapsed = $derived(
+    shouldCollapseHeader({ isPhone, keyboardOpen, overlayDepth: navSnap.depth })
+  );
   let targetPinId = $state(null);
   let commandPaletteOpen = $state(false);
   let pinCount = $state(0);

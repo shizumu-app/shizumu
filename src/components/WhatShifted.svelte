@@ -94,19 +94,27 @@
     transition: transform var(--motion-fast);
   }
 
-  /* Float the strip above the soft keyboard on phone. --kb-inset
-     (keyboard-state.js, the app's single viewport-state owner) is the
-     keyboard's height when it's covering the field, 0px otherwise — so
-     the transform below is a no-op with the keyboard down. Scoped to the
-     phone/landscape-phone media query (mirrors isPhoneViewport()) so a
-     desktop window never picks it up. */
+  /* Raise the strip visually when expanded on phone — a card lifting off the
+     canvas. Deliberately NO keyboard transform here.
+     This strip is `position: relative`, i.e. in normal flow inside
+     `.app-shell`, and the shell's height is `var(--app-height)` — the VISIBLE
+     viewport, which already excludes the soft keyboard (keyboard-state.js
+     keeps it current). The strip is therefore already sitting above the
+     keyboard by construction. Translating it up by `--kb-inset` on top of
+     that moved it a second full keyboard-height, landing it at the top of the
+     screen over the header — reported as "what settled" appearing at the top
+     and overlapping "today", and visible in the device screenshot.
+     This is the double-counting rule in CLAUDE.md ("the shell reserves the
+     inset once; a surface inside it that re-adds it is double-counting"),
+     which memory hit before with the status-bar inset. A `position: fixed`
+     surface (BottomSheet) is NOT inside the shell's box and does still need
+     its own `bottom: var(--kb-inset)` — the distinction is flow vs fixed. */
   @media (max-width: 480px), (orientation: landscape) and (max-height: 480px) {
     .what-shifted.expanded {
       background: var(--canvas-bg);
       z-index: 30;
       border-radius: var(--radius-md) var(--radius-md) 0 0;
       box-shadow: 0 -0.5rem 1.5rem var(--card-shadow);
-      transform: translateY(calc(-1 * var(--kb-inset, 0px)));
     }
   }
 
