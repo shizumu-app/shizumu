@@ -13,12 +13,21 @@ export const keyboardOpen = writable(false);
 
 /** Pure decision: given the visual viewport height and the tallest height
  * seen since the last reset (baseline), how much of the viewport does the
- * keyboard cover? Threshold rejects sub-keyboard shrink (URL bars). */
-export function computeKeyboardState({ vvHeight, baseline, minKeyboardPx = 80 }) {
+ * keyboard cover? Threshold rejects sub-keyboard shrink (URL bars).
+ *
+ * A soft keyboard cannot be open unless a text field has focus — a shrink
+ * alone isn't proof (Android cold start reports a tall viewport, then a
+ * transient short one while splash/insets settle, with no field focused and
+ * no further resize to correct the misread). hasFocusedField gates `isOpen`;
+ * `keyboardPx` still reports the measured shrink either way, since callers
+ * that publish it may want the raw value.
+ */
+export function computeKeyboardState({ vvHeight, baseline, minKeyboardPx = 80, hasFocusedField = false }) {
   const nextBaseline = Math.max(baseline || 0, vvHeight);
   const raw = Math.max(0, nextBaseline - vvHeight);
-  const isOpen = raw > minKeyboardPx;
-  return { keyboardPx: isOpen ? raw : 0, isOpen, nextBaseline };
+  const shrunkPastThreshold = raw > minKeyboardPx;
+  const isOpen = shrunkPastThreshold && hasFocusedField;
+  return { keyboardPx: shrunkPastThreshold ? raw : 0, isOpen, nextBaseline };
 }
 
 /** Reads the live `--app-height` published by startKeyboardState() — the
@@ -41,9 +50,23 @@ export function startKeyboardState(win = typeof window !== "undefined" ? window 
   const apply = () => {
     const vvHeight = win.visualViewport?.height ?? win.innerHeight;
     if (!vvHeight) return;
-    const s = computeKeyboardState({ vvHeight, baseline });
+    // Guarded (not just `win.document.activeElement`) because this also
+    // runs under the fake-window test harness, where document/activeElement
+    // may be absent or null.
+    const active = win.document && win.document.activeElement;
+    const isTextField = !!(active && (
+      active.tagName === "INPUT" ||
+      active.tagName === "TEXTAREA" ||
+      active.isContentEditable
+    ));
+    const s = computeKeyboardState({ vvHeight, baseline, hasFocusedField: isTextField });
     baseline = s.nextBaseline;
-    root.style.setProperty("--kb-inset", `${Math.round(s.keyboardPx)}px`);
+    // A keyboard that isn't open isn't covering anything — publish 0 rather
+    // than the raw measured shrink so BottomSheet/Modal/Page don't reserve
+    // space for a keyboard that (per isOpen, above) isn't actually up. This
+    // is also what keeps a cold-start transient shrink from nudging fixed
+    // chrome before any field is ever focused.
+    root.style.setProperty("--kb-inset", `${Math.round(s.isOpen ? s.keyboardPx : 0)}px`);
     root.style.setProperty("--app-height", `${Math.round(vvHeight)}px`);
     keyboardOpen.set(s.isOpen);
     // Under resizes-visual the browser scrolls the layout viewport to keep
@@ -56,12 +79,6 @@ export function startKeyboardState(win = typeof window !== "undefined" ? window 
     // fights the animation and can drop focus mid-type (the trail sheet's
     // "keyboard appears then collapses" bug) — so defer to the focused
     // field instead of fighting it.
-    const active = win.document.activeElement;
-    const isTextField = active && (
-      active.tagName === "INPUT" ||
-      active.tagName === "TEXTAREA" ||
-      active.isContentEditable
-    );
     if (win.scrollY && !isTextField) win.scrollTo(0, 0);
   };
 
@@ -78,11 +95,20 @@ export function startKeyboardState(win = typeof window !== "undefined" ? window 
   win.addEventListener("resize", apply);
   win.addEventListener("orientationchange", reset);
   win.document.addEventListener("visibilitychange", onVisibility);
+  // isOpen now depends on focus as well as viewport height (see
+  // computeKeyboardState) — focus can change with no accompanying vv
+  // resize/scroll event (e.g. blurring a field without the keyboard
+  // animating away), so re-run apply() on focus changes too, or the flag
+  // goes stale until the next unrelated viewport event.
+  win.document.addEventListener("focusin", apply);
+  win.document.addEventListener("focusout", apply);
   return () => {
     vv?.removeEventListener("resize", apply);
     vv?.removeEventListener("scroll", apply);
     win.removeEventListener("resize", apply);
     win.removeEventListener("orientationchange", reset);
     win.document.removeEventListener("visibilitychange", onVisibility);
+    win.document.removeEventListener("focusin", apply);
+    win.document.removeEventListener("focusout", apply);
   };
 }

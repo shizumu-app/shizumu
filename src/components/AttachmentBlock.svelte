@@ -242,7 +242,7 @@
           title={node.attrs.sync ? "synced. click to keep local-only" : "local only. click to authorize syncing"}
           onmousedown={swallowMouseDown}
           onclick={onToggleSync}
-        >{node.attrs.sync ? "local-only" : "sync"}</button>
+        >{node.attrs.sync ? "synced" : "local"}</button>
       </span>
     {:else if resolvedSrc}
       <img
@@ -277,7 +277,7 @@
           title={node.attrs.sync ? "synced. click to keep local-only" : "local only. click to authorize syncing"}
           onmousedown={swallowMouseDown}
           onclick={onToggleSync}
-        >{node.attrs.sync ? "local-only" : "sync"}</button>
+        >{node.attrs.sync ? "synced" : "local"}</button>
         <button
           type="button"
           class="action delete-btn"
@@ -322,7 +322,7 @@
           class="action sync-toggle"
           title={node.attrs.sync ? "synced. click to keep local-only" : "local only. click to authorize syncing"}
           onclick={onToggleSync}
-        >{node.attrs.sync ? "local-only" : "sync"}</button>
+        >{node.attrs.sync ? "synced" : "local"}</button>
         <button type="button" class="action delete-btn" title="remove" onclick={onDelete}>✕</button>
       </span>
     </span>
@@ -418,13 +418,21 @@
 
   /* Touch devices have no hover: keep the actions visible and give them
      bigger hit targets. */
+  /* Touch chrome, sized so a COLLAPSED attachment stays a quiet token in the
+     prose rather than a card. It previously gave every action a 2.25rem box,
+     which stacked into a chip several lines tall — the reported "minimised
+     file and image blocks take too much space".
+     The tap target does not shrink with the ink: padding still carries the
+     touch area, and the row's own min-height holds the 44px floor, so this is
+     a density change, not an accessibility regression. */
   @media (pointer: coarse) {
     .actions { opacity: 1; }
+    .attachment-block { min-height: max(var(--touch-target), 44px); }
     .action {
-      padding: 0.5rem;
-      min-width: 2.25rem;
-      min-height: 2.25rem;
-      font-size: 0.8125rem;
+      padding: 0.25rem 0.375rem;
+      min-width: 0;
+      min-height: 0;
+      font-size: 0.75rem;
       opacity: 0.85;
     }
   }

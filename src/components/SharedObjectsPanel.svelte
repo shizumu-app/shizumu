@@ -891,8 +891,13 @@
       <Empty hasActiveFilters={hasActivePinFilters()}>
         {#snippet title()}nothing matches{/snippet}
         {#snippet body()}
+          <!-- Deliberately no "hover" here. This copy shipped as "hover a
+               line and tap ↗", which on a phone describes a gesture the
+               device does not have — the panel is full-screen on touch, so
+               it was read there more than anywhere. Naming the verb (pin)
+               rather than the input device reads correctly on both. -->
           {allPins.length === 0
-            ? (lineageId ? "what continues lives here. hover a line and tap ↗" : "what matters lives here. hover a line and tap ↗")
+            ? (lineageId ? "what continues lives here. pin a line to keep it." : "what matters lives here. pin a line to keep it.")
             : "loosen a filter or clear them all."}
         {/snippet}
         {#snippet actions()}

@@ -37,12 +37,14 @@
   import { isYjsEnabled } from "../lib/yjs/feature-flag.js";
   import { isCoarsePointer, isPhoneViewport } from "../lib/responsive.js";
   import { placeHandleBar } from "../lib/editor/handle-placement.js";
+  import { blockActionsFor, BLOCK_ACTION_LABELS } from "../lib/editor/block-actions.js";
   import { getViewportHeight, keyboardOpen } from "../lib/keyboard-state.js";
   import { getSchema } from "@tiptap/core";
   import SharePopup from "./SharePopup.svelte";
   import FindBar from "./FindBar.svelte";
   import ChartBuilder from "./ChartBuilder.svelte";
   import EditorToast from "./EditorToast.svelte";
+  import BottomSheet from "../lib/ui/BottomSheet.svelte";
 
   /** @type {{ pageId: string, initialContent: any, initialYjsState: any, readonly: boolean, placeholder: string, lineageId: string|null, onPinCreated: () => void, onCreateSubtrail: (name: string, kind: "subtrail" | "toplevel", trailMode?: "discrete" | "continuous") => void, onMentionNavigate: (pageId: string) => void, onPinRefNavigate: (pinId: string) => void, trailMode: "continuous" | "discrete" | null, currentLineageId: string|null, currentLineageName: string }} */
   let { pageId, initialContent = null, initialYjsState = null, readonly = false, placeholder = "write one thought, then return", lineageId = null, onPinCreated = () => {}, onWordCount = () => {}, onDocChange = () => {}, onCreateSubtrail = () => {}, onMentionNavigate = () => {}, onPinRefNavigate = () => {}, isTrailMode = false, trailLineageId = null, trailMode = null, currentLineageId = null, currentLineageName = "" } = $props();
@@ -1143,48 +1145,49 @@
     if (e.target instanceof Element && e.target.closest(".block-handles")) {
       return;
     }
-    const editorRect = editorEl.getBoundingClientRect();
-    // A margin tap needs a margin. Phone layouts reclaim the 32px gutter for
-    // writing width, so this zone is the first 32px of the TEXT there —
-    // tapping the start of a line to place the caret summoned the block bar.
-    // Where there's no gutter, long-press is the reveal instead (see the
-    // pointerup handler); the drag-to-reorder gesture it shares is only
-    // committed once the finger actually moves.
-    const inMargin = !gutterless && e.clientX < editorRect.left + 32;
-
+    // Tapping the (already-revealed) title slot — let the tap focus the
+    // <input> normally. Bug fixed here: the title slot is revealed via
+    // `position: absolute; bottom: 100%` (global.css) so it renders ABOVE
+    // the block's own border-box top — outside the Y range findBlockAtY
+    // matches against that block. Without this guard, the code below
+    // resolved a tap on the title to either the PREVIOUS block or nothing,
+    // reassigned touchActiveBoard away from the block the title belongs
+    // to, and the $effect that stamps `.block-active-touch` (which the
+    // title's touch-reveal CSS is keyed on) immediately cleared it —
+    // dismissing the very title the user just tapped, before focus could
+    // land. Bailing out here leaves touchActiveBoard untouched (title
+    // stays revealed) and lets the native mousedown/click/focus sequence
+    // reach the input uninterrupted.
+    if (e.target instanceof Element && e.target.closest(".board-title-slot")) {
+      return;
+    }
     // Touch parity with desktop hover (mobile-stability, item 4): tapping a
-    // block ANYWHERE inside it reveals its title — a tap used to only do
-    // that via the deliberate margin gesture below, so a block read as
-    // having no title at all until the user discovered that gesture.
-    // Reuses the SAME touchActiveBoard state + $effect the margin-tap path
-    // already drove (see that effect for the class-stamping mechanism) —
-    // no second stamping path. hoverClassTarget is the identical filter
-    // the desktop hover path applies (block-shell / code-block-wrap only —
-    // see block-hover-guard.js) so a tap on some other top-level
-    // ProseMirror child (a dayMarker, say) doesn't stamp a class nothing
-    // reads. Assigning the raw (unfiltered) find here and filtering inside
-    // the effect mirrors hoveredMouseBlock's own shape exactly.
+    // block ANYWHERE inside it reveals its title. Reuses the SAME
+    // touchActiveBoard state + $effect the long-press-release path below
+    // also drives (see that effect for the class-stamping mechanism) — no
+    // second stamping path. hoverClassTarget is the identical filter the
+    // desktop hover path applies (block-shell / code-block-wrap only — see
+    // block-hover-guard.js) so a tap on some other top-level ProseMirror
+    // child (a dayMarker, say) doesn't stamp a class nothing reads.
+    // Assigning the raw (unfiltered) find here and filtering inside the
+    // effect mirrors hoveredMouseBlock's own shape exactly.
     const block = findBlockAtY(e.clientY);
     touchActiveBoard = block;
     // Code-review fix (post-120d403): this path used to set
     // touchActiveBoard without arming the same auto-hide timer the
-    // margin-tap and long-press paths both call — the reveal never
-    // cleared on its own and could sit up indefinitely while the user
-    // kept typing. Same timer, same TOUCH_HANDLE_REVEAL_MS, so a
-    // body-tap reveal behaves identically to every other touch reveal.
+    // long-press path calls — the reveal never cleared on its own and
+    // could sit up indefinitely while the user kept typing. Same timer,
+    // same TOUCH_HANDLE_REVEAL_MS, so a body-tap reveal behaves
+    // identically to every other touch reveal.
     if (block) armTouchHandleHide();
 
-    if (inMargin) {
-      if (block) {
-        revealHandleForBlock(block);
-        armTouchHandleHide();
-      }
-      return;
-    }
-
-    // Not in the margin → arm long-press for drag-to-reorder. Cancelled
-    // by pointerup, pointercancel, or significant movement before the
-    // 700ms timer fires.
+    // Arm long-press: released without moving → the block actions sheet
+    // (see handleEditorPointerUp); moved past the drag threshold → reorder
+    // (see handleEditorPointerMove). Cancelled by pointerup, pointercancel,
+    // or significant movement before the 700ms timer fires. A tap alone —
+    // this timer never firing — places the caret and does nothing else;
+    // no floating chrome appears on touch (block-handles is mouse-hover
+    // only, see the render guard on that element below).
     if (!block) return;
     const startY = e.clientY;
     clearLongPress();
@@ -1226,18 +1229,108 @@
     if (e.pointerType !== "touch") return;
     clearLongPress();
     if (dragActive) {
-      // A long-press that never moved isn't a reorder — it's the phone's
-      // way of asking for the block's actions, now that there's no gutter
-      // to tap. Tracked with its own flag: dragAccumY resets to zero on
-      // every committed swap, so it can't answer "did this move at all".
+      // A long-press that never moved isn't a reorder — it's the user
+      // asking for the block's actions. Tracked with its own flag:
+      // dragAccumY resets to zero on every committed swap, so it can't
+      // answer "did this move at all". Approved touch redesign: this used
+      // to reveal the floating .block-handles pill (revealHandleForBlock)
+      // gated on `gutterless` — that pill collided with block text/titles
+      // on a phone across three separate geometry patches. It now opens a
+      // BottomSheet listing the block's actions instead, for any touch
+      // device (not just gutterless ones) — the pill never renders from a
+      // touch path anymore at all (see the render guard on .block-handles
+      // below, and desktop's handleEditorMouseMove path, untouched).
       const moved = dragMoved;
       const block = dragBlock;
       endDrag();
-      if (gutterless && !moved && block) {
-        revealHandleForBlock(block);
-        armTouchHandleHide();
-        touchActiveBoard = block;
+      if (!moved && block) {
+        openBlockActionSheet(block);
       }
+    }
+  }
+
+  // ── Touch block-actions sheet (mobile stability: long-press redesign) ──
+  // Replaces the floating .block-handles pill on touch. Opened by a
+  // stationary long-press (handleEditorPointerUp above); closed by any
+  // BottomSheet dismiss path (scrim tap, drag-down, Escape, hardware back —
+  // all via BottomSheet's own navstack integration).
+  let blockActionSheetOpen = $state(false);
+  let blockActionSheetBlock = $state(null);
+  let blockActionSheetActions = $state(/** @type {string[]} */ ([]));
+
+  // Presentation only (which glyph next to which label) — the DECISION of
+  // which actions apply lives in block-actions.js's blockActionsFor.
+  const BLOCK_ACTION_GLYPHS = {
+    pin: "↗",
+    copy: "⎘",
+    title: "T",
+    "insert-below": "+",
+    delete: "×",
+  };
+
+  function openBlockActionSheet(block) {
+    if (!block) return;
+    // Same signals revealHandleForBlock used to compute for the pill,
+    // reused here so blockActionsFor sees exactly what the old inline
+    // gates saw — the decision moved, not the underlying facts.
+    const isBoard = block.classList?.contains("block-shell") || block.classList?.contains("code-block-wrap");
+    const hasContent = !!(block.textContent?.trim());
+    const tag = block.tagName?.toLowerCase();
+    const canInsert = tag === "p" || tag === "h1" || tag === "h2" || tag === "h3";
+    const hasTitle = !!block.querySelector?.(".board-title-slot");
+    let actions = blockActionsFor({
+      isBoard,
+      hasTitle,
+      canPin: hasContent,
+      isEmpty: canInsert && !hasContent,
+    });
+    // Mirrors the old pill's per-button `!readonly` gates exactly: insert/
+    // copy/delete were readonly-gated there, pin and the title reveal were
+    // not (a past page's block can still be pinned, and tapping to read
+    // its title was never blocked either) — same split here.
+    if (readonly) {
+      actions = actions.filter((id) => id !== "copy" && id !== "insert-below" && id !== "delete");
+    }
+    blockActionSheetActions = actions;
+    if (blockActionSheetActions.length === 0) return;
+    // hoveredBlock is what handlePinBlock/handleCopyBlock/handleDeleteBlock/
+    // handleBlockHandleClick all act on — setting it here lets the sheet's
+    // action handlers below reuse those functions unchanged rather than
+    // re-implementing pin/copy/delete/insert against a second target
+    // variable.
+    hoveredBlock = block;
+    blockActionSheetBlock = block;
+    blockActionSheetOpen = true;
+  }
+
+  function closeBlockActionSheet() {
+    blockActionSheetOpen = false;
+  }
+
+  async function runBlockAction(id) {
+    const block = blockActionSheetBlock;
+    closeBlockActionSheet();
+    if (!block) return;
+    if (id === "pin") {
+      await handlePinBlock();
+    } else if (id === "copy") {
+      await handleCopyBlock();
+    } else if (id === "title") {
+      // .block-active-touch is what the title's touch-reveal CSS keys on
+      // (global.css) — set it so the slot is visible+hit-testable, then
+      // enter edit mode the same way keyboard nav does (block-title.js's
+      // ArrowUp/Backspace handlers call the identical __enterEdit()).
+      touchActiveBoard = block;
+      const slot = block.querySelector(".board-title-slot");
+      if (slot && typeof slot.__enterEdit === "function") {
+        slot.__enterEdit();
+      } else if (slot) {
+        slot.focus();
+      }
+    } else if (id === "insert-below") {
+      handleBlockHandleClick();
+    } else if (id === "delete") {
+      handleDeleteBlock();
     }
   }
 
@@ -2480,6 +2573,24 @@
     >↗</button>
   {/if}
 
+  <!-- Touch block-actions sheet — replaces .block-handles on touch (see
+       handleEditorPointerUp / openBlockActionSheet). -->
+  <BottomSheet open={blockActionSheetOpen} onClose={closeBlockActionSheet} title="block">
+    <div class="block-action-sheet">
+      {#each blockActionSheetActions as id (id)}
+        <button
+          type="button"
+          class="block-action-row"
+          class:danger={id === "delete"}
+          onclick={() => runBlockAction(id)}
+        >
+          <span class="block-action-glyph" aria-hidden="true">{BLOCK_ACTION_GLYPHS[id]}</span>
+          <span class="block-action-label">{BLOCK_ACTION_LABELS[id]}</span>
+        </button>
+      {/each}
+    </div>
+  </BottomSheet>
+
   <FindBar
     editor={editor}
     open={findBarOpen}
@@ -2873,6 +2984,49 @@
   .del-handle:hover {
     opacity: 1;
     background: color-mix(in srgb, var(--ink) 5%, transparent);
+  }
+
+  /* Touch block-actions sheet — see BottomSheet above. One full-width row
+     per action, thumb-sized (var(--touch-target) floor) since every row
+     here only ever renders for a touch long-press. */
+  .block-action-sheet {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .block-action-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    min-height: max(var(--touch-target), 44px);
+    padding: 0 0.25rem;
+    background: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--ink);
+    font-family: "Lora", Georgia, serif;
+    font-size: 0.9375rem;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .block-action-row:active {
+    background: color-mix(in srgb, var(--warm-accent) 12%, transparent);
+  }
+
+  .block-action-row.danger {
+    color: var(--warm-accent);
+  }
+
+  .block-action-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    flex-shrink: 0;
+    font-style: italic;
+    opacity: 0.6;
   }
 
   /* Table toolbar */

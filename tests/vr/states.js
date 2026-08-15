@@ -18,11 +18,15 @@ async function settle(page, ms = 450) {
 }
 
 export const STATE_DRIVERS = {
-  // Block controls only exist after a reveal. On a phone layout that's a
-  // long-press; the bar is then placed clear of the block it acts on
-  // (src/lib/editor/handle-placement.js). This is the state in which the
-  // bar used to be drawn straight over the text.
-  [STATES.BLOCK_HANDLES]: async (page) => {
+  // Long-press-a-block redesign: this used to reveal the floating
+  // .block-handles pill directly over the block (three separate geometry
+  // patches failed to keep it clear of the text on a phone). Touch now
+  // opens a BottomSheet listing the block's actions instead — this state
+  // captures that sheet, and asserts the pill it replaced genuinely never
+  // renders from this path (not just that the sheet happens to also be
+  // there — the whole point of the redesign is no floating chrome on
+  // touch).
+  [STATES.BLOCK_ACTION_SHEET]: async (page) => {
     // Pick a block that is actually inside the scrolling editor. Taking one
     // by index picked a node sitting above the wrapper, so the computed
     // offset came out at -223px: rendered above the scroll container's
@@ -39,13 +43,13 @@ export const STATE_DRIVERS = {
         break;
       }
     }
-    if (!box) throw new Error("block-handles: no block inside the editor viewport");
+    if (!box) throw new Error("block-action-sheet: no block inside the editor viewport");
 
     // pointerType MUST be "touch". handleEditorPointerDown returns
     // immediately for anything else, so page.mouse would silently capture
     // the hover path instead — a state no phone user can reach — while the
     // long-press path this is meant to guard stayed unphotographed. (It
-    // did exactly that on the first attempt.)
+    // did exactly that on the first attempt, back when this drove the pill.)
     const x = box.x + 8;
     const y = box.y + box.height / 2;
     const opts = { pointerType: "touch", pointerId: 1, isPrimary: true, clientX: x, clientY: y, bubbles: true };
@@ -55,26 +59,18 @@ export const STATE_DRIVERS = {
     // request for the block's actions.
     await page.dispatchEvent(".tiptap-wrapper", "pointerup", opts);
     await settle(page);
-    const bar = page.locator(".block-handles").first();
-    await bar.waitFor({ state: "visible" });
-    // waitFor alone is not enough to trust the capture: the bar removes
-    // itself on a timer, so it can be visible here and gone by the time the
-    // screenshot settles — which produced a baseline of an empty page that
-    // would then have passed forever. Assert it is still on screen, with a
-    // real box, at the last possible moment.
-    const barBox = await bar.boundingBox();
-    if (!barBox || barBox.width === 0 || barBox.height === 0) {
-      throw new Error("block-handles: the bar vanished before capture");
+
+    const sheet = page.locator(".sheet").first();
+    await sheet.waitFor({ state: "visible" });
+    const rows = page.locator(".block-action-row");
+    if ((await rows.count()) === 0) {
+      throw new Error("block-action-sheet: the sheet opened with no action rows");
     }
-    // A box is not enough. The bar is absolutely positioned inside a
-    // scroll container, so it can sit outside that container's content box
-    // — clipped out of the pixels while still measuring perfectly. Assert
-    // it is genuinely within the editor before trusting the screenshot.
-    if (barBox.y < wrapBox.y - 1 || barBox.y + barBox.height > wrapBox.y + wrapBox.height + 1) {
-      throw new Error(
-        `block-handles: bar at y=${barBox.y} is outside the editor ` +
-        `(${wrapBox.y}..${wrapBox.y + wrapBox.height}) and would be clipped`,
-      );
+    // The regression this whole redesign exists to fix: the floating pill
+    // must never render from a touch long-press, sheet open or not.
+    const pill = page.locator(".block-handles");
+    if ((await pill.count()) !== 0) {
+      throw new Error("block-action-sheet: .block-handles rendered from a touch long-press");
     }
   },
 

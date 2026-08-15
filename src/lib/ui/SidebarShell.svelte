@@ -226,7 +226,13 @@
        already spent its own padding getting here. Lives in this file
        because the base `padding` shorthand does — a consumer's
        :global(.shell-toolbar) override loses to the scoped rule and is
-       silently ignored (Memory.svelte had one that never applied). */
-    .shell-toolbar { padding-top: 0.5rem; }
+       silently ignored (Memory.svelte had one that never applied).
+       The status bar still has to be cleared, though: this shell hosts
+       full-height phone surfaces (the pin panel), whose toolbar title sat
+       underneath the Android clock. `max()` keeps the tight 0.5rem on a
+       device with no top inset and yields to the real inset where there is
+       one — the same shape every other surface uses, and the reason
+       --safe-top exists in exactly one place (global.css). */
+    .shell-toolbar { padding-top: max(0.5rem, var(--safe-top)); }
   }
 </style>

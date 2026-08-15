@@ -11,8 +11,8 @@ describe("computeKeyboardState", () => {
     expect(r.nextBaseline).toBe(800);
   });
 
-  it("reports open when the viewport shrinks well below the baseline", () => {
-    const r = computeKeyboardState({ vvHeight: 500, baseline: 800 });
+  it("reports open when the viewport shrinks well below the baseline and a field is focused", () => {
+    const r = computeKeyboardState({ vvHeight: 500, baseline: 800, hasFocusedField: true });
     expect(r.isOpen).toBe(true);
     expect(r.keyboardPx).toBe(300);
   });
@@ -21,6 +21,18 @@ describe("computeKeyboardState", () => {
     const r = computeKeyboardState({ vvHeight: 760, baseline: 800 });
     expect(r.isOpen).toBe(false);
     expect(r.keyboardPx).toBe(0);
+  });
+
+  it("a shrink past threshold with no focused field measures the inset but reports closed", () => {
+    const r = computeKeyboardState({ vvHeight: 400, baseline: 800, hasFocusedField: false });
+    expect(r.isOpen).toBe(false);
+    expect(r.keyboardPx).toBe(400);
+  });
+
+  it("a shrink past threshold with a focused field reports open", () => {
+    const r = computeKeyboardState({ vvHeight: 400, baseline: 800, hasFocusedField: true });
+    expect(r.isOpen).toBe(true);
+    expect(r.keyboardPx).toBe(400);
   });
 
   // The latched-bar bug: after rotation the old tall baseline made the
@@ -48,6 +60,10 @@ describe("startKeyboardState — rotation and resume reset the baseline", () => 
   // start from this exact misread and must correct it back to closed.
   it("control: a shrink against a stale baseline (no reset) misreads as the keyboard opening", () => {
     const { win, get: getVar, fire } = fakeWindow({ visual: 800, inner: 800 });
+    // isOpen also requires a focused field (see the focus-gate describe
+    // block below) — give it one so this test isolates the baseline-reset
+    // mechanic under test, not that unrelated gate.
+    win.document.activeElement = { tagName: "INPUT" };
     startKeyboardState(win);
 
     win.visualViewport.height = 400;
@@ -59,6 +75,7 @@ describe("startKeyboardState — rotation and resume reset the baseline", () => 
 
   it("orientationchange resets the baseline, correcting the misread back to closed", () => {
     const { win, get: getVar, fire } = fakeWindow({ visual: 800, inner: 800 });
+    win.document.activeElement = { tagName: "INPUT" };
     startKeyboardState(win);
 
     // Reproduce the control's misread first — a plain resize against the
@@ -82,6 +99,7 @@ describe("startKeyboardState — rotation and resume reset the baseline", () => 
 
   it("visibilitychange (app resume) resets the baseline the same way orientationchange does", () => {
     const { win, get: getVar, fire } = fakeWindow({ visual: 800, inner: 800 });
+    win.document.activeElement = { tagName: "INPUT" };
     startKeyboardState(win);
 
     // Same misread, reproduced the same way: resume into a genuinely
@@ -102,6 +120,80 @@ describe("startKeyboardState — rotation and resume reset the baseline", () => 
     const { win } = fakeWindow({ visual: null, inner: 640 });
     startKeyboardState(win);
     expect(get(keyboardOpen)).toBe(false);
+  });
+});
+
+// The launch bug: on Android cold start the WebView can report a tall
+// viewport, then a transient short one while splash/insets settle. That
+// shrink alone used to read as "keyboard open" — and with no field focused,
+// no further resize event would ever come along to correct it, so the flag
+// (and the collapsed-header it drives) stuck forever. A soft keyboard cannot
+// be open unless something is focused; hasFocusedField is the guard.
+describe("startKeyboardState — a keyboard is not open unless a field is focused", () => {
+  it("a shrink with NO focused field reports closed (the launch bug)", () => {
+    const { win, get: getVar, fire } = fakeWindow({ visual: 800, inner: 800 });
+    win.document.activeElement = null;
+    startKeyboardState(win);
+
+    win.visualViewport.height = 400;
+    fire("vv", "resize");
+
+    expect(get(keyboardOpen)).toBe(false);
+  });
+
+  it("the same shrink WITH a focused field reports open", () => {
+    const { win, fire } = fakeWindow({ visual: 800, inner: 800 });
+    win.document.activeElement = { tagName: "INPUT" };
+    startKeyboardState(win);
+
+    win.visualViewport.height = 400;
+    fire("vv", "resize");
+
+    expect(get(keyboardOpen)).toBe(true);
+  });
+
+  it("blurring after being open flips it closed via the focusout listener, with no viewport event", () => {
+    const { win, fire } = fakeWindow({ visual: 800, inner: 800 });
+    win.document.activeElement = { tagName: "INPUT" };
+    startKeyboardState(win);
+
+    win.visualViewport.height = 400;
+    fire("vv", "resize");
+    expect(get(keyboardOpen)).toBe(true);
+
+    // Focus leaves the field — no resize/scroll event follows this (the
+    // viewport doesn't change shape just because focus moved), so only the
+    // focusout listener re-running apply() can correct the flag.
+    win.document.activeElement = null;
+    fire("doc", "focusout");
+
+    expect(get(keyboardOpen)).toBe(false);
+  });
+
+  it("focusing a field flips it open via the focusin listener, with no viewport event", () => {
+    const { win, fire } = fakeWindow({ visual: 800, inner: 800 });
+    win.document.activeElement = null;
+    startKeyboardState(win);
+
+    win.visualViewport.height = 400;
+    fire("vv", "resize");
+    expect(get(keyboardOpen)).toBe(false);
+
+    win.document.activeElement = { tagName: "TEXTAREA" };
+    fire("doc", "focusin");
+
+    expect(get(keyboardOpen)).toBe(true);
+  });
+
+  it("--kb-inset zeroes when nothing is focused, even though the viewport measured a shrink", () => {
+    const { win, get: getVar, fire } = fakeWindow({ visual: 800, inner: 800 });
+    win.document.activeElement = null;
+    startKeyboardState(win);
+
+    win.visualViewport.height = 400;
+    fire("vv", "resize");
+
+    expect(getVar("--kb-inset")).toBe("0px");
   });
 });
 

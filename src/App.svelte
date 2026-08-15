@@ -330,7 +330,18 @@
   // orphan hideBar entry that latches the bar hidden (the bug this whole
   // module exists to close off). Unconditional on all three: there is no
   // "sheet legitimately survives a bar tap" case.
+  // Switching top-level surfaces must not carry a focused field with it.
+  // Memory's search box keeps focus when the user taps another tab, and
+  // Android leaves the IME up for a field that is no longer on screen — so
+  // opening settings from memory arrived with the keyboard already open,
+  // covering half the pane. Blurring on the way out closes it, and costs
+  // nothing on desktop where no IME is involved.
+  function dropFocus() {
+    const el = typeof document !== "undefined" ? document.activeElement : null;
+    if (el && typeof el.blur === "function") el.blur();
+  }
   function barPages() {
+    dropFocus();
     navPopAll((e) => e.hideBar);
     if (space !== "page") {
       space = "page";
@@ -340,10 +351,12 @@
     window.dispatchEvent(new CustomEvent("shizumu:open-pages"));
   }
   function barMemory() {
+    dropFocus();
     navPopAll((e) => e.hideBar);
     if (space !== "memory") space = "memory";
   }
   function barSettings() {
+    dropFocus();
     navPopAll((e) => e.hideBar);
     if (space !== "page") space = "page";
     requestAnimationFrame(() => {

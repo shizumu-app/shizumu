@@ -20,7 +20,14 @@ export const THEMES = ["cream", "white", "dark"];
 // there is deliberately no code here that puts the app into a state, since
 // that would test the hook rather than the path.
 export const STATES = {
-  BLOCK_HANDLES: "block-handles",
+  // Long-press-a-block redesign: the floating .block-handles pill collided
+  // with block text/titles on a phone across three separate geometry
+  // patches, so touch replaced it with a BottomSheet listing the block's
+  // actions (pin/copy/title/insert below/delete) — see block-actions.js.
+  // .block-handles itself is unchanged and still exists for desktop mouse
+  // hover; it just has no touch-driven path into it anymore, so there is
+  // no VR state left that reaches it via touch input.
+  BLOCK_ACTION_SHEET: "block-action-sheet",
   KEYBOARD: "keyboard",
   PIN_PANEL: "pin-panel",
   WHAT_SETTLED: "what-settled",
@@ -33,7 +40,7 @@ export const SCENES = {
   "page-blank": { space: "page", fixture: FIXTURES.emptyPage, onboarding: false },
   "page-content": {
     space: "page", fixture: FIXTURES.pageWithContent, onboarding: false,
-    states: [STATES.BLOCK_HANDLES, STATES.KEYBOARD, STATES.PIN_PANEL, STATES.WHAT_SETTLED],
+    states: [STATES.BLOCK_ACTION_SHEET, STATES.KEYBOARD, STATES.PIN_PANEL, STATES.WHAT_SETTLED],
   },
   "page-board-content": {
     space: "page", fixture: FIXTURES.pageWithBoardContent, onboarding: false,

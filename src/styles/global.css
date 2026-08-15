@@ -1085,3 +1085,17 @@ html {
     opacity: 0.55;
   }
 }
+
+/* ── Phone default interface scale ────────────────────────────────────────
+   A phone gets the "small" preset by default. The design system sizes every
+   rem off --ui-scale, so one token tightens chrome everywhere at once rather
+   than each surface inventing its own phone spacing.
+   This is a DEFAULT, not an override: App.svelte writes the user's saved
+   `ui_scale` setting as an inline style on <html>, and an inline style beats
+   any stylesheet rule — so a user who has picked a scale in settings keeps
+   it, on a phone as anywhere else. Only the untouched default moves. */
+@media (max-width: 480px), (orientation: landscape) and (max-height: 480px) {
+  :root {
+    --ui-scale: 0.875;
+  }
+}
