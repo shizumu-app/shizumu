@@ -39,6 +39,8 @@
   // genuinely undefined there; the typeof guard below is what makes that
   // safe, falling back to "dev".
   const appVersion = `v${typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev"}`;
+  // Shown beside the version so a screenshot pins the exact build.
+  const buildSha = typeof __BUILD_SHA__ !== "undefined" ? __BUILD_SHA__ : "dev";
 
   let deleteConfirm = $state("");
 
@@ -587,7 +589,7 @@
           <Row>
             version
             {#snippet trailing()}
-              <span class="version">shizumu · {appVersion}</span>
+              <span class="version">shizumu · {appVersion} · {buildSha}</span>
             {/snippet}
           </Row>
         {/if}
@@ -787,7 +789,7 @@
         <Row>
           version
           {#snippet trailing()}
-            <span class="version">shizumu · {appVersion}</span>
+            <span class="version">shizumu · {appVersion} · {buildSha}</span>
           {/snippet}
         </Row>
       {/if}
