@@ -24,7 +24,7 @@
   import { migrateQASchema } from "../lib/extensions/migrate-qa-schema.js";
   import { stripPinIdsFromJSON } from "../lib/extensions/pin-id.js";
   import { isBoardType } from "../lib/extensions/block-title.js";
-  import { resolveHoveredMouseBlock, hoverClassTarget } from "../lib/extensions/block-hover-guard.js";
+  import { resolveHoveredMouseBlock, hoverClassTarget, isTrustedMouseHover } from "../lib/extensions/block-hover-guard.js";
   import { deleteBlockAt, resolveBlockPos } from "../lib/extensions/block-delete.js";
   import { writeClipboard } from "../lib/clipboard-write.js";
   import { sanitizePastedHtml } from "../lib/paste-sanitize.js";
@@ -874,6 +874,16 @@
 
       const applyReveal = () => {
         handleShowTimer = null;
+        // Android synthesises a compat mousemove after every touch tap, and
+        // this reveal path was the one place that never checked for it: the
+        // long-press redesign removed the deliberate touch entries into the
+        // floating pill, but a tap still arrived here as a "mouse hover" and
+        // painted the pill over the block's own text. hoveredMouseBlock (the
+        // title reveal) has been guarded by this exact predicate since D-6;
+        // handleVisible simply never was. A real mouse — including a hybrid
+        // laptop's, once the guard window since the last real touch has
+        // elapsed — still reveals normally.
+        if (!isTrustedMouseHover(lastTouchAt, Date.now())) return;
         handleTop = top;
         handleBlockHeight = blockRect.height;
         handleScrollTop = wrapperEl.scrollTop;
