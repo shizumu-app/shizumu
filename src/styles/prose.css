@@ -936,9 +936,27 @@
   border-radius: 0.25rem;
   line-height: 1.2;
   white-space: nowrap;
-  pointer-events: none;
+  /* Touch-actions redesign: the chip IS the block-actions handle now (see
+     block-shell.js / table-shell-view.js's click listener), not just a
+     label — was `pointer-events: none` when it was display-only. */
+  pointer-events: auto;
+  cursor: pointer;
   user-select: none;
   transition: opacity 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Comfortable tap target on touch WITHOUT resizing the visible pill — a
+   transparent hit box extending past its edges, same trick as everywhere
+   else in this file that needs a bigger hit area than its visible chrome
+   (e.g. .local-image-resize-handle). Desktop gets none: a mouse is precise
+   enough for the pill as drawn, and the instruction here is explicit —
+   visually unchanged on desktop. */
+@media (pointer: coarse) {
+  .prose .block-type-chip::after {
+    content: "";
+    position: absolute;
+    inset: -13px;
+  }
 }
 
 /* Hover targets: every structured wrapper that hosts a chip. */
@@ -975,6 +993,55 @@
 .prose .block-type-chip[data-family="files"] {
   color: var(--warm-accent);
   border-color: color-mix(in srgb, var(--warm-accent) 25%, transparent);
+}
+
+/* ── Touch-only synthetic block handle ──────────────────────────────────
+   A plain paragraph/heading gets no .block-type-chip (block-shell.js only
+   builds one for board NodeViews) — without an equivalent, touch has no
+   way to reach that block's action sheet (touch-block-handle.js). Same
+   geometry class as the chip (bottom-right corner) and the same quiet DM
+   Mono treatment, so it reads as the same affordance family; glyph is a
+   CSS ::before, not text content — see touch-block-handle.js for why (a
+   real text node would make an empty paragraph misreport as non-empty).
+   Hidden outside `(pointer: coarse)` — never renders on desktop, where the
+   hover pill already covers every block type. */
+.prose .touch-block-handle {
+  display: none;
+}
+@media (pointer: coarse) {
+  .prose .ProseMirror > p,
+  .prose .ProseMirror > h1,
+  .prose .ProseMirror > h2,
+  .prose .ProseMirror > h3 {
+    position: relative;
+  }
+  .prose .touch-block-handle {
+    display: inline-block;
+    position: absolute;
+    bottom: 0.25rem;
+    right: 0.5rem;
+    width: 1.25rem;
+    line-height: 1.2;
+    font-family: "DM Mono", monospace;
+    font-size: 0.625rem;
+    color: var(--ink);
+    opacity: 0.55;
+    text-align: center;
+    pointer-events: auto;
+    cursor: pointer;
+    user-select: none;
+  }
+  .prose .touch-block-handle::before {
+    content: "\22EF"; /* ⋯ */
+  }
+  /* Same comfortable-tap-target trick as .block-type-chip::after — a
+     transparent hit box extending past the visible glyph without
+     resizing it. */
+  .prose .touch-block-handle::after {
+    content: "";
+    position: absolute;
+    inset: -13px;
+  }
 }
 
 /* Suppress the browser default selection — our plugin is the single

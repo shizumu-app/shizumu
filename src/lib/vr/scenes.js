@@ -20,13 +20,22 @@ export const THEMES = ["cream", "white", "dark"];
 // there is deliberately no code here that puts the app into a state, since
 // that would test the hook rather than the path.
 export const STATES = {
-  // Long-press-a-block redesign: the floating .block-handles pill collided
-  // with block text/titles on a phone across three separate geometry
-  // patches, so touch replaced it with a BottomSheet listing the block's
-  // actions (pin/copy/title/insert below/delete) — see block-actions.js.
+  // Block-actions redesign: the floating .block-handles pill collided with
+  // block text/titles on a phone across three separate geometry patches, so
+  // touch replaced it with a BottomSheet listing the block's actions
+  // (pin/copy/title/insert below/delete) — see block-actions.js.
   // .block-handles itself is unchanged and still exists for desktop mouse
-  // hover; it just has no touch-driven path into it anymore, so there is
-  // no VR state left that reaches it via touch input.
+  // hover; it just has no touch-driven path into it anymore.
+  //
+  // Opened by tapping the block's own handle — this fixture's content is
+  // plain paragraphs, so that's the chip-less synthetic "⋯"
+  // (touch-block-handle.js), not a board's .block-type-chip (see
+  // page-board-content below for that one — it drives BLOCK_TITLE_TOUCH on
+  // the same fixture, but any board tap there also proves the chip works).
+  // An earlier version of this redesign opened the sheet on a stationary
+  // long-press instead; that fought Android's own text-selection gesture
+  // (the platform's own menu won, not the sheet), so opening moved to the
+  // handle tap and long-press now only ever starts a reorder drag.
   BLOCK_ACTION_SHEET: "block-action-sheet",
   KEYBOARD: "keyboard",
   PIN_PANEL: "pin-panel",

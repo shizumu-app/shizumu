@@ -18,14 +18,24 @@ async function settle(page, ms = 450) {
 }
 
 export const STATE_DRIVERS = {
-  // Long-press-a-block redesign: this used to reveal the floating
-  // .block-handles pill directly over the block (three separate geometry
-  // patches failed to keep it clear of the text on a phone). Touch now
-  // opens a BottomSheet listing the block's actions instead — this state
-  // captures that sheet, and asserts the pill it replaced genuinely never
-  // renders from this path (not just that the sheet happens to also be
-  // there — the whole point of the redesign is no floating chrome on
-  // touch).
+  // Block-actions redesign: this used to reveal the floating .block-handles
+  // pill directly over the block (three separate geometry patches failed to
+  // keep it clear of the text on a phone). Touch now opens a BottomSheet
+  // listing the block's actions instead — this state captures that sheet,
+  // and asserts the pill it replaced genuinely never renders from this path
+  // (not just that the sheet happens to also be there — the whole point of
+  // the redesign is no floating chrome on touch).
+  //
+  // The sheet opens by tapping the block's own handle now, NOT a long-press
+  // (a stationary long-press opened it in an earlier version of this
+  // redesign — Android's own long-press-to-select-text gesture fought it
+  // there, its menu winning over the sheet every time). This fixture's
+  // content (FIXTURES.pageWithContent) is plain paragraphs, so the handle
+  // in play is the chip-less synthetic "⋯" (touch-block-handle.js), not a
+  // board's .block-type-chip — both dispatch the identical
+  // shizumu-block-actions CustomEvent (dispatch-block-actions.js), so
+  // either proves the sheet opens with no chrome over the text; the
+  // selector below matches whichever is actually present.
   [STATES.BLOCK_ACTION_SHEET]: async (page) => {
     // Pick a block that is actually inside the scrolling editor. Taking one
     // by index picked a node sitting above the wrapper, so the computed
@@ -36,28 +46,38 @@ export const STATE_DRIVERS = {
     const wrapBox = await wrapper.boundingBox();
     const blocks = page.locator(".tiptap-wrapper .ProseMirror > *");
     let box = null;
+    let blockIndex = -1;
     for (let i = 0; i < (await blocks.count()); i += 1) {
       const b = await blocks.nth(i).boundingBox();
       if (b && b.height > 0 && b.y >= wrapBox.y && b.y + b.height <= wrapBox.y + wrapBox.height) {
         box = b;
+        blockIndex = i;
         break;
       }
     }
     if (!box) throw new Error("block-action-sheet: no block inside the editor viewport");
+    const block = blocks.nth(blockIndex);
 
-    // pointerType MUST be "touch". handleEditorPointerDown returns
-    // immediately for anything else, so page.mouse would silently capture
-    // the hover path instead — a state no phone user can reach — while the
-    // long-press path this is meant to guard stayed unphotographed. (It
-    // did exactly that on the first attempt, back when this drove the pill.)
-    const x = box.x + 8;
-    const y = box.y + box.height / 2;
-    const opts = { pointerType: "touch", pointerId: 1, isPrimary: true, clientX: x, clientY: y, bubbles: true };
-    await page.dispatchEvent(".tiptap-wrapper", "pointerdown", opts);
-    await settle(page, 900); // past TOUCH_LONG_PRESS_MS (700ms)
-    // Release without moving: movement would mean a reorder drag, not a
-    // request for the block's actions.
-    await page.dispatchEvent(".tiptap-wrapper", "pointerup", opts);
+    // Place the caret in the block first: the chip-less handle follows the
+    // caret (touch-block-handle.js) rather than painting on every block at
+    // once, so it doesn't exist in the DOM until the selection lands here.
+    // A board's .block-type-chip needs no such step (it's per-block, always
+    // present) — this tap is harmless for that case too.
+    //
+    // `.tap()`, not `.click()`: a plain click dispatches a bare mousemove/
+    // mousedown/click with no preceding touch, which isTrustedMouseHover
+    // (block-hover-guard.js) has no reason to reject — it opened the
+    // desktop-hover .block-handles pill instead of getting anywhere near
+    // the touch path this state exists to guard. `.tap()` fires real touch
+    // events first (setting lastTouchAt via handleEditorPointerDown, same
+    // as a real phone), so the compat mousemove Chromium synthesizes right
+    // after lands inside the guard window and is correctly ignored.
+    await block.tap({ position: { x: 8, y: Math.min(8, box.height / 2) } });
+    await settle(page, 200);
+
+    const handle = block.locator(".touch-block-handle, .block-type-chip").first();
+    await handle.waitFor({ state: "visible" });
+    await handle.tap();
     await settle(page);
 
     const sheet = page.locator(".sheet").first();
@@ -67,10 +87,10 @@ export const STATE_DRIVERS = {
       throw new Error("block-action-sheet: the sheet opened with no action rows");
     }
     // The regression this whole redesign exists to fix: the floating pill
-    // must never render from a touch long-press, sheet open or not.
+    // must never render from a touch tap, sheet open or not.
     const pill = page.locator(".block-handles");
     if ((await pill.count()) !== 0) {
-      throw new Error("block-action-sheet: .block-handles rendered from a touch long-press");
+      throw new Error("block-action-sheet: .block-handles rendered from a touch tap");
     }
   },
 

@@ -5,11 +5,16 @@
 // { dom, contentDOM, titleSlot, chip, setTitle }.
 //
 // This factory is intentionally free of editing logic (no commit timers, no
-// keyboard handlers, no dispatch calls). Those responsibilities remain in
-// block-title.js. The view / getPos / ext arguments are accepted for
-// forward-compatibility but are not used in this minimal implementation.
+// keyboard handlers). Those responsibilities remain in block-title.js. The
+// one dispatch it does own is the chip's own tap -> shizumu-block-actions
+// (see dispatch-block-actions.js) — the chip IS the block-actions handle,
+// so wiring that here rather than in every NodeView that calls this
+// factory keeps it a single dispatch site. The view / getPos / ext
+// arguments are accepted for forward-compatibility but are not used in
+// this minimal implementation.
 
 import { nodeKind, nodeFamily } from "../pin-display.js";
+import { dispatchBlockActionsEvent } from "./dispatch-block-actions.js";
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -84,6 +89,17 @@ export function createBlockShell({ node, view, getPos, ext }) {
   if (!kind) {
     chip.style.display = "none";
   }
+
+  // The chip is the block-actions handle (touch-actions redesign: tapping
+  // it, not a long-press anywhere on the block, opens the sheet — a
+  // long-press is the platform's own text-selection gesture on Android).
+  // Harmless on desktop too — the hover pill keeps working exactly as it
+  // does today, this just gives the chip a second, equivalent way in.
+  chip.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dispatchBlockActionsEvent(chip, dom);
+  });
 
   // Assemble: titleSlot → contentDOM → chip
   dom.append(titleSlot, contentDOM, chip);

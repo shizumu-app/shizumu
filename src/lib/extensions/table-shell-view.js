@@ -10,6 +10,7 @@
 // is set via the pin flow / slash command; this View shows it uniformly when set.
 import { TableView } from "@tiptap/extension-table";
 import { nodeKind, nodeFamily } from "../pin-display.js";
+import { dispatchBlockActionsEvent } from "./dispatch-block-actions.js";
 
 export class ShellTableView extends TableView {
   constructor(node, cellMinWidth, view) {
@@ -30,6 +31,14 @@ export class ShellTableView extends TableView {
     this.typeChip.setAttribute("contenteditable", "false");
     this.typeChip.dataset.family = nodeFamily(node) || "none";
     this.typeChip.textContent = nodeKind(node) || "table";
+    // The chip is the block-actions handle (touch-actions redesign, see
+    // block-shell.js's identical wiring) — a table gets its chip from
+    // here rather than block-shell.js, so it needs the same tap handler.
+    this.typeChip.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dispatchBlockActionsEvent(this.typeChip, this.dom);
+    });
     this.dom.appendChild(this.typeChip);
   }
 

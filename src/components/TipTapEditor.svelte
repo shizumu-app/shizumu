@@ -285,6 +285,24 @@
     return () => el.removeEventListener("shizumu:block-copy-key", handleBlockCopyKey);
   });
 
+  // Touch-actions redesign: block actions open by tapping the block's own
+  // handle — the type chip for a board (block-shell.js / table-shell-view.js)
+  // or the synthetic "⋯" for a chip-less paragraph/heading
+  // (touch-block-handle.js) — rather than a long-press anywhere on the
+  // block. Both dispatch the same bubbling shizumu-block-actions CustomEvent
+  // (dispatch-block-actions.js) because a ProseMirror NodeView has no access
+  // to this component's state; listening here is the one place that routes
+  // either source into the existing openBlockActionSheet(block).
+  function handleBlockActionsEvent(e) {
+    openBlockActionSheet(e.detail?.block ?? null);
+  }
+  $effect(() => {
+    const el = editorEl;
+    if (!el) return;
+    el.addEventListener("shizumu-block-actions", handleBlockActionsEvent);
+    return () => el.removeEventListener("shizumu-block-actions", handleBlockActionsEvent);
+  });
+
   function writeMarkdownToClipboard(view, event, clearSelection) {
     if (!editor || !event.clipboardData) return false;
     if (view.state.selection.empty) return false;
@@ -962,6 +980,14 @@
   //     mode — the block elevates visually; pointermove past a
   //     threshold (32px) triggers one moveUnit swap and resets, so
   //     dragging across the page reorders one step at a time.
+  // A third, separate gesture reaches the block-actions sheet: tapping the
+  // block's own handle (its type chip, or the synthetic "⋯" a chip-less
+  // block gets — see handleBlockActionsEvent above). That used to be what
+  // an unmoved long-press did; long-press is Android's own text-selection
+  // gesture, so a long-press sheet fought the platform there instead of
+  // opening it. Long-press now ONLY ever starts a reorder drag (below);
+  // releasing it without moving simply ends the drag with no side effect
+  // (see handleEditorPointerUp).
   let touchHandleHideTimer = null;
   const TOUCH_HANDLE_REVEAL_MS = 4000;
   const TOUCH_LONG_PRESS_MS = 700;
@@ -974,10 +1000,6 @@
   let dragBlock = null;
   let dragAccumY = 0;
   let dragLastY = 0;
-  //   dragMoved = whether the finger travelled at all since the long-press
-  //   fired. Distinguishes a reorder from a stationary press asking for the
-  //   block's actions; dragAccumY can't, since it zeroes on every swap.
-  let dragMoved = false;
   let longPressTimer = null;
 
   function findBlockAtY(clientY) {
@@ -1113,7 +1135,6 @@
     dragActive = true;
     dragBlock = block;
     dragAccumY = 0;
-    dragMoved = false;
     dragLastY = startY;
     block.classList.add("block-dragging");
   }
@@ -1123,7 +1144,6 @@
     dragActive = false;
     dragBlock = null;
     dragAccumY = 0;
-    dragMoved = false;
   }
 
   // Reorder by one swap when the user has dragged a full step (32px). The
@@ -1153,6 +1173,14 @@
     // Tapping a block-handle button — let the button's own onclick fire,
     // don't interfere with the reveal state.
     if (e.target instanceof Element && e.target.closest(".block-handles")) {
+      return;
+    }
+    // Tapping the block-actions handle itself (a board's .block-type-chip
+    // or a chip-less block's synthetic .touch-block-handle) — let its own
+    // click fire the shizumu-block-actions dispatch undisturbed. Without
+    // this the tap would also arm the long-press-drag timer below on the
+    // very same gesture that's opening the sheet.
+    if (e.target instanceof Element && e.target.closest(".block-type-chip, .touch-block-handle")) {
       return;
     }
     // Tapping the (already-revealed) title slot — let the tap focus the
@@ -1219,10 +1247,6 @@
     }
     e.preventDefault();
     const dy = e.clientY - dragLastY;
-    // Any real travel means the user meant to reorder, not to ask for the
-    // block's actions. A couple of pixels of finger jitter during a
-    // stationary long-press must not count.
-    if (Math.abs(dy) > 2) dragMoved = true;
     dragLastY = e.clientY;
     dragAccumY += dy;
     while (dragAccumY >= TOUCH_DRAG_STEP_PX) {
@@ -1239,31 +1263,30 @@
     if (e.pointerType !== "touch") return;
     clearLongPress();
     if (dragActive) {
-      // A long-press that never moved isn't a reorder — it's the user
-      // asking for the block's actions. Tracked with its own flag:
-      // dragAccumY resets to zero on every committed swap, so it can't
-      // answer "did this move at all". Approved touch redesign: this used
-      // to reveal the floating .block-handles pill (revealHandleForBlock)
-      // gated on `gutterless` — that pill collided with block text/titles
-      // on a phone across three separate geometry patches. It now opens a
-      // BottomSheet listing the block's actions instead, for any touch
-      // device (not just gutterless ones) — the pill never renders from a
-      // touch path anymore at all (see the render guard on .block-handles
-      // below, and desktop's handleEditorMouseMove path, untouched).
-      const moved = dragMoved;
-      const block = dragBlock;
+      // Touch-actions redesign: a long-press that never moved used to open
+      // the block-actions sheet (dragMoved tracked "did this move at all"
+      // specifically to distinguish that from a reorder, since dragAccumY
+      // resets to zero on every committed swap). That path fought Android's
+      // own long-press-to-select-text gesture, so opening the sheet moved
+      // to the block's own handle (its chip, or a chip-less block's
+      // synthetic "⋯" — see handleBlockActionsEvent). Long-press now ONLY
+      // ever starts a reorder drag; releasing it unmoved just ends the drag
+      // with no further action.
       endDrag();
-      if (!moved && block) {
-        openBlockActionSheet(block);
-      }
     }
   }
 
-  // ── Touch block-actions sheet (mobile stability: long-press redesign) ──
-  // Replaces the floating .block-handles pill on touch. Opened by a
-  // stationary long-press (handleEditorPointerUp above); closed by any
-  // BottomSheet dismiss path (scrim tap, drag-down, Escape, hardware back —
-  // all via BottomSheet's own navstack integration).
+  // ── Touch block-actions sheet ──────────────────────────────────────────
+  // Replaces the floating .block-handles pill on touch. Opened by tapping
+  // the block's own handle — its type chip (block-shell.js /
+  // table-shell-view.js), or a chip-less block's synthetic "⋯"
+  // (touch-block-handle.js) — routed here via the shizumu-block-actions
+  // CustomEvent (handleBlockActionsEvent above). NOT a long-press: an
+  // earlier redesign opened it that way, but long-press is Android's own
+  // text-selection gesture, so the platform's own menu won this fight
+  // every time instead of the sheet. Closed by any BottomSheet dismiss path
+  // (scrim tap, drag-down, Escape, hardware back — all via BottomSheet's
+  // own navstack integration).
   let blockActionSheetOpen = $state(false);
   let blockActionSheetBlock = $state(null);
   let blockActionSheetActions = $state(/** @type {string[]} */ ([]));
@@ -2057,8 +2080,12 @@
       // right edge for a new page", which was accurate only because
       // navigateNext created one at the end of the rail — the bug that made
       // every right-swipe on a single-page day spawn a page. The gesture
-      // navigates and no longer creates.
-      showToast("tip — long-press a block for actions. swipe from either edge to move between pages.");
+      // navigates and no longer creates. It also used to say "long-press a
+      // block for actions" — long-press now only starts a reorder drag; a
+      // tap on the block's own handle (its chip, or the small "⋯" a
+      // titleless block gets) opens the actions sheet instead, since a
+      // long-press is Android's own text-selection gesture.
+      showToast("tip — tap a block's chip for actions. swipe from either edge to move between pages.");
       try { await setSetting("mobile_gestures_tip_seen", "true"); } catch {}
     } catch {}
   }
@@ -2583,8 +2610,9 @@
     >↗</button>
   {/if}
 
-  <!-- Touch block-actions sheet — replaces .block-handles on touch (see
-       handleEditorPointerUp / openBlockActionSheet). -->
+  <!-- Touch block-actions sheet — replaces .block-handles on touch. Opened
+       by tapping the block's chip/synthetic handle (see
+       handleBlockActionsEvent / openBlockActionSheet), not a long-press. -->
   <BottomSheet open={blockActionSheetOpen} onClose={closeBlockActionSheet} title="block">
     <div class="block-action-sheet">
       {#each blockActionSheetActions as id (id)}

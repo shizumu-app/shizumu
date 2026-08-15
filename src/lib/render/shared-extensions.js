@@ -37,6 +37,7 @@ import { QAPair } from "../extensions/qa-pair.js";
 import { PinId } from "../extensions/pin-id.js";
 import { BlockTitle } from "../extensions/block-title.js";
 import { BlockTypeChip } from "../extensions/block-type-chip.js";
+import { TouchBlockHandle } from "../extensions/touch-block-handle.js";
 import { BlockMovement } from "../extensions/block-movement.js";
 import { BlockCopyKeymap } from "../extensions/block-copy-keymap.js";
 import { BlockTabNoop } from "../extensions/block-tab-noop.js";
@@ -85,6 +86,11 @@ export const READONLY_EXTENSIONS = [
   CodeBlockShizumu,
   Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
   BlockTypeChip,
+  // Pin stays reachable from a read-only (past-day) page on touch — the
+  // block-actions sheet's pin/title actions aren't readonly-gated (see
+  // openBlockActionSheet in TipTapEditor.svelte), only copy/insert/delete
+  // are.
+  TouchBlockHandle,
 ];
 
 // Factory for the writable editor's extension list. Takes the editor-only
@@ -157,6 +163,7 @@ export function buildEditingExtensions({
     BlockEscExit,
     SelectionAccentDecorations,
     BlockTypeChip,
+    TouchBlockHandle,
     LocalImage,
     Chart.configure({
       onOpen: onChartOpen,
