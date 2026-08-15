@@ -67,7 +67,25 @@ describe("AttachmentBlock", () => {
     }, { context: NODE_VIEW_CONTEXT });
     target.querySelector(".attachment-block").click();
     await tick();
-    expect(attachmentOpen).toHaveBeenCalledWith("abc123");
+    expect(attachmentOpen).toHaveBeenCalledWith("abc123", "report.pdf");
+  });
+
+  it("shows a readable message when opening fails, without the raw OS error", async () => {
+    attachmentOpen.mockRejectedValueOnce(
+      new Error("opener failed: No such file or directory (os error 2)"),
+    );
+    const { target } = render(AttachmentBlock, {
+      node: node(),
+      updateAttributes: vi.fn(),
+      deleteNode: vi.fn(),
+      selected: false,
+    }, { context: NODE_VIEW_CONTEXT });
+    target.querySelector(".attachment-block").click();
+    await tick();
+    await tick();
+    const errorEl = target.querySelector(".attachment-error");
+    expect(errorEl).toBeTruthy();
+    expect(errorEl.textContent).not.toMatch(/os error/i);
   });
 
   it("toggles sync and writes the new attr back", async () => {

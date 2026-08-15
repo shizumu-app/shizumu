@@ -1472,8 +1472,13 @@ export async function attachmentAddBytes(bytes, filename, mimeType, sync = false
   return call("attachment_add_bytes", { bytes: Array.from(bytes), filename, mimeType, sync });
 }
 
-export async function attachmentOpen(blobHash) {
-  return call("attachment_open", { blobHash });
+/** `filename` is the attachment's original name (read off the node attrs by
+ *  the caller). Only Android's opener path uses it — content-addressed
+ *  blobs have no extension, so it's what names the staged share copy and
+ *  picks its MIME type — but it's required on every platform so the
+ *  frontend can't forget it. */
+export async function attachmentOpen(blobHash, filename) {
+  return call("attachment_open", { blobHash, filename });
 }
 
 export async function attachmentSetSync(blobHash, sync) {

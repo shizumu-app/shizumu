@@ -151,7 +151,7 @@
   // attachment node, which the modal can't render usefully.
   function handleRowClick() {
     if (isFile && fileMeta?.blob_hash) {
-      attachmentOpen(fileMeta.blob_hash).catch((err) => console.error(err));
+      attachmentOpen(fileMeta.blob_hash, fileMeta.filename).catch((err) => console.error(err));
       return;
     }
     onClick?.();

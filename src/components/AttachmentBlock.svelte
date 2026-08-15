@@ -1,6 +1,7 @@
 <script>
   import { NodeViewWrapper } from "svelte-tiptap";
   import { attachmentOpen, attachmentSetSync, attachmentLocalSrc } from "../lib/api.js";
+  import { describeAttachmentOpenError } from "../lib/editor/attachment-error.js";
 
   /** @type {{ node: any, updateAttributes: (a: any) => void, deleteNode: () => void, selected: boolean }} */
   let { node, updateAttributes, deleteNode, selected } = $props();
@@ -80,9 +81,9 @@
     busy = true;
     errorMsg = "";
     try {
-      await attachmentOpen(node.attrs.blob_hash);
+      await attachmentOpen(node.attrs.blob_hash, node.attrs.filename);
     } catch (e) {
-      errorMsg = String(e);
+      errorMsg = describeAttachmentOpenError(e);
     } finally {
       busy = false;
     }
@@ -410,10 +411,21 @@
     background: var(--warm-accent-soft);
     color: var(--warm-accent);
   }
+  /* Own line, not inline after the chip: rendered as an inline span right
+     next to the block it belongs to, this used to run straight into
+     whatever paragraph text followed — "opener failed: No such file or
+     directory (os error 2)could not save..." with no boundary between the
+     two. `display: block` forces a line break before it (its parent stays
+     an inline span; a block child inside one still breaks the line —
+     invalid-looking but standard, and simplest given the wrapper can't
+     become a div without changing how the whole node lays out inline). */
   .attachment-error {
+    display: block;
+    max-width: 100%;
+    overflow-wrap: break-word;
     color: color-mix(in srgb, var(--ink) 60%, #c44 40%);
     font-size: 0.75rem;
-    margin-left: 0.375rem;
+    margin: 0.25rem 0 0;
   }
 
   /* Touch devices have no hover: keep the actions visible and give them

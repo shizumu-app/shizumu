@@ -136,15 +136,73 @@ pub(crate) fn insert_attachment(
     })
 }
 
+/// Open an attachment with whatever the platform offers for that.
+///
+/// `filename` is the attachment's ORIGINAL name (the frontend reads it off
+/// the node's own attrs — see `AttachmentBlock.svelte`'s
+/// `node.attrs.filename` — rather than this command doing a DB lookup for
+/// it). It matters only on Android: blobs are content-addressed with no
+/// extension (`store::path_for` -> `blobs/<prefix>/<hash>`), so nothing else
+/// here can name the staged copy sensibly or guess its MIME type.
+///
+/// Desktop keeps opening the real blob path directly via
+/// `tauri_plugin_opener`. Android can't: the plugin has no Android
+/// file-path implementation, and even if it did, passing another app a bare
+/// `file://` path is a `FileUriExposedException` since API 24 — the
+/// receiver needs a `content://` URI from a `FileProvider`, which needs the
+/// file staged somewhere the provider's `<paths>` config maps. See
+/// `attachments::share` for the staging + JNI share-intent call.
 #[tauri::command]
-pub fn attachment_open(app: tauri::AppHandle, blob_hash: String) -> Result<(), String> {
+pub fn attachment_open(
+    app: tauri::AppHandle,
+    blob_hash: String,
+    filename: String,
+) -> Result<(), String> {
     let app_dir = app_data_dir(&app)?;
     if !store::has_local(&app_dir, &blob_hash) {
         return Err("file not on this device".into());
     }
     let path = store::path_for(&app_dir, &blob_hash).map_err(|e| e.to_string())?;
-    tauri_plugin_opener::open_path(path.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|e| format!("opener failed: {e}"))
+
+    #[cfg(target_os = "android")]
+    {
+        attachment_open_android(&app, &path, &filename)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        // Desktop opens the real blob path with the OS handler directly —
+        // no share staging, no filename needed.
+        let _ = &filename;
+        tauri_plugin_opener::open_path(path.to_string_lossy().to_string(), None::<&str>)
+            .map_err(|e| format!("opener failed: {e}"))
+    }
+}
+
+/// Android half of [`attachment_open`]: stage a named, MIME-typed copy in
+/// the app's cache dir, then hand it to the system share sheet via JNI.
+///
+/// Every failure here becomes a readable `Err` — never a panic across the
+/// JNI boundary — and the underlying cause is logged before it's collapsed
+/// into the message the UI shows, so a device-side failure is diagnosable
+/// from a `adb logcat` even though the user only sees one line.
+#[cfg(target_os = "android")]
+fn attachment_open_android(
+    app: &tauri::AppHandle,
+    blob_path: &std::path::Path,
+    filename: &str,
+) -> Result<(), String> {
+    let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    let (staged_path, mime) =
+        crate::attachments::share::stage_for_share(&cache_dir, blob_path, filename)?;
+    crate::attachments::share::share_via_intent(&staged_path.to_string_lossy(), mime).map_err(
+        |e| {
+            log::warn!(
+                "attachment_open: android share intent failed for {}: {e}",
+                staged_path.display()
+            );
+            "could not open the share sheet for this file".to_string()
+        },
+    )
 }
 
 /// Should flipping an attachment's sync flag put its bytes on the wire?

@@ -385,7 +385,7 @@
           <div class="filename">{fileMeta?.filename || "file"}</div>
           <div class="file-meta">{formatBytes(fileMeta?.size_bytes || 0)}{fileMeta?.mime_type ? ` · ${fileMeta.mime_type}` : ""}</div>
         </div>
-        <Button variant="accent" onClick={() => fileMeta?.blob_hash && attachmentOpen(fileMeta.blob_hash)}>
+        <Button variant="accent" onClick={() => fileMeta?.blob_hash && attachmentOpen(fileMeta.blob_hash, fileMeta.filename)}>
           open file
         </Button>
       </div>

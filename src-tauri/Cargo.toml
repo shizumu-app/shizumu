@@ -96,6 +96,16 @@ tempfile = "3"
 keyring = "3"
 tauri-plugin-global-shortcut = "2"
 
+# Android share sheet (attachment_open): reaching the running Activity to
+# call the Kotlin `shareFile` method `scripts/patch-android-share.py`
+# injects into MainActivity.kt. ndk-context holds the JavaVM + activity
+# pointers wry's Android glue stashes at startup; jni is the FFI binding
+# used to attach the current thread and make the call. See
+# `attachments::share::share_via_intent`.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }

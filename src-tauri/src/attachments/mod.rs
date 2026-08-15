@@ -5,3 +5,4 @@
 pub mod store;
 pub mod commands;
 pub mod backfill;
+pub mod share;
