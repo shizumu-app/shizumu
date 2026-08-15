@@ -28,3 +28,27 @@ const CHIPLESS_HANDLE_TYPES = new Set(["paragraph", "heading"]);
 export function needsTouchHandle(typeName) {
   return CHIPLESS_HANDLE_TYPES.has(typeName);
 }
+
+/**
+ * touchHandleKind(typeName, hasContent) -> "insert" | "actions" | null
+ *
+ * The gutter restoration (mobile-stability sweep) gave the synthetic touch
+ * handle a second job: on an EMPTY chip-less block it now offers the same
+ * insert/slash entry the desktop `+` handle gives (glyph "+"), and only
+ * falls back to the block-actions sheet (glyph "⋯") once the block has
+ * content — mirroring the desktop hover column's own insert-vs-act split
+ * (`handleShowPlus && !handleHasContent`) without needing hover to expose
+ * it. Kept as one decision here, not two `if`s duplicated in the
+ * ProseMirror plugin and the CSS, so the glyph shown and the event
+ * dispatched can never disagree about which state a block is in.
+ *
+ * @param {string} typeName - a ProseMirror node's `type.name`
+ * @param {boolean} hasContent - whether the block has any text content
+ * @returns {"insert" | "actions" | null} which handle to render — null
+ *   when the block type needs no synthetic handle at all (needsTouchHandle
+ *   is false for it, e.g. every board type already has its own chip).
+ */
+export function touchHandleKind(typeName, hasContent) {
+  if (!needsTouchHandle(typeName)) return null;
+  return hasContent ? "actions" : "insert";
+}

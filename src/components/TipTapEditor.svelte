@@ -35,8 +35,7 @@
   import { looksLikeMarkdown, parseAndInsert, serializeSelection } from "../lib/markdown-clipboard.js";
   import { hydrateDoc, encodeState, bytesFromTauri, docFromTipTapJson } from "../lib/yjs/page-doc.js";
   import { isYjsEnabled } from "../lib/yjs/feature-flag.js";
-  import { isCoarsePointer, isPhoneViewport } from "../lib/responsive.js";
-  import { placeHandleBar } from "../lib/editor/handle-placement.js";
+  import { isCoarsePointer } from "../lib/responsive.js";
   import { blockActionsFor, BLOCK_ACTION_LABELS } from "../lib/editor/block-actions.js";
   import { getViewportHeight, keyboardOpen } from "../lib/keyboard-state.js";
   import { getSchema } from "@tiptap/core";
@@ -187,36 +186,15 @@
   // Block handle state
   let handleVisible = $state(false);
   let handleTop = $state(0);
-  // Height of the block the handles belong to, and the container's scroll
-  // offset when they were revealed. Only the phone bar needs these (to
-  // decide above-vs-below); the desktop column ignores them.
-  let handleBlockHeight = $state(0);
-  let handleScrollTop = $state(0);
   let hoveredBlock = $state(null);
 
-  // The editor's 32px left gutter only exists on the desktop layout — the
-  // phone rule in this file's <style> reclaims it for writing width. The
-  // block controls live IN that gutter, so when it's gone they can't stay
-  // a vertical column pinned to the text's left edge: they'd sit on top of
-  // the first ~40px of every block (which is exactly what they did). Same
-  // predicate as the CSS media query so the two can't drift.
-  let gutterless = $state(false);
-  $effect(() => {
-    const sync = () => { gutterless = isPhoneViewport() || isCoarsePointer(); };
-    sync();
-    window.addEventListener("resize", sync);
-    return () => window.removeEventListener("resize", sync);
-  });
-
-  const handleBar = $derived(
-    gutterless
-      ? placeHandleBar({
-          blockTop: handleTop,
-          blockHeight: handleBlockHeight,
-          scrollTop: handleScrollTop,
-        })
-      : { top: handleTop, placement: "gutter" },
-  );
+  // The editor's 32px left gutter now exists on every viewport, phone
+  // included (see .tiptap-wrapper in this file's <style>) — the handles
+  // column below always sits inside it, at handleTop, same as desktop.
+  // This used to branch on a `gutterless` flag into a second, floating-bar
+  // layout for phones (lib/editor/handle-placement.js, now gone) because
+  // the gutter itself used to be reclaimed there. Restoring the gutter
+  // removed the need for a second layout entirely.
   let handleShowPlus = $state(true);
   let handleIsBoard = $state(false);
   let handleHasContent = $state(false);
@@ -287,12 +265,15 @@
 
   // Touch-actions redesign: block actions open by tapping the block's own
   // handle — the type chip for a board (block-shell.js / table-shell-view.js)
-  // or the synthetic "⋯" for a chip-less paragraph/heading
+  // or the synthetic "⋯" for a chip-less paragraph/heading with content
   // (touch-block-handle.js) — rather than a long-press anywhere on the
   // block. Both dispatch the same bubbling shizumu-block-actions CustomEvent
   // (dispatch-block-actions.js) because a ProseMirror NodeView has no access
   // to this component's state; listening here is the one place that routes
-  // either source into the existing openBlockActionSheet(block).
+  // either source into the existing openBlockActionSheet(block). An EMPTY
+  // chip-less block renders "+" instead and fires shizumu-block-insert
+  // (handleBlockInsertEvent) — same handle, same gutter position, different
+  // event because there's nothing to act on yet.
   function handleBlockActionsEvent(e) {
     openBlockActionSheet(e.detail?.block ?? null);
   }
@@ -300,7 +281,11 @@
     const el = editorEl;
     if (!el) return;
     el.addEventListener("shizumu-block-actions", handleBlockActionsEvent);
-    return () => el.removeEventListener("shizumu-block-actions", handleBlockActionsEvent);
+    el.addEventListener("shizumu-block-insert", handleBlockInsertEvent);
+    return () => {
+      el.removeEventListener("shizumu-block-actions", handleBlockActionsEvent);
+      el.removeEventListener("shizumu-block-insert", handleBlockInsertEvent);
+    };
   });
 
   function writeMarkdownToClipboard(view, event, clearSelection) {
@@ -903,8 +888,6 @@
         // elapsed — still reveals normally.
         if (!isTrustedMouseHover(lastTouchAt, Date.now())) return;
         handleTop = top;
-        handleBlockHeight = blockRect.height;
-        handleScrollTop = wrapperEl.scrollTop;
         handleVisible = true;
         hoveredBlock = found;
         handleShowPlus = canInsert;
@@ -963,31 +946,49 @@
     }, HANDLE_HIDE_DELAY);
   }
 
-  function handleBlockHandleClick() {
-    if (!editor || !hoveredBlock) return;
-    // Focus the start of the hovered block and type /
-    const pos = editor.view.posAtDOM(hoveredBlock, 0);
+  // Shared by the desktop `+` handle (hoveredBlock, mouse hover) and the
+  // touch gutter handle's insert entry (an explicit block from the
+  // shizumu-block-insert event, see handleBlockInsertEvent below) — one
+  // insert path for both, per the gutter-restoration report's instruction
+  // to reuse rather than duplicate it.
+  function insertSlashAtBlock(block) {
+    if (!editor || !block) return;
+    // Focus the start of the block and type /
+    const pos = editor.view.posAtDOM(block, 0);
     editor.chain().focus().setTextSelection(pos).insertContent("/").run();
   }
 
+  function handleBlockHandleClick() {
+    insertSlashAtBlock(hoveredBlock);
+  }
+
+  // Touch gutter handle's insert entry (touch-block-handle.js renders "+"
+  // instead of "⋯" when its block is empty — see touchHandleKind) fires
+  // this bubbling event rather than shizumu-block-actions, so an empty
+  // block's tap reaches the slash menu instead of the (empty, actionless)
+  // sheet.
+  function handleBlockInsertEvent(e) {
+    insertSlashAtBlock(e.detail?.block ?? null);
+  }
+
   // ── Touch block-handle (Phase 11.3) ───────────────────────────────────
-  // Touch devices never fire mousemove, so the hover-driven block handle
-  // is invisible on phones. Two gestures replace it:
-  //   • Tap inside the left margin (< 32px from .tiptap-editor's left
-  //     edge) reveals the handle row anchored to the block at that Y.
-  //     The handle auto-hides 4s after the last touch.
+  // Touch devices never fire mousemove, so the hover-driven .block-handles
+  // column (handleVisible/hoveredBlock above) doesn't reveal from a tap —
+  // it still only opens from mouse hover or a bubble-menu action
+  // (syncBlockHandleToSelection). Touch gets its own gestures instead:
   //   • Long-press (700ms) anywhere on a block enters drag-to-reorder
   //     mode — the block elevates visually; pointermove past a
   //     threshold (32px) triggers one moveUnit swap and resets, so
   //     dragging across the page reorders one step at a time.
-  // A third, separate gesture reaches the block-actions sheet: tapping the
-  // block's own handle (its type chip, or the synthetic "⋯" a chip-less
-  // block gets — see handleBlockActionsEvent above). That used to be what
-  // an unmoved long-press did; long-press is Android's own text-selection
-  // gesture, so a long-press sheet fought the platform there instead of
-  // opening it. Long-press now ONLY ever starts a reorder drag (below);
-  // releasing it without moving simply ends the drag with no side effect
-  // (see handleEditorPointerUp).
+  //   • A separate gesture reaches the block-actions sheet: tapping the
+  //     block's own handle (its type chip, or the synthetic "⋯"/"+" a
+  //     chip-less block gets — see handleBlockActionsEvent above). That
+  //     used to be what an unmoved long-press did; long-press is
+  //     Android's own text-selection gesture, so a long-press sheet
+  //     fought the platform there instead of opening it. Long-press now
+  //     ONLY ever starts a reorder drag (below); releasing it without
+  //     moving simply ends the drag with no side effect (see
+  //     handleEditorPointerUp).
   let touchHandleHideTimer = null;
   const TOUCH_HANDLE_REVEAL_MS = 4000;
   const TOUCH_LONG_PRESS_MS = 700;
@@ -1014,49 +1015,6 @@
     }
     return null;
   }
-
-  function revealHandleForBlock(block) {
-    if (!block || !wrapperEl) return;
-    const wrapperRect = wrapperEl.getBoundingClientRect();
-    const blockRect = block.getBoundingClientRect();
-    handleTop = blockRect.top - wrapperRect.top + wrapperEl.scrollTop;
-    handleBlockHeight = blockRect.height;
-    handleScrollTop = wrapperEl.scrollTop;
-    handleVisible = true;
-    hoveredBlock = block;
-    const tag = block.tagName?.toLowerCase();
-    const canInsert = tag === "p" || tag === "h1" || tag === "h2" || tag === "h3";
-    handleShowPlus = canInsert;
-    handleIsBoard = block.classList?.contains("block-shell") || block.classList?.contains("code-block-wrap");
-    handleHasContent = !!(block.textContent?.trim());
-    blockAlreadyPinned = existingPinContents.has(block.textContent?.trim());
-  }
-
-  // Mobile-stability item 5: the floating touch bar is a ONE-SHOT
-  // measurement (revealHandleForBlock, taken at long-press/margin-tap
-  // time) that then sits on screen for up to TOUCH_HANDLE_REVEAL_MS
-  // (armTouchHandleHide) — long enough for the user to keep typing in
-  // that same block. Desktop hover never goes stale this way because
-  // handleEditorMouseMove re-measures on every mousemove; touch has no
-  // equivalent continuous signal. If the block gains a wrapped line while
-  // the bar is still up, the bar — still positioned against the OLD,
-  // shorter height (placeHandleBar's "below" placement is
-  // `blockTop + blockHeight + gap`) — ends up sitting exactly where the
-  // NEW line now renders: the on-device report of the pill covering the
-  // block's second line. Re-running the same measurement whenever the
-  // active block's own box actually changes size keeps the bar honest for
-  // the lifetime of the reveal, the touch equivalent of what continuous
-  // mousemove tracking already gives the mouse path. Scoped to
-  // `gutterless` (the floating-bar layout) — the gutter column's `top`
-  // never depends on blockHeight, so it has nothing to go stale.
-  $effect(() => {
-    if (!gutterless || !handleVisible || !hoveredBlock) return;
-    if (typeof ResizeObserver === "undefined") return;
-    const target = hoveredBlock;
-    const ro = new ResizeObserver(() => revealHandleForBlock(target));
-    ro.observe(target);
-    return () => ro.disconnect();
-  });
 
   function armTouchHandleHide() {
     // A control that removes itself after four seconds cannot be
@@ -1762,8 +1720,6 @@
       const wrapperRect = wrapperEl.getBoundingClientRect();
       const blockRect = node.getBoundingClientRect();
       handleTop = blockRect.top - wrapperRect.top + wrapperEl.scrollTop;
-      handleBlockHeight = blockRect.height;
-      handleScrollTop = wrapperEl.scrollTop;
       hoveredBlock = node;
       const tag = node.tagName?.toLowerCase();
       handleShowPlus = tag === "p" || tag === "h1" || tag === "h2" || tag === "h3";
@@ -2581,9 +2537,7 @@
   {#if handleVisible && !selectionPinVisible && (handleHasContent || (!readonly && (handleShowPlus || handleIsBoard)))}
     <div
       class="block-handles"
-      class:floating={gutterless}
-      data-placement={handleBar.placement}
-      style="top: {handleBar.top}px;"
+      style="top: {handleTop}px;"
       onmouseenter={() => handleVisible = true}
     >
       {#if !readonly && handleShowPlus && !handleHasContent}
@@ -2764,27 +2718,26 @@
     scrollbar-width: none;
     scrollbar-color: transparent transparent;
     position: relative;
-    /* Gutter for the block-handles column, which sits inside it. */
+    /* Gutter for the block-handles column, which sits inside it — on
+       EVERY viewport, phone included.
+
+       This used to be reclaimed below 480px / on any coarse pointer /
+       short-landscape (see history in this repo before the mobile-
+       stability sweep): the handles moved instead to a bar that floated
+       clear of the block, above or below it. That bar is gone now —
+       restored here, because every phone chrome-collision bug this
+       project chased traced back to the same root cause: touch had no
+       gutter, so its controls had nowhere to live that wasn't on top of
+       the text. The touch caret handle (touch-block-handle.js) renders
+       into this same 32px column now, same as the desktop hover column
+       below — one gutter, one place for block controls to sit, on every
+       device.
+
+       The accepted trade: on a narrow phone this is 32px of writing width
+       spent on the gutter, asymmetric against the 16px right margin. That
+       asymmetry is the accepted cost — colliding chrome was a functional
+       bug, the reclaimed width was only ever cosmetic. */
     padding-left: 32px;
-  }
-
-  /* Phone: reclaim the gutter. It reserves room for a handles column that
-     the phone layout doesn't put there — the handles move to the text edge
-     below, so on a 412px screen this was 32px held open for nothing. It
-     also made the text asymmetric: 48px in from the left against 16px from
-     the right. Dropping it gives the writing surface those 32px back and
-     centres the column between equal margins.
-
-     The condition is width OR coarse pointer, matching responsive.js's
-     PHONE_QUERY (max-width: 480px) so this tracks the same breakpoint that
-     switches the header to its phone layout. Keying on pointer alone was
-     wrong: a narrow desktop window gets the phone header but reports
-     `pointer: fine`, so it kept the gutter and the body text stayed
-     indented 32px past the header above it. */
-  @media (max-width: 480px), (pointer: coarse), (orientation: landscape) and (max-height: 480px) {
-    .tiptap-wrapper {
-      padding-left: 0;
-    }
   }
 
   .tiptap-wrapper::-webkit-scrollbar {
@@ -2866,49 +2819,28 @@
   }
 
   /* Phone: keep the glyphs visually small (no chip background, no
-     border) but extend the touch target to 40x40 via padding. Stronger
-     opacity so the icon reads clearly without becoming chrome. */
-  /* Handle POSITION follows the gutter, not the pointer. Wherever the
-     gutter is reclaimed the column has to leave it, or the handles sit in
-     space the text now occupies. Same condition as the padding rule above,
-     so the two can't drift apart. */
-  /* Phone: there is no gutter to sit in (the rule above reclaimed it), so
-     the column becomes a horizontal bar that floats clear of the block —
-     placed above it, or below when the block is against the top edge (see
-     lib/editor/handle-placement.js). It used to stay a vertical column at
-     `left: -4px`, which with 40px touch targets planted it squarely over
-     the first ~40px of every block: the checkboxes of a task list, the
-     opening word of a paragraph. That's the bug this replaces.
-
-     `.floating` is set from JS on the same predicate as this media query,
-     so a stale class and a stale rule can't disagree. */
-  .block-handles.floating {
-    flex-direction: row;
-    align-items: center;
-    gap: 2px;
-    left: 0;
-    padding: 1px;
-    /* Fully rounded rather than --radius-lg. The bar is often a single
-       button (a blank paragraph offers only `+`), and a 1rem-radius box
-       around one 40px glyph reads as a stray card sitting on the page —
-       the "+ looks non-uniform" complaint. A pill reads as a round button
-       at one item and as a toolbar at three, so the control keeps one
-       identity however many actions the block has. */
-    border-radius: 999px;
-  }
-
+     border) but extend the touch target for a comfortable tap. Stronger
+     opacity so the icon reads clearly without becoming chrome. The
+     column itself sits in the gutter on phone now (no more `.floating`
+     bar variant — see .tiptap-wrapper above for why), so its width is
+     capped to fit flush inside that 32px gutter rather than bleeding
+     into the text next to it. */
   @media (pointer: coarse) {
-    /* 2rem, down from 2.5rem. The bar floats over the writing column on a
-       phone rather than sitting in a gutter, so its footprint is space the
-       text does not get — a 40px `+` beside a 24px checkbox read as the
-       loudest thing on the page. 32px stays a comfortable target while
-       looking like chrome rather than a primary action.
-       Kept above 30px deliberately: shrinking further to tidy the layout is
-       how a control becomes hard to hit for anyone whose aim is less than
-       perfect. */
+    /* The gutter is 32px; .block-handles normally sits at `left: 2px`
+       with a 1px border each side, leaving 28px for a 20px desktop
+       button — plenty of slack. A touch target this size needs every
+       spare pixel, so both get pulled to the gutter's own edges here:
+       `left: 0` (below) and 1.875rem (30px) content width, so
+       0 + 1px border + 30px + 1px border = 32px exactly — flush with the
+       gutter, never past it into text. 30px is the floor: shrinking
+       further to reclaim space is how a control becomes hard to hit for
+       anyone whose aim is less than perfect. */
+    .block-handles {
+      left: 0;
+    }
     .block-handle {
-      width: 2rem;
-      height: 2rem;
+      width: 1.875rem;
+      height: 1.875rem;
       padding: 0;
       font-size: 0.8125rem;
       opacity: 0.75;

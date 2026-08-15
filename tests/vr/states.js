@@ -94,6 +94,29 @@ export const STATE_DRIVERS = {
     }
   },
 
+  // Gutter restoration: the chip-less touch handle splits by content
+  // (touchHandleKind) — BLOCK_ACTION_SHEET above proves the "⋯"/actions
+  // half on a block that already has text; this proves the other half, a
+  // genuinely empty block, gets "+" in the same gutter position instead.
+  // Doesn't tap it (that opens the slash menu, a different scene entirely)
+  // — the point here is the glyph and its position in the gutter, not the
+  // menu it leads to.
+  [STATES.TOUCH_INSERT_HANDLE]: async (page) => {
+    const wrapper = page.locator(".tiptap-wrapper").first();
+    await wrapper.waitFor({ state: "visible" });
+    const block = page.locator(".tiptap-wrapper .ProseMirror > p").first();
+    await block.waitFor({ state: "visible" });
+    // A plain tap, not an off-centre one: the handle now lives in the
+    // left gutter (outside the block's own box, see prose.css), so unlike
+    // BLOCK_ACTION_SHEET's tap there's no risk of landing on it by taking
+    // the element's default centre point.
+    await block.tap();
+    await settle(page, 200);
+
+    const handle = block.locator('.touch-block-handle[data-empty="true"]');
+    await handle.waitFor({ state: "visible" });
+  },
+
   // The header collapses to a pill and the shell resizes when the keyboard
   // is up. Shrinking the viewport is enough to trigger it: isKeyboardOpen()
   // reads a drop in innerHeight below the tallest seen, precisely so the

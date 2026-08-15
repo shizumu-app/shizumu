@@ -998,13 +998,32 @@
 /* ── Touch-only synthetic block handle ──────────────────────────────────
    A plain paragraph/heading gets no .block-type-chip (block-shell.js only
    builds one for board NodeViews) — without an equivalent, touch has no
-   way to reach that block's action sheet (touch-block-handle.js). Same
-   geometry class as the chip (bottom-right corner) and the same quiet DM
-   Mono treatment, so it reads as the same affordance family; glyph is a
-   CSS ::before, not text content — see touch-block-handle.js for why (a
-   real text node would make an empty paragraph misreport as non-empty).
-   Hidden outside `(pointer: coarse)` — never renders on desktop, where the
-   hover pill already covers every block type. */
+   way to reach that block's action sheet, or its insert menu when the
+   block is empty (touch-block-handle.js).
+
+   Gutter restoration (mobile-stability sweep): this used to sit in the
+   block's own bottom-right corner, the same geometry class as the type
+   chip, because touch had no left gutter to put it in. Now that phone
+   keeps the 32px left gutter (.tiptap-wrapper padding-left in
+   TipTapEditor.svelte) the handle moves INTO it — same column the desktop
+   hover pill (.block-handles) uses, so the two read as one affordance
+   family instead of two different geometries. The tap target is the FULL
+   gutter width by the block's own height (top/bottom: 0 against the
+   block's own `position: relative` box), a tall thin strip rather than a
+   small corner glyph — comfortable to hit without spending any more
+   horizontal space than the gutter already costs. The visible glyph stays
+   small and centred within that strip.
+
+   Glyph is a CSS ::before, not text content — see touch-block-handle.js
+   for why (a real text node would make an empty paragraph misreport as
+   non-empty). It also now splits by content, mirroring the desktop
+   column's own insert-vs-act split: `[data-empty="true"]` (an empty
+   block — touchHandleKind returns "insert") shows "+" and opens the slash
+   menu; the default (a block with content — "actions") shows "⋯" and
+   opens the block-actions sheet.
+
+   Hidden outside `(pointer: coarse)` — never renders on desktop, where
+   the hover pill already covers every block type. */
 .prose .touch-block-handle {
   display: none;
 }
@@ -1016,31 +1035,27 @@
     position: relative;
   }
   .prose .touch-block-handle {
-    display: inline-block;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     position: absolute;
-    bottom: 0.25rem;
-    right: 0.5rem;
-    width: 1.25rem;
-    line-height: 1.2;
+    top: 0;
+    bottom: 0;
+    left: -32px;
+    width: 32px;
     font-family: "DM Mono", monospace;
-    font-size: 0.625rem;
+    font-size: 0.75rem;
     color: var(--ink);
     opacity: 0.55;
-    text-align: center;
     pointer-events: auto;
     cursor: pointer;
     user-select: none;
   }
   .prose .touch-block-handle::before {
-    content: "\22EF"; /* ⋯ */
+    content: "\22EF"; /* ⋯ — block has content, opens the actions sheet */
   }
-  /* Same comfortable-tap-target trick as .block-type-chip::after — a
-     transparent hit box extending past the visible glyph without
-     resizing it. */
-  .prose .touch-block-handle::after {
-    content: "";
-    position: absolute;
-    inset: -13px;
+  .prose .touch-block-handle[data-empty="true"]::before {
+    content: "+"; /* block is empty, opens the slash/insert menu */
   }
 }
 

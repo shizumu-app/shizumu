@@ -144,10 +144,21 @@ Four rules, each written after a defect reached a device despite a green suite.
 **Decisions go in pure modules, not inside components.** Layout geometry, gesture
 intent, viewport arithmetic, and data-shape conversion each live in their own
 module with unit tests — never inline in a `.svelte` file, where nothing can
-reach them. See `src/lib/editor/handle-placement.js` (above-or-below placement),
-`src/lib/swipe-intent.js` (which edge means what), `src/lib/viewport-height.js`
-(visible-viewport sync), `src/lib/pin-carry-forward.js` (`pinToNodes`). Every one
-of those was extracted *because* the bug it now guards shipped.
+reach them. See `src/lib/swipe-intent.js` (which edge means what),
+`src/lib/keyboard-state.js` (`computeKeyboardState` — the app's only
+visualViewport reader), `src/lib/gesture-arming.js` (may a view-switch gesture
+arm at all), `src/lib/header-collapse.js` (may the header collapse right now),
+`src/lib/editor/block-actions.js` (which actions a block offers),
+`src/lib/pin-carry-forward.js` (`pinToNodes`). Every one of those was extracted
+*because* the bug it now guards shipped.
+
+`src/lib/editor/handle-placement.js` used to head this list. It is gone: it
+existed only to place the floating block-handles bar that phones fell back to
+when the editor gutter was removed on small screens, and that whole layout was
+deleted when the gutter came back (the floating bar was the root of a long run
+of controls-over-content bugs). A pure module outliving the decision it made is
+dead weight, not coverage — delete it, and say so here, rather than leaving a
+pointer to a file that no longer exists.
 
 **A test asserting "nothing happens" must say why.** `expect(fn(x)).toEqual([])`
 is indistinguishable from a bug someone wrote down as correct — a plain-text note

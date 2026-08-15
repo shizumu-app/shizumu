@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { TouchBlockHandle, TouchBlockHandlePluginKey } from "../touch-block-handle.js";
-import { BLOCK_ACTIONS_EVENT } from "../dispatch-block-actions.js";
+import { BLOCK_ACTIONS_EVENT, BLOCK_INSERT_EVENT } from "../dispatch-block-actions.js";
 
 function makeEditor(doc) {
   const host = document.createElement("div");
@@ -151,6 +151,59 @@ describe("TouchBlockHandle", () => {
       editor.view.dom.addEventListener(BLOCK_ACTIONS_EVENT, (e) => { detail = e.detail; });
       handle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       expect(detail?.block).toBe(p);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // Gutter restoration: the handle now splits by content, mirroring the
+  // desktop hover column's own insert-vs-act split (handleShowPlus &&
+  // !handleHasContent). An empty block gets the insert entry; a block
+  // with content gets the actions entry. Not "nothing happens" either
+  // way — each asserts a different, real dispatch.
+  it("on an EMPTY paragraph the handle is marked data-empty and taps dispatch shizumu-block-insert, not the actions sheet", () => {
+    const { editor, cleanup } = makeEditor({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
+    try {
+      focusEditor(editor);
+      editor.commands.setTextSelection(1);
+      const p = editor.view.dom.querySelector("p");
+      const handle = p.querySelector(".touch-block-handle");
+      expect(handle.dataset.empty).toBe("true");
+
+      let insertDetail = null;
+      let actionsDetail = null;
+      editor.view.dom.addEventListener(BLOCK_INSERT_EVENT, (e) => { insertDetail = e.detail; });
+      editor.view.dom.addEventListener(BLOCK_ACTIONS_EVENT, (e) => { actionsDetail = e.detail; });
+      handle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(insertDetail?.block).toBe(p);
+      expect(actionsDetail).toBe(null);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("on a paragraph WITH content the handle carries no data-empty attribute and taps dispatch shizumu-block-actions, not insert", () => {
+    const { editor, cleanup } = makeEditor({
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "hi" }] }],
+    });
+    try {
+      focusEditor(editor);
+      editor.commands.setTextSelection(1);
+      const p = editor.view.dom.querySelector("p");
+      const handle = p.querySelector(".touch-block-handle");
+      expect(handle.dataset.empty).toBeUndefined();
+
+      let insertDetail = null;
+      let actionsDetail = null;
+      editor.view.dom.addEventListener(BLOCK_INSERT_EVENT, (e) => { insertDetail = e.detail; });
+      editor.view.dom.addEventListener(BLOCK_ACTIONS_EVENT, (e) => { actionsDetail = e.detail; });
+      handle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(actionsDetail?.block).toBe(p);
+      expect(insertDetail).toBe(null);
     } finally {
       cleanup();
     }

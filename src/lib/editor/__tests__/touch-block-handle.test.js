@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { needsTouchHandle } from "../touch-block-handle.js";
+import { needsTouchHandle, touchHandleKind } from "../touch-block-handle.js";
 
 describe("needsTouchHandle", () => {
   it("is true for paragraph and heading — the two block types block-shell.js never gives a chip", () => {
@@ -26,5 +26,29 @@ describe("needsTouchHandle", () => {
   it("is false for garbage input rather than throwing", () => {
     expect(needsTouchHandle(undefined)).toBe(false);
     expect(needsTouchHandle("")).toBe(false);
+  });
+});
+
+describe("touchHandleKind", () => {
+  it("is \"insert\" for an empty paragraph or heading — the gutter '+' opens the slash menu, same as desktop's empty-block handle", () => {
+    expect(touchHandleKind("paragraph", false)).toBe("insert");
+    expect(touchHandleKind("heading", false)).toBe("insert");
+  });
+
+  it("is \"actions\" for a paragraph or heading that has content — the gutter '⋯' opens the block-actions sheet", () => {
+    expect(touchHandleKind("paragraph", true)).toBe("actions");
+    expect(touchHandleKind("heading", true)).toBe("actions");
+  });
+
+  it("is null for board types regardless of content — they own a real chip already, so no synthetic handle of either kind renders", () => {
+    for (const t of ["list", "blockquote", "qaBlock", "recipeBlock", "codeBlock", "table", "chart"]) {
+      expect(touchHandleKind(t, false)).toBe(null);
+      expect(touchHandleKind(t, true)).toBe(null);
+    }
+  });
+
+  it("is null for types with no block-actions sheet entry at all", () => {
+    expect(touchHandleKind("dayMarker", false)).toBe(null);
+    expect(touchHandleKind("horizontalRule", true)).toBe(null);
   });
 });

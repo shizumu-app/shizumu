@@ -2,14 +2,21 @@
 // render no `.block-type-chip` of their own (plain paragraphs/headings —
 // see src/lib/editor/touch-block-handle.js for which types those are).
 //
-// Renders a single quiet "⋯" widget decoration at the block containing the
+// Renders a single quiet widget decoration at the block containing the
 // current selection — following the caret rather than painting a handle on
 // every chip-less block at once (the same "current block" signal
 // pruneEmptyHeadingOnMove in TipTapEditor.svelte already reads off the
-// selection: `$from.before(1)`). Tapping it fires the same
-// `shizumu-block-actions` bubbling CustomEvent the type chip fires
-// (block-shell.js / table-shell-view.js), so TipTapEditor.svelte routes it
-// through the identical openBlockActionSheet(block) path.
+// selection: `$from.before(1)`). Since the mobile-stability gutter
+// restoration it renders INTO the editor's left gutter (prose.css), same
+// as the desktop hover column, rather than floating over the block's own
+// text — and it now splits by content the same way the desktop column
+// does: an EMPTY block gets "+" and fires `shizumu-block-insert` (opens
+// the slash menu, same path the desktop `+` handle calls); a block WITH
+// content gets "⋯" and fires the existing `shizumu-block-actions` event
+// the type chip also fires, routing through openBlockActionSheet(block)
+// unchanged. touchHandleKind (editor/touch-block-handle.js) is the one
+// place that decision is made, so the glyph shown here can't disagree
+// with the event dispatched.
 //
 // Gated on the editor actually having FOCUS, not selection alone — a
 // ProseMirror doc always resolves to a valid default selection (typically
@@ -36,8 +43,8 @@
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
-import { needsTouchHandle } from "../editor/touch-block-handle.js";
-import { dispatchBlockActionsEvent } from "./dispatch-block-actions.js";
+import { touchHandleKind } from "../editor/touch-block-handle.js";
+import { dispatchBlockActionsEvent, dispatchBlockInsertEvent } from "./dispatch-block-actions.js";
 
 export const TouchBlockHandlePluginKey = new PluginKey("touchBlockHandle");
 
@@ -92,7 +99,9 @@ function buildDecorations(state) {
     return DecorationSet.empty;
   }
   const node = state.doc.nodeAt(blockPos);
-  if (!node || !needsTouchHandle(node.type.name)) return DecorationSet.empty;
+  if (!node) return DecorationSet.empty;
+  const kind = touchHandleKind(node.type.name, !!node.textContent.trim());
+  if (!kind) return DecorationSet.empty;
 
   const widgetPos = blockPos + node.nodeSize - 1;
   return DecorationSet.create(state.doc, [
@@ -103,19 +112,26 @@ function buildDecorations(state) {
         handle.className = "touch-block-handle";
         handle.setAttribute("contenteditable", "false");
         handle.setAttribute("role", "button");
-        handle.setAttribute("aria-label", "block actions");
+        if (kind === "insert") {
+          handle.dataset.empty = "true";
+          handle.setAttribute("aria-label", "insert block");
+        } else {
+          handle.setAttribute("aria-label", "block actions");
+        }
         handle.addEventListener("click", (e) => {
           e.preventDefault();
           e.stopPropagation();
           // The handle is the widget's own DOM node, appended as the last
           // child of the live paragraph/heading element — its parent IS
-          // the block the sheet should act on.
+          // the block the sheet (or slash menu) should act on.
           const block = handle.parentElement;
-          if (block) dispatchBlockActionsEvent(handle, block);
+          if (!block) return;
+          if (kind === "insert") dispatchBlockInsertEvent(handle, block);
+          else dispatchBlockActionsEvent(handle, block);
         });
         return handle;
       },
-      { side: 1, ignoreSelection: true, key: `touch-handle-${blockPos}` },
+      { side: 1, ignoreSelection: true, key: `touch-handle-${blockPos}-${kind}` },
     ),
   ]);
 }

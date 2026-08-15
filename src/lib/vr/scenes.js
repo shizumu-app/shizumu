@@ -41,12 +41,21 @@ export const STATES = {
   PIN_PANEL: "pin-panel",
   WHAT_SETTLED: "what-settled",
   BLOCK_TITLE_TOUCH: "block-title-touch",
+  // Gutter restoration: the chip-less touch handle (touch-block-handle.js)
+  // now renders "+" instead of "⋯" when its block is empty, into the
+  // restored left gutter — this state proves that glyph and position on
+  // an actually-empty block, the other half of BLOCK_ACTION_SHEET's
+  // content-block coverage.
+  TOUCH_INSERT_HANDLE: "touch-insert-handle",
 };
 
 
 
 export const SCENES = {
-  "page-blank": { space: "page", fixture: FIXTURES.emptyPage, onboarding: false },
+  "page-blank": {
+    space: "page", fixture: FIXTURES.emptyPage, onboarding: false,
+    states: [STATES.TOUCH_INSERT_HANDLE],
+  },
   "page-content": {
     space: "page", fixture: FIXTURES.pageWithContent, onboarding: false,
     states: [STATES.BLOCK_ACTION_SHEET, STATES.KEYBOARD, STATES.PIN_PANEL, STATES.WHAT_SETTLED],
