@@ -49,6 +49,16 @@ export const STATES = {
   // this string via document.documentElement.dataset.vrState, so the VR
   // harness can photograph the reveal before it clears itself.
   BLOCK_HANDLES_TOUCH: "block-handles",
+  // /chart builder modal (ChartBuilder.svelte), reached the real way: type
+  // "/chart" in the editor and pick the row from the slash menu, same as a
+  // user would — no hook that sets chartBuilderState directly, which is a
+  // private local in TipTapEditor.svelte with no VR seam of its own, and
+  // reaching in from outside would test the hook rather than the slash-menu
+  // path the reported bug actually travels through.
+  CHART_BUILDER: "chart-builder",
+  // Same, plus the soft keyboard up (shrunk viewport, same technique as
+  // KEYBOARD above) — the reported bug involved fields with the IME open.
+  CHART_BUILDER_KEYBOARD: "chart-builder-keyboard",
 };
 
 
@@ -56,7 +66,7 @@ export const STATES = {
 export const SCENES = {
   "page-blank": {
     space: "page", fixture: FIXTURES.emptyPage, onboarding: false,
-    states: [STATES.TOUCH_INSERT_HANDLE],
+    states: [STATES.TOUCH_INSERT_HANDLE, STATES.CHART_BUILDER, STATES.CHART_BUILDER_KEYBOARD],
   },
   "page-content": {
     space: "page", fixture: FIXTURES.pageWithContent, onboarding: false,

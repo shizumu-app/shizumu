@@ -1761,11 +1761,17 @@
   @media (max-width: 480px), (orientation: landscape) and (max-height: 480px) {
     .bottom-bar { padding: var(--space-2) 0 var(--space-1); }
   }
-  /* Phone: hide the bottom-bar (what-settled + word count + cog) when
-     any BottomSheet is open. The sheet's z-index 9999 should cover it,
-     but the bottom-bar establishes its own stacking context (position
-     relative + z-index 1) and can leak through. Belt + suspenders. */
-  :global(body.shizumu-bottom-sheet-open) .bottom-bar {
+  /* Hide the bottom-bar (what-settled + word count + cog) when any
+     BottomSheet or Modal is open. Both overlays' z-index (9999 / 201)
+     should cover it, but .bottom-bar is a DOM sibling of .column (both
+     z-index: 1, direct children of .page) declared LATER — so at the
+     .page stacking level the tie goes to source order and .bottom-bar
+     paints over whatever's nested inside .column, no matter how high
+     that content's own z-index is. Concretely: ChartBuilder's Modal on
+     phone (full-screen, z-index 201) still had "what settled" show
+     through over its node rows. Belt + suspenders on both classes. */
+  :global(body.shizumu-bottom-sheet-open) .bottom-bar,
+  :global(body.shizumu-modal-open) .bottom-bar {
     display: none;
   }
 

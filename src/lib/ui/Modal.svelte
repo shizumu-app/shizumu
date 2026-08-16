@@ -120,6 +120,25 @@
     if (modalNavId !== null) navClose(modalNavId);
   });
 
+  // Mark <body> while open so page chrome that wants to step aside (the
+  // page-content .bottom-bar what-settled strip) can hide itself — same
+  // mechanism BottomSheet.svelte uses. Without it, .bottom-bar's own
+  // stacking context (Page.svelte: position: relative; z-index: 1) can
+  // paint OVER this modal despite the modal's much higher z-index (201):
+  // .bottom-bar is a DOM sibling of .column (also z-index: 1) under
+  // .page, declared later, and this modal is nested inside .column's
+  // stacking context — so the modal's own z-index is only compared
+  // *within* .column, while .column-as-a-whole ties .bottom-bar at the
+  // parent level and loses on source order. Reported as "the page's what
+  // settled strip cuts into the chart builder's node rows".
+  $effect(() => {
+    if (typeof document === "undefined") return;
+    if (open) {
+      document.body.classList.add("shizumu-modal-open");
+      return () => document.body.classList.remove("shizumu-modal-open");
+    }
+  });
+
   $effect(() => {
     if (open) {
       previousFocus = document.activeElement instanceof HTMLElement
@@ -274,19 +293,41 @@
       padding: 1rem;
       padding-top: max(1rem, var(--safe-top));
       /* Reserve the fixed MobileActionBar's height (z-index:1000, above this
-         modal at z-index:201) so the modal's last content — the cancel/join
-         action row of the pairing wizard — can scroll clear of the bar instead
-         of sitting hidden behind pages/memory/settings. --mobile-bar-h already
-         folds in the bottom safe-area. Same clearance pattern as Memory and
-         SidebarShell. Also clear the soft keyboard when it's taller than the
-         bar (--kb-inset from keyboard-state.js, the app's single
-         viewport-state owner) — otherwise a focused field near the bottom of
-         a phone modal sits behind the IME instead of above it. */
-      padding-bottom: calc(max(var(--mobile-bar-h), var(--kb-inset, 0px)) + 0.75rem);
+         modal at z-index:201) so the modal's last content can scroll clear
+         of the bar instead of sitting hidden behind pages/memory/settings.
+         --mobile-bar-h already folds in the bottom safe-area. Same
+         clearance pattern as Memory and SidebarShell.
+
+         No --kb-inset term here (unlike .modal.wide below): this box's own
+         `height` is already --app-height, the VISIBLE viewport with the
+         keyboard already excluded (keyboard-state.js's own doc comment) —
+         so content inside never reaches behind the IME in the first place,
+         and adding kb-inset on top double-subtracts the same keyboard
+         height a second time. It briefly did: on a short visible viewport
+         with a tall keyboard, that extra term could exceed this modal's
+         own height outright — a border-box element can't be shorter than
+         its own padding, so the box silently grew past --app-height,
+         pushing .modal-actions to render right after a modal-body flexed
+         to ~0 height, i.e. back on top of the form instead of below it
+         (caught by the ChartBuilder VR keyboard state: the whole form went
+         blank, cancel/save floating where the kind tabs should be). */
+      padding-bottom: calc(var(--mobile-bar-h) + 0.75rem);
       padding-left: max(1rem, var(--safe-left));
       padding-right: max(1rem, var(--safe-right));
       box-shadow: none;
       animation: modal-in-phone var(--motion-sheet-open);
+    }
+    /* .wide keeps the --kb-inset clearance the plain modal above just lost.
+       Its OWN (higher-specificity, non-media-scoped) `height` rule near the
+       top of this file — min(36rem, calc(100vh - 4rem - safe-*)) — beats
+       this media query's `.modal { height: --app-height }` on specificity
+       alone ([.modal.wide] > [.modal]), regardless of source order. 100vh
+       is the LAYOUT viewport and does not shrink under resizes-visual, so
+       a wide modal's box, unlike the plain one, does NOT already exclude
+       the keyboard — it genuinely needs this term (this is the pairing
+       wizard inside Settings.svelte's <Modal size="wide"> bf978db fixed). */
+    .modal.wide {
+      padding-bottom: calc(max(var(--mobile-bar-h), var(--kb-inset, 0px)) + 0.75rem);
     }
   }
   @keyframes modal-in-phone {
@@ -314,6 +355,17 @@
        content area can own its scroll instead of the modal resizing. */
     flex: 1 1 auto;
     min-height: 0;
+    /* The scroll region itself. On phone .modal gets an explicit `height`
+       (not just max-height), which forces flexbox to shrink this box
+       toward 0 (min-height: 0 permits it) rather than growing the modal —
+       and with nothing here to clip/scroll, tall content (ChartBuilder's
+       form) just painted past its own shrunk box, UNDER .modal-actions,
+       which lays out immediately after that collapsed box. Reported as
+       "cancel/save floats over the kind tabs" with the keyboard open
+       (shortest available height). overflow-y here — not just on .modal —
+       means the body scrolls its own remaining space while the header and
+       actions row stay put, never overlapping either. */
+    overflow-y: auto;
   }
 
   .modal-actions {

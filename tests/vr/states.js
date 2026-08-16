@@ -198,6 +198,42 @@ export const STATE_DRIVERS = {
       );
     }
   },
+  // The /chart builder, opened the real way: focus the empty page's lone
+  // paragraph, type "/chart" so the slash-command Suggestion plugin opens
+  // its menu, then click the "chart" row — same DOM path renderRow() wires
+  // up for a real tap/click, see src/lib/slash-commands.js.
+  [STATES.CHART_BUILDER]: async (page) => {
+    const wrapper = page.locator(".tiptap-wrapper").first();
+    await wrapper.waitFor({ state: "visible" });
+    const block = page.locator(".tiptap-wrapper .ProseMirror > p").first();
+    await block.waitFor({ state: "visible" });
+    await block.click();
+    await page.keyboard.type("/chart");
+    await settle(page, 250);
+
+    const menu = page.locator(".slash-command-menu");
+    await menu.waitFor({ state: "visible" });
+    const row = menu.locator(".slash-command-row", { hasText: "chart" }).first();
+    await row.waitFor({ state: "visible" });
+    await row.click();
+    await settle(page, 300);
+
+    const builder = page.locator(".builder");
+    await builder.waitFor({ state: "visible" });
+  },
+
+  // Same open path, then the soft keyboard comes up — the reported bug
+  // involved form fields with the IME open. Shrinking the viewport is the
+  // same technique KEYBOARD above uses; focus the title input first so the
+  // shrink happens with a field actually focused, like a real IME open would.
+  [STATES.CHART_BUILDER_KEYBOARD]: async (page) => {
+    await STATE_DRIVERS[STATES.CHART_BUILDER](page);
+    const size = page.viewportSize();
+    if (!size) throw new Error("chart-builder-keyboard: no viewport to shrink");
+    await page.locator(".builder .title-input").click();
+    await page.setViewportSize({ width: size.width, height: KEYBOARD_VIEWPORT_HEIGHT });
+    await settle(page, 700);
+  },
 };
 
 export function driverFor(state) {
