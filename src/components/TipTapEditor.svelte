@@ -37,6 +37,7 @@
   import { isYjsEnabled } from "../lib/yjs/feature-flag.js";
   import { isCoarsePointer } from "../lib/responsive.js";
   import { blockActionsFor, BLOCK_ACTION_LABELS } from "../lib/editor/block-actions.js";
+  import { needsTouchHandle } from "../lib/editor/touch-block-handle.js";
   import { getViewportHeight, keyboardOpen } from "../lib/keyboard-state.js";
   import { getSchema } from "@tiptap/core";
   import SharePopup from "./SharePopup.svelte";
@@ -263,17 +264,18 @@
     return () => el.removeEventListener("shizumu:block-copy-key", handleBlockCopyKey);
   });
 
-  // Touch-actions redesign: block actions open by tapping the block's own
-  // handle — the type chip for a board (block-shell.js / table-shell-view.js)
-  // or the synthetic "⋯" for a chip-less paragraph/heading with content
-  // (touch-block-handle.js) — rather than a long-press anywhere on the
-  // block. Both dispatch the same bubbling shizumu-block-actions CustomEvent
-  // (dispatch-block-actions.js) because a ProseMirror NodeView has no access
-  // to this component's state; listening here is the one place that routes
-  // either source into the existing openBlockActionSheet(block). An EMPTY
-  // chip-less block renders "+" instead and fires shizumu-block-insert
-  // (handleBlockInsertEvent) — same handle, same gutter position, different
-  // event because there's nothing to act on yet.
+  // Touch-actions redesign: a BOARD's block actions open by tapping its own
+  // type chip (block-shell.js / table-shell-view.js) rather than a
+  // long-press anywhere on the block. It dispatches the bubbling
+  // shizumu-block-actions CustomEvent (dispatch-block-actions.js) because a
+  // ProseMirror NodeView has no access to this component's state; listening
+  // here is the one place that routes it into the existing
+  // openBlockActionSheet(block). A chip-less block (plain paragraph/
+  // heading) never dispatches this event: EMPTY, it fires
+  // shizumu-block-insert instead (handleBlockInsertEvent, below); WITH
+  // content, a tap reveals its pin/copy/delete controls directly
+  // (handleEditorPointerDown's touch branch → revealBlockHandlesForNode),
+  // bypassing both events and the sheet entirely.
   function handleBlockActionsEvent(e) {
     openBlockActionSheet(e.detail?.block ?? null);
   }
@@ -962,33 +964,35 @@
     insertSlashAtBlock(hoveredBlock);
   }
 
-  // Touch gutter handle's insert entry (touch-block-handle.js renders "+"
-  // instead of "⋯" when its block is empty — see touchHandleKind) fires
-  // this bubbling event rather than shizumu-block-actions, so an empty
-  // block's tap reaches the slash menu instead of the (empty, actionless)
-  // sheet.
+  // Touch gutter handle's insert entry — the "+" touch-block-handle.js
+  // renders on an EMPTY chip-less block — fires this bubbling event rather
+  // than shizumu-block-actions, so an empty block's tap reaches the slash
+  // menu directly.
   function handleBlockInsertEvent(e) {
     insertSlashAtBlock(e.detail?.block ?? null);
   }
 
   // ── Touch block-handle (Phase 11.3) ───────────────────────────────────
   // Touch devices never fire mousemove, so the hover-driven .block-handles
-  // column (handleVisible/hoveredBlock above) doesn't reveal from a tap —
-  // it still only opens from mouse hover or a bubble-menu action
-  // (syncBlockHandleToSelection). Touch gets its own gestures instead:
+  // column (handleVisible/hoveredBlock above) doesn't reveal from a tap
+  // the way it does from mouse hover. It's reached from touch two ways:
+  // a bubble-menu action (syncBlockHandleToSelection), or a direct tap on
+  // a chip-less block that already has content (handleEditorPointerDown's
+  // touch branch → revealBlockHandlesForNode — the gutter-polish fix for
+  // "tap on block does not show the toolbar"). Touch also gets its own
+  // gestures for everything else:
   //   • Long-press (700ms) anywhere on a block enters drag-to-reorder
   //     mode — the block elevates visually; pointermove past a
   //     threshold (32px) triggers one moveUnit swap and resets, so
   //     dragging across the page reorders one step at a time.
-  //   • A separate gesture reaches the block-actions sheet: tapping the
-  //     block's own handle (its type chip, or the synthetic "⋯"/"+" a
-  //     chip-less block gets — see handleBlockActionsEvent above). That
-  //     used to be what an unmoved long-press did; long-press is
-  //     Android's own text-selection gesture, so a long-press sheet
-  //     fought the platform there instead of opening it. Long-press now
-  //     ONLY ever starts a reorder drag (below); releasing it without
-  //     moving simply ends the drag with no side effect (see
-  //     handleEditorPointerUp).
+  //   • A BOARD block's own actions sheet is reached by tapping its type
+  //     chip (see handleBlockActionsEvent above) — unchanged by the
+  //     gutter-polish fix, which only touches chip-less blocks. That used
+  //     to be what an unmoved long-press did; long-press is Android's own
+  //     text-selection gesture, so a long-press sheet fought the platform
+  //     there instead of opening it. Long-press now ONLY ever starts a
+  //     reorder drag (below); releasing it without moving simply ends the
+  //     drag with no side effect (see handleEditorPointerUp).
   let touchHandleHideTimer = null;
   const TOUCH_HANDLE_REVEAL_MS = 4000;
   const TOUCH_LONG_PRESS_MS = 700;
@@ -1134,8 +1138,8 @@
       return;
     }
     // Tapping the block-actions handle itself (a board's .block-type-chip
-    // or a chip-less block's synthetic .touch-block-handle) — let its own
-    // click fire the shizumu-block-actions dispatch undisturbed. Without
+    // or a chip-less block's synthetic .touch-block-handle, the EMPTY-only
+    // "+") — let its own click fire its dispatch undisturbed. Without
     // this the tap would also arm the long-press-drag timer below on the
     // very same gesture that's opening the sheet.
     if (e.target instanceof Element && e.target.closest(".block-type-chip, .touch-block-handle")) {
@@ -1176,6 +1180,34 @@
     // same TOUCH_HANDLE_REVEAL_MS, so a body-tap reveal behaves
     // identically to every other touch reveal.
     if (block) armTouchHandleHide();
+
+    // Gutter-polish fix ("tap on block does not show the toolbar"): a tap
+    // on a chip-less block (plain paragraph/heading — board types have
+    // their own chip, unaffected) that already has content reveals that
+    // block's pin/copy/delete controls in the gutter — the same
+    // .block-handles column desktop hover already populates, just
+    // touch-triggered instead. An empty chip-less block is excluded
+    // (needsTouchHandle + !textContent) because it already gets the "+"
+    // insert affordance from touch-block-handle.js's own ProseMirror
+    // decoration; this path only ever needs to fire for the OTHER half.
+    //
+    // Deliberately resolves the block from the tap's own Y position
+    // (`block`, already computed above) rather than from
+    // editor.state.selection the way syncBlockHandleToSelection does:
+    // at pointerdown time the caret hasn't necessarily moved to the tap
+    // position yet (that update lands in a separate, later transaction),
+    // so reading the selection here would show the PREVIOUS block's
+    // controls, not the one under the finger. Reading straight off the
+    // DOM node the tap actually landed on sidesteps that race entirely.
+    // Nothing here calls preventDefault — the tap still places the caret
+    // through the normal path; this only ever adds the reveal alongside it.
+    if (block) {
+      const tag = block.tagName?.toLowerCase();
+      const typeName = tag === "p" ? "paragraph" : /^h[1-3]$/.test(tag || "") ? "heading" : "";
+      if (needsTouchHandle(typeName) && block.textContent?.trim()) {
+        revealBlockHandlesForNode(block);
+      }
+    }
 
     // Arm long-press: released without moving → the block actions sheet
     // (see handleEditorPointerUp); moved past the drag threshold → reorder
@@ -1226,25 +1258,27 @@
       // specifically to distinguish that from a reorder, since dragAccumY
       // resets to zero on every committed swap). That path fought Android's
       // own long-press-to-select-text gesture, so opening the sheet moved
-      // to the block's own handle (its chip, or a chip-less block's
-      // synthetic "⋯" — see handleBlockActionsEvent). Long-press now ONLY
-      // ever starts a reorder drag; releasing it unmoved just ends the drag
-      // with no further action.
+      // to the block's own handle (a board's type chip — see
+      // handleBlockActionsEvent). Long-press now ONLY ever starts a
+      // reorder drag; releasing it unmoved just ends the drag with no
+      // further action.
       endDrag();
     }
   }
 
   // ── Touch block-actions sheet ──────────────────────────────────────────
-  // Replaces the floating .block-handles pill on touch. Opened by tapping
-  // the block's own handle — its type chip (block-shell.js /
-  // table-shell-view.js), or a chip-less block's synthetic "⋯"
-  // (touch-block-handle.js) — routed here via the shizumu-block-actions
-  // CustomEvent (handleBlockActionsEvent above). NOT a long-press: an
-  // earlier redesign opened it that way, but long-press is Android's own
-  // text-selection gesture, so the platform's own menu won this fight
-  // every time instead of the sheet. Closed by any BottomSheet dismiss path
-  // (scrim tap, drag-down, Escape, hardware back — all via BottomSheet's
-  // own navstack integration).
+  // Replaces the floating .block-handles pill on touch, for BOARD blocks
+  // only. Opened by tapping the block's own type chip (block-shell.js /
+  // table-shell-view.js) — routed here via the shizumu-block-actions
+  // CustomEvent (handleBlockActionsEvent above). A chip-less block (plain
+  // paragraph/heading) never reaches this sheet: it either fires
+  // shizumu-block-insert (empty) or reveals its .block-handles column
+  // directly (has content — see handleEditorPointerDown). NOT a
+  // long-press: an earlier redesign opened it that way, but long-press is
+  // Android's own text-selection gesture, so the platform's own menu won
+  // this fight every time instead of the sheet. Closed by any BottomSheet
+  // dismiss path (scrim tap, drag-down, Escape, hardware back — all via
+  // BottomSheet's own navstack integration).
   let blockActionSheetOpen = $state(false);
   let blockActionSheetBlock = $state(null);
   let blockActionSheetActions = $state(/** @type {string[]} */ ([]));
@@ -1656,6 +1690,17 @@
   });
 
   function updateSelectionPin(ed) {
+    // Touch-only removal (reported obsolete from a phone): a coarse
+    // pointer can't precisely extend or shrink a multi-block drag
+    // selection the way a mouse can, so the button mostly just floated
+    // mid-drag with nothing useful to land on. Desktop (mouse/trackpad)
+    // keeps it unchanged — pin-a-selection may still earn its place with
+    // precise pointing, this is the conservative call for the platform
+    // that reported the problem specifically.
+    if (isCoarsePointer()) {
+      selectionPinVisible = false;
+      return;
+    }
     const sel = ed.state.selection;
     const { from, to, empty } = sel;
     if (empty || to - from < 2) {
@@ -1679,11 +1724,13 @@
       return;
     }
     const wrapperRect = wrapperEl.getBoundingClientRect();
-    // Prefer the browser's selection rect — it hugs the actual end of
-    // the selected text, which is closer to where the user's finger
-    // lifted on touch. ProseMirror cursor coords lag because PM updates
-    // selection state after pointerup. Fall back to PM coords if no
-    // DOM selection range exists.
+    // Everything from here down only ever runs on a fine (mouse/trackpad)
+    // pointer — the isCoarsePointer() return above already sent touch
+    // back with the button hidden. Prefer the browser's selection rect —
+    // it hugs the actual end of the selected text, which is closer to
+    // where the mouse button was released than ProseMirror's own cursor
+    // coords (PM updates selection state after pointerup, so those lag).
+    // Fall back to PM coords if no DOM selection range exists.
     let rect = null;
     try {
       const sel = window.getSelection();
@@ -1702,6 +1749,25 @@
     selectionPinVisible = true;
   }
 
+  // Populate the block-handles column's state from a live DOM block —
+  // shared tail of syncBlockHandleToSelection (below, resolves the node from
+  // the editor's own selection) and revealBlockHandlesOnTouchTap
+  // (handleEditorPointerDown, resolves the node from the tap's Y position
+  // instead — see that function for why it can't reuse the selection path).
+  function revealBlockHandlesForNode(node) {
+    if (!node || !wrapperEl) return;
+    const wrapperRect = wrapperEl.getBoundingClientRect();
+    const blockRect = node.getBoundingClientRect();
+    handleTop = blockRect.top - wrapperRect.top + wrapperEl.scrollTop;
+    hoveredBlock = node;
+    const tag = node.tagName?.toLowerCase();
+    handleShowPlus = tag === "p" || tag === "h1" || tag === "h2" || tag === "h3";
+    handleIsBoard = node.classList?.contains("block-shell") || node.classList?.contains("code-block-wrap");
+    handleHasContent = !!(node.textContent?.trim());
+    blockAlreadyPinned = existingPinContents.has(node.textContent?.trim());
+    handleVisible = true;
+  }
+
   // Resolve the DOM element of the top-level block containing the cursor/selection
   // and sync block-handle state to it. Used after bubble-menu interaction so the
   // pin/copy toolbar for the selection's block appears immediately — no mousemove
@@ -1717,16 +1783,7 @@
       if (node.nodeType === Node.TEXT_NODE) node = node.parentNode;
       while (node && node.parentNode !== proseMirror) node = node.parentNode;
       if (!node || node.parentNode !== proseMirror) return;
-      const wrapperRect = wrapperEl.getBoundingClientRect();
-      const blockRect = node.getBoundingClientRect();
-      handleTop = blockRect.top - wrapperRect.top + wrapperEl.scrollTop;
-      hoveredBlock = node;
-      const tag = node.tagName?.toLowerCase();
-      handleShowPlus = tag === "p" || tag === "h1" || tag === "h2" || tag === "h3";
-      handleIsBoard = node.classList?.contains("block-shell") || node.classList?.contains("code-block-wrap");
-      handleHasContent = !!(node.textContent?.trim());
-      blockAlreadyPinned = existingPinContents.has(node.textContent?.trim());
-      handleVisible = true;
+      revealBlockHandlesForNode(node);
       if (handleLeaveTimer) { clearTimeout(handleLeaveTimer); handleLeaveTimer = null; }
     } catch {}
   }
@@ -2038,10 +2095,10 @@
       // every right-swipe on a single-page day spawn a page. The gesture
       // navigates and no longer creates. It also used to say "long-press a
       // block for actions" — long-press now only starts a reorder drag; a
-      // tap on the block's own handle (its chip, or the small "⋯" a
-      // titleless block gets) opens the actions sheet instead, since a
+      // tap reaches a block's controls instead (its chip for a board, or
+      // the block itself for a plain paragraph/heading), since a
       // long-press is Android's own text-selection gesture.
-      showToast("tip — tap a block's chip for actions. swipe from either edge to move between pages.");
+      showToast("tip — tap a block for its controls. swipe from either edge to move between pages.");
       try { await setSetting("mobile_gestures_tip_seen", "true"); } catch {}
     } catch {}
   }
@@ -2736,8 +2793,25 @@
        The accepted trade: on a narrow phone this is 32px of writing width
        spent on the gutter, asymmetric against the 16px right margin. That
        asymmetry is the accepted cost — colliding chrome was a functional
-       bug, the reclaimed width was only ever cosmetic. */
+       bug, the reclaimed width was only ever cosmetic.
+
+       Gutter-polish pass: 32px was sized to the DESKTOP column (a 30px
+       touch target plus its 1px border each side), never to what a phone
+       actually needs — a phone-width override below narrows it to the
+       handle plus breathing room instead. Scoped by viewport WIDTH, not
+       `pointer: coarse`: a touchscreen laptop is coarse-pointer too but
+       desktop-width, and must keep this 32px value, not the phone one. */
     padding-left: 32px;
+  }
+
+  /* Phone-width gutter: sized to the handle it holds, not to desktop's
+     column. Not pointer-scoped — see the comment above. rem-based so it
+     tracks --ui-scale's phone default (0.875, global.css, same
+     breakpoint) rather than freezing at a pixel value picked for scale 1. */
+  @media (max-width: 480px) {
+    .tiptap-wrapper {
+      padding-left: 1.5rem;
+    }
   }
 
   .tiptap-wrapper::-webkit-scrollbar {
@@ -2882,6 +2956,56 @@
 
   .pin-handle.already-pinned {
     opacity: 0.15;
+  }
+
+  /* Phone-width column sizing — its own numbers, not desktop's shrunk down.
+     Not pointer-scoped, same reasoning as .tiptap-wrapper's phone override
+     above: a touchscreen laptop keeps the 30px `pointer: coarse` sizing
+     from the block above, since it's desktop-width. This layer only fires
+     under 480px, where the gutter itself has already narrowed to 1.5rem.
+     Placed after every other .block-handle/.pin-handle rule in this file
+     so it wins the cascade at equal specificity — a media query adds no
+     specificity of its own, only source order does.
+
+     rem throughout so the glyph and the surrounding rhythm track
+     --ui-scale's phone default (0.875) together, rather than a pixel size
+     that was right at scale 1 and merely happens to still fit at 0.875.
+     The visible card (.block-handles' own background/border/shadow, set
+     above) shrinks to whatever its children measure — sizing the BUTTON
+     narrower here is what keeps that card inside the narrower gutter,
+     clear of the text column that starts right after it.
+
+     Tap targets stay generous through padding, not box width: the glyph
+     itself is small and the row spacing is tight (both deliberately, so
+     three stacked controls next to phone-sized type don't sprawl), but
+     each button's own vertical padding — not layout gap — is what a
+     finger actually has to land in. */
+  @media (max-width: 480px) {
+    /* Centred in the gutter, not flush against the text.
+       The column was `left: 0` with a 1.25rem button — 19.5px of card
+       (button + 1px border each side) inside a 21px gutter, so it sat hard
+       against the text column with ~1.5px to spare and read as attached to
+       the words rather than as chrome beside them. Narrowing the button to
+       1rem frees ~5px, and the offset below splits that evenly so there is
+       daylight on BOTH sides. Kept as a calc of the same three values the
+       layout actually uses (gutter, button, borders) so it stays centred if
+       any of them is retuned, instead of a magic pixel that silently stops
+       being centred the next time the gutter moves. */
+    .block-handles {
+      gap: 0.125rem;
+      left: calc((1.5rem - 1rem - 2px) / 2);
+    }
+    .block-handle {
+      width: 1rem;
+      height: auto;
+      padding: 0.3rem 0;
+      font-size: 0.625rem;
+      opacity: 0.6;
+      border-radius: 3px;
+    }
+    .pin-handle {
+      font-size: 0.625rem;
+    }
   }
 
   /* Role label tooltip on hover */

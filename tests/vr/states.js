@@ -18,86 +18,8 @@ async function settle(page, ms = 450) {
 }
 
 export const STATE_DRIVERS = {
-  // Block-actions redesign: this used to reveal the floating .block-handles
-  // pill directly over the block (three separate geometry patches failed to
-  // keep it clear of the text on a phone). Touch now opens a BottomSheet
-  // listing the block's actions instead — this state captures that sheet,
-  // and asserts the pill it replaced genuinely never renders from this path
-  // (not just that the sheet happens to also be there — the whole point of
-  // the redesign is no floating chrome on touch).
-  //
-  // The sheet opens by tapping the block's own handle now, NOT a long-press
-  // (a stationary long-press opened it in an earlier version of this
-  // redesign — Android's own long-press-to-select-text gesture fought it
-  // there, its menu winning over the sheet every time). This fixture's
-  // content (FIXTURES.pageWithContent) is plain paragraphs, so the handle
-  // in play is the chip-less synthetic "⋯" (touch-block-handle.js), not a
-  // board's .block-type-chip — both dispatch the identical
-  // shizumu-block-actions CustomEvent (dispatch-block-actions.js), so
-  // either proves the sheet opens with no chrome over the text; the
-  // selector below matches whichever is actually present.
-  [STATES.BLOCK_ACTION_SHEET]: async (page) => {
-    // Pick a block that is actually inside the scrolling editor. Taking one
-    // by index picked a node sitting above the wrapper, so the computed
-    // offset came out at -223px: rendered above the scroll container's
-    // content box, clipped away, and yet still reporting a bounding box.
-    const wrapper = page.locator(".tiptap-wrapper").first();
-    await wrapper.waitFor({ state: "visible" });
-    const wrapBox = await wrapper.boundingBox();
-    const blocks = page.locator(".tiptap-wrapper .ProseMirror > *");
-    let box = null;
-    let blockIndex = -1;
-    for (let i = 0; i < (await blocks.count()); i += 1) {
-      const b = await blocks.nth(i).boundingBox();
-      if (b && b.height > 0 && b.y >= wrapBox.y && b.y + b.height <= wrapBox.y + wrapBox.height) {
-        box = b;
-        blockIndex = i;
-        break;
-      }
-    }
-    if (!box) throw new Error("block-action-sheet: no block inside the editor viewport");
-    const block = blocks.nth(blockIndex);
-
-    // Place the caret in the block first: the chip-less handle follows the
-    // caret (touch-block-handle.js) rather than painting on every block at
-    // once, so it doesn't exist in the DOM until the selection lands here.
-    // A board's .block-type-chip needs no such step (it's per-block, always
-    // present) — this tap is harmless for that case too.
-    //
-    // `.tap()`, not `.click()`: a plain click dispatches a bare mousemove/
-    // mousedown/click with no preceding touch, which isTrustedMouseHover
-    // (block-hover-guard.js) has no reason to reject — it opened the
-    // desktop-hover .block-handles pill instead of getting anywhere near
-    // the touch path this state exists to guard. `.tap()` fires real touch
-    // events first (setting lastTouchAt via handleEditorPointerDown, same
-    // as a real phone), so the compat mousemove Chromium synthesizes right
-    // after lands inside the guard window and is correctly ignored.
-    await block.tap({ position: { x: 8, y: Math.min(8, box.height / 2) } });
-    await settle(page, 200);
-
-    const handle = block.locator(".touch-block-handle, .block-type-chip").first();
-    await handle.waitFor({ state: "visible" });
-    await handle.tap();
-    await settle(page);
-
-    const sheet = page.locator(".sheet").first();
-    await sheet.waitFor({ state: "visible" });
-    const rows = page.locator(".block-action-row");
-    if ((await rows.count()) === 0) {
-      throw new Error("block-action-sheet: the sheet opened with no action rows");
-    }
-    // The regression this whole redesign exists to fix: the floating pill
-    // must never render from a touch tap, sheet open or not.
-    const pill = page.locator(".block-handles");
-    if ((await pill.count()) !== 0) {
-      throw new Error("block-action-sheet: .block-handles rendered from a touch tap");
-    }
-  },
-
-  // Gutter restoration: the chip-less touch handle splits by content
-  // (touchHandleKind) — BLOCK_ACTION_SHEET above proves the "⋯"/actions
-  // half on a block that already has text; this proves the other half, a
-  // genuinely empty block, gets "+" in the same gutter position instead.
+  // Gutter-polish pass: the chip-less touch handle (touch-block-handle.js)
+  // renders "+" only on an EMPTY block, into the restored left gutter.
   // Doesn't tap it (that opens the slash menu, a different scene entirely)
   // — the point here is the glyph and its position in the gutter, not the
   // menu it leads to.
@@ -106,15 +28,89 @@ export const STATE_DRIVERS = {
     await wrapper.waitFor({ state: "visible" });
     const block = page.locator(".tiptap-wrapper .ProseMirror > p").first();
     await block.waitFor({ state: "visible" });
-    // A plain tap, not an off-centre one: the handle now lives in the
-    // left gutter (outside the block's own box, see prose.css), so unlike
-    // BLOCK_ACTION_SHEET's tap there's no risk of landing on it by taking
-    // the element's default centre point.
+    // A plain tap, not an off-centre one: the handle lives in the left
+    // gutter (outside the block's own box, see prose.css), so there's no
+    // risk of landing on it by taking the element's default centre point.
     await block.tap();
     await settle(page, 200);
 
-    const handle = block.locator('.touch-block-handle[data-empty="true"]');
+    const handle = block.locator(".touch-block-handle");
     await handle.waitFor({ state: "visible" });
+  },
+
+  // Gutter-polish pass, the actual bug fix ("tap on block does not show
+  // the toolbar in the left space"): tapping a chip-less block that
+  // already has content reveals its pin/copy/delete controls in the
+  // gutter — the same .block-handles column desktop hover populates, just
+  // touch-triggered (TipTapEditor.svelte's handleEditorPointerDown →
+  // revealBlockHandlesForNode). Replaces the earlier BottomSheet a
+  // chip-less block used to reach via a synthetic "⋯" handle — that
+  // handle is gone; this plain tap is the whole gesture now.
+  //
+  // Deliberately targets the FIRST fixture paragraph, which is short
+  // enough to wrap to one line at phone width — the tallest-risk case the
+  // coordinator asked to see photographed: three stacked controls next to
+  // a single text line are taller than the block itself, so this proves
+  // the overflow spills DOWN THE GUTTER beside the next block rather than
+  // over that next block's own text.
+  [STATES.BLOCK_HANDLES_TOUCH]: async (page) => {
+    const wrapper = page.locator(".tiptap-wrapper").first();
+    await wrapper.waitFor({ state: "visible" });
+    const block = page.locator(".tiptap-wrapper .ProseMirror > p").first();
+    await block.waitFor({ state: "visible" });
+    const box = await block.boundingBox();
+    if (!box) throw new Error("block-handles-touch: block not found in the viewport");
+    // Not "nothing happens" bait — this documents WHY the block must be
+    // one line: a taller fixture paragraph would still reveal the column,
+    // just without exercising the overflow-below-the-block case this
+    // state exists to prove is safe.
+    if (box.height > 40) {
+      throw new Error(
+        `block-handles-touch: fixture's first paragraph is not one line (height ${box.height}px) — ` +
+        "this state needs the one-line case to prove the toolbar doesn't paint over text when it overflows",
+      );
+    }
+
+    // `.tap()`, not `.click()`: a plain click dispatches a bare mousemove/
+    // mousedown/click with no preceding touch, which isTrustedMouseHover
+    // (block-hover-guard.js) has no reason to reject — it would reveal the
+    // desktop-hover column instead of exercising the touch path this state
+    // guards. `.tap()` fires real touch events first (setting lastTouchAt
+    // via handleEditorPointerDown, same as a real phone), so the compat
+    // mousemove Chromium synthesizes right after lands inside the guard
+    // window and is correctly ignored.
+    await block.tap();
+    await settle(page, 200);
+
+    const handles = page.locator(".block-handles");
+    await handles.waitFor({ state: "visible" });
+    const pin = handles.locator('[data-label="pin"]');
+    const copy = handles.locator('[data-label="copy"]');
+    const del = handles.locator('[data-label="delete"]');
+    if ((await pin.count()) === 0 || (await copy.count()) === 0 || (await del.count()) === 0) {
+      throw new Error("block-handles-touch: pin/copy/delete controls did not all render");
+    }
+    // The insert "+" belongs to the empty-block path only (TOUCH_INSERT_
+    // HANDLE) — a block WITH content must not also offer it, the same
+    // has-content split the desktop hover column applies.
+    if ((await handles.locator('[data-label="insert"]').count()) !== 0) {
+      throw new Error("block-handles-touch: the insert '+' rendered on a block that has content");
+    }
+    // The hard constraint under test: the column must stay inside the
+    // gutter, never over the block's own text — even though it overflows
+    // BELOW the block's short one-line height (asserted above), it must
+    // never spill to the RIGHT of where the block's text starts.
+    const handlesBox = await handles.boundingBox();
+    const blockBox = await block.boundingBox();
+    if (!handlesBox || !blockBox) {
+      throw new Error("block-handles-touch: could not measure the revealed column");
+    }
+    if (handlesBox.x + handlesBox.width > blockBox.x + 0.5) {
+      throw new Error(
+        `block-handles-touch: column right edge (${handlesBox.x + handlesBox.width}) ` +
+        `reaches past the block's text start (${blockBox.x}) — painting over text`,
+      );
+    }
   },
 
   // The header collapses to a pill and the shell resizes when the keyboard

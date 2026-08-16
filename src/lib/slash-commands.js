@@ -1,7 +1,8 @@
 import { placeMenu } from "./editor/menu-placement.js";
 import { getViewportHeight } from "./keyboard-state.js";
+import { isOutsideTap } from "./editor/outside-tap.js";
 import { Extension } from "@tiptap/core";
-import { Suggestion } from "@tiptap/suggestion";
+import { Suggestion, exitSuggestion } from "@tiptap/suggestion";
 import { PluginKey, TextSelection } from "@tiptap/pm/state";
 import { attachmentAddBytes } from "./api.js";
 
@@ -608,6 +609,42 @@ export const SlashCommands = Extension.create({
           let currentItems = [];
           let selectedIndex = 0;
           let selectCallback = null;
+          // Outside-tap dismissal: a phone has no Escape key, so without
+          // this the menu — a plain DOM node createMenu() appends straight
+          // to document.body, outside the editor's own DOM subtree — was
+          // unclosable there once opened. pointerdown + capture:true
+          // mirrors @tiptap/suggestion's own (unused here — this renderer
+          // positions the menu itself rather than through its `mount`
+          // helper, so its built-in dismissOnOutsideClick never fires)
+          // outside-dismiss wiring: capture so the check runs before any
+          // stopPropagation() further down the tree could hide the tap
+          // from it. exitSuggestion (the package's own exported helper)
+          // is the same transaction its Escape path already dispatches
+          // internally, so both routes converge on the identical
+          // onExit/cleanup below — no second close path to keep in sync.
+          let outsidePointerDown = null;
+
+          function attachOutsideDismiss(editor) {
+            outsidePointerDown = (event) => {
+              // A tap ON the menu (a row, its scrollbar, whitespace inside
+              // it) must not close it — only lets the row's own click
+              // fire normally. Deliberately no preventDefault/
+              // stopPropagation here either way: the tap that DOES close
+              // the menu must still reach whatever it landed on (a caret
+              // move, another block's handle, an unrelated button) —
+              // closing must never also swallow that.
+              if (isOutsideTap(event, menuEl)) {
+                exitSuggestion(editor.view, SlashCommandsPluginKey);
+              }
+            };
+            document.addEventListener("pointerdown", outsidePointerDown, true);
+          }
+          function detachOutsideDismiss() {
+            if (outsidePointerDown) {
+              document.removeEventListener("pointerdown", outsidePointerDown, true);
+              outsidePointerDown = null;
+            }
+          }
 
           return {
             onStart: (props) => {
@@ -627,6 +664,8 @@ export const SlashCommands = Extension.create({
               } else {
                 menuEl.style.display = "block";
               }
+
+              attachOutsideDismiss(props.editor);
             },
 
             onUpdate: (props) => {
@@ -672,6 +711,7 @@ export const SlashCommands = Extension.create({
             },
 
             onExit: () => {
+              detachOutsideDismiss();
               if (menuEl) {
                 menuEl.remove();
                 menuEl = null;

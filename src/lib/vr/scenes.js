@@ -20,33 +20,35 @@ export const THEMES = ["cream", "white", "dark"];
 // there is deliberately no code here that puts the app into a state, since
 // that would test the hook rather than the path.
 export const STATES = {
-  // Block-actions redesign: the floating .block-handles pill collided with
-  // block text/titles on a phone across three separate geometry patches, so
-  // touch replaced it with a BottomSheet listing the block's actions
-  // (pin/copy/title/insert below/delete) — see block-actions.js.
-  // .block-handles itself is unchanged and still exists for desktop mouse
-  // hover; it just has no touch-driven path into it anymore.
-  //
-  // Opened by tapping the block's own handle — this fixture's content is
-  // plain paragraphs, so that's the chip-less synthetic "⋯"
-  // (touch-block-handle.js), not a board's .block-type-chip (see
-  // page-board-content below for that one — it drives BLOCK_TITLE_TOUCH on
-  // the same fixture, but any board tap there also proves the chip works).
-  // An earlier version of this redesign opened the sheet on a stationary
-  // long-press instead; that fought Android's own text-selection gesture
-  // (the platform's own menu won, not the sheet), so opening moved to the
-  // handle tap and long-press now only ever starts a reorder drag.
-  BLOCK_ACTION_SHEET: "block-action-sheet",
   KEYBOARD: "keyboard",
   PIN_PANEL: "pin-panel",
   WHAT_SETTLED: "what-settled",
   BLOCK_TITLE_TOUCH: "block-title-touch",
-  // Gutter restoration: the chip-less touch handle (touch-block-handle.js)
-  // now renders "+" instead of "⋯" when its block is empty, into the
-  // restored left gutter — this state proves that glyph and position on
-  // an actually-empty block, the other half of BLOCK_ACTION_SHEET's
-  // content-block coverage.
+  // Gutter-polish pass: the chip-less touch handle (touch-block-handle.js)
+  // renders "+" only on an EMPTY block, into the left gutter — this state
+  // proves that glyph and position.
   TOUCH_INSERT_HANDLE: "touch-insert-handle",
+  // Gutter-polish pass, the actual bug fix ("tap on block does not show
+  // the toolbar in the left space"): a tap on a chip-less block that
+  // already has content reveals that block's pin/copy/delete controls in
+  // the gutter — the same .block-handles column desktop hover populates,
+  // just touch-triggered (see TipTapEditor.svelte's handleEditorPointerDown
+  // → revealBlockHandlesForNode). This replaces the earlier BottomSheet
+  // path a chip-less block used to reach via a synthetic "⋯" handle — that
+  // handle is gone; a plain tap on the block itself is the whole gesture
+  // now. Deliberately targets the FIRST (one-line) fixture paragraph, the
+  // tallest-risk case: three stacked controls next to a single text line
+  // are taller than the block itself, so this is the capture that proves
+  // the overflow spills down the gutter rather than over any text.
+  // A board's own actions sheet (its .block-type-chip, unchanged by this
+  // pass) has no dedicated state here — page-board-content below only
+  // drives BLOCK_TITLE_TOUCH, and always has.
+  //
+  // The value MUST be "block-handles" — TipTapEditor.svelte's
+  // armTouchHandleHide() freezes its own auto-hide timer keyed on exactly
+  // this string via document.documentElement.dataset.vrState, so the VR
+  // harness can photograph the reveal before it clears itself.
+  BLOCK_HANDLES_TOUCH: "block-handles",
 };
 
 
@@ -58,7 +60,7 @@ export const SCENES = {
   },
   "page-content": {
     space: "page", fixture: FIXTURES.pageWithContent, onboarding: false,
-    states: [STATES.BLOCK_ACTION_SHEET, STATES.KEYBOARD, STATES.PIN_PANEL, STATES.WHAT_SETTLED],
+    states: [STATES.BLOCK_HANDLES_TOUCH, STATES.KEYBOARD, STATES.PIN_PANEL, STATES.WHAT_SETTLED],
   },
   "page-board-content": {
     space: "page", fixture: FIXTURES.pageWithBoardContent, onboarding: false,

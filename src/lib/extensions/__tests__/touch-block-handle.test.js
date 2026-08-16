@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { TouchBlockHandle, TouchBlockHandlePluginKey } from "../touch-block-handle.js";
-import { BLOCK_ACTIONS_EVENT, BLOCK_INSERT_EVENT } from "../dispatch-block-actions.js";
+import { BLOCK_INSERT_EVENT } from "../dispatch-block-actions.js";
 
 function makeEditor(doc) {
   const host = document.createElement("div");
@@ -49,18 +49,37 @@ describe("TouchBlockHandle", () => {
     }
   });
 
-  it("renders one widget at the paragraph holding the caret once focused", () => {
+  it("renders one widget at an EMPTY paragraph holding the caret once focused", () => {
     const { editor, cleanup } = makeEditor({
       type: "doc",
       content: [
-        { type: "paragraph", content: [{ type: "text", text: "first" }] },
+        { type: "paragraph" },
         { type: "paragraph", content: [{ type: "text", text: "second" }] },
       ],
     });
     try {
       focusEditor(editor);
-      editor.commands.setTextSelection(1); // inside the first paragraph
+      editor.commands.setTextSelection(1); // inside the empty first paragraph
       expect(widgets(editor).length).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("renders no widget when the caret moves into a paragraph that already has content — that block's controls come from TipTapEditor.svelte's tap-reveal, not this decoration", () => {
+    const { editor, cleanup } = makeEditor({
+      type: "doc",
+      content: [
+        { type: "paragraph" },
+        { type: "paragraph", content: [{ type: "text", text: "second" }] },
+      ],
+    });
+    try {
+      focusEditor(editor);
+      editor.commands.setTextSelection(1);
+      expect(widgets(editor).length).toBe(1);
+      editor.commands.setTextSelection(4); // inside the second, non-empty paragraph
+      expect(widgets(editor).length).toBe(0);
     } finally {
       cleanup();
     }
@@ -69,7 +88,7 @@ describe("TouchBlockHandle", () => {
   it("clears the widget again on blur", () => {
     const { editor, cleanup } = makeEditor({
       type: "doc",
-      content: [{ type: "paragraph", content: [{ type: "text", text: "first" }] }],
+      content: [{ type: "paragraph" }],
     });
     try {
       focusEditor(editor);
@@ -82,19 +101,19 @@ describe("TouchBlockHandle", () => {
     }
   });
 
-  it("moves the widget when the selection moves to a different top-level block", () => {
+  it("moves the widget when the selection moves to a different empty top-level block", () => {
     const { editor, cleanup } = makeEditor({
       type: "doc",
       content: [
-        { type: "paragraph", content: [{ type: "text", text: "first" }] },
-        { type: "paragraph", content: [{ type: "text", text: "second" }] },
+        { type: "paragraph" },
+        { type: "paragraph" },
       ],
     });
     try {
       focusEditor(editor);
       editor.commands.setTextSelection(1);
       const firstPos = widgets(editor)[0].from;
-      editor.commands.setTextSelection(9); // inside the second paragraph
+      editor.commands.setTextSelection(3); // inside the second empty paragraph
       const secondPos = widgets(editor)[0].from;
       expect(secondPos).not.toBe(firstPos);
     } finally {
@@ -137,31 +156,7 @@ describe("TouchBlockHandle", () => {
     }
   });
 
-  it("tapping the handle dispatches shizumu-block-actions with the paragraph as the block", () => {
-    const { editor, cleanup } = makeEditor({
-      type: "doc",
-      content: [{ type: "paragraph", content: [{ type: "text", text: "hi" }] }],
-    });
-    try {
-      focusEditor(editor);
-      editor.commands.setTextSelection(1);
-      const p = editor.view.dom.querySelector("p");
-      const handle = p.querySelector(".touch-block-handle");
-      let detail = null;
-      editor.view.dom.addEventListener(BLOCK_ACTIONS_EVENT, (e) => { detail = e.detail; });
-      handle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      expect(detail?.block).toBe(p);
-    } finally {
-      cleanup();
-    }
-  });
-
-  // Gutter restoration: the handle now splits by content, mirroring the
-  // desktop hover column's own insert-vs-act split (handleShowPlus &&
-  // !handleHasContent). An empty block gets the insert entry; a block
-  // with content gets the actions entry. Not "nothing happens" either
-  // way — each asserts a different, real dispatch.
-  it("on an EMPTY paragraph the handle is marked data-empty and taps dispatch shizumu-block-insert, not the actions sheet", () => {
+  it("tapping the handle dispatches shizumu-block-insert with the empty paragraph as the block", () => {
     const { editor, cleanup } = makeEditor({
       type: "doc",
       content: [{ type: "paragraph" }],
@@ -171,39 +166,10 @@ describe("TouchBlockHandle", () => {
       editor.commands.setTextSelection(1);
       const p = editor.view.dom.querySelector("p");
       const handle = p.querySelector(".touch-block-handle");
-      expect(handle.dataset.empty).toBe("true");
-
-      let insertDetail = null;
-      let actionsDetail = null;
-      editor.view.dom.addEventListener(BLOCK_INSERT_EVENT, (e) => { insertDetail = e.detail; });
-      editor.view.dom.addEventListener(BLOCK_ACTIONS_EVENT, (e) => { actionsDetail = e.detail; });
+      let detail = null;
+      editor.view.dom.addEventListener(BLOCK_INSERT_EVENT, (e) => { detail = e.detail; });
       handle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      expect(insertDetail?.block).toBe(p);
-      expect(actionsDetail).toBe(null);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it("on a paragraph WITH content the handle carries no data-empty attribute and taps dispatch shizumu-block-actions, not insert", () => {
-    const { editor, cleanup } = makeEditor({
-      type: "doc",
-      content: [{ type: "paragraph", content: [{ type: "text", text: "hi" }] }],
-    });
-    try {
-      focusEditor(editor);
-      editor.commands.setTextSelection(1);
-      const p = editor.view.dom.querySelector("p");
-      const handle = p.querySelector(".touch-block-handle");
-      expect(handle.dataset.empty).toBeUndefined();
-
-      let insertDetail = null;
-      let actionsDetail = null;
-      editor.view.dom.addEventListener(BLOCK_INSERT_EVENT, (e) => { insertDetail = e.detail; });
-      editor.view.dom.addEventListener(BLOCK_ACTIONS_EVENT, (e) => { actionsDetail = e.detail; });
-      handle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      expect(actionsDetail?.block).toBe(p);
-      expect(insertDetail).toBe(null);
+      expect(detail?.block).toBe(p);
     } finally {
       cleanup();
     }

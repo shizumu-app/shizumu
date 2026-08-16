@@ -996,31 +996,32 @@
 }
 
 /* ── Touch-only synthetic block handle ──────────────────────────────────
-   A plain paragraph/heading gets no .block-type-chip (block-shell.js only
-   builds one for board NodeViews) — without an equivalent, touch has no
-   way to reach that block's action sheet, or its insert menu when the
-   block is empty (touch-block-handle.js).
+   A plain, EMPTY paragraph/heading gets no .block-type-chip (block-shell.js
+   only builds one for board NodeViews) — without an equivalent, touch has
+   no way to reach the slash/insert menu on an empty block
+   (touch-block-handle.js). A chip-less block that already has content gets
+   no glyph from this rule at all: tapping it reveals its own pin/copy/
+   delete controls instead (.block-handles, TipTapEditor.svelte's touch
+   pointerdown handling), not a synthetic "+".
 
    Gutter restoration (mobile-stability sweep): this used to sit in the
    block's own bottom-right corner, the same geometry class as the type
    chip, because touch had no left gutter to put it in. Now that phone
-   keeps the 32px left gutter (.tiptap-wrapper padding-left in
-   TipTapEditor.svelte) the handle moves INTO it — same column the desktop
-   hover pill (.block-handles) uses, so the two read as one affordance
-   family instead of two different geometries. The tap target is the FULL
-   gutter width by the block's own height (top/bottom: 0 against the
-   block's own `position: relative` box), a tall thin strip rather than a
-   small corner glyph — comfortable to hit without spending any more
-   horizontal space than the gutter already costs. The visible glyph stays
-   small and centred within that strip.
+   keeps a left gutter (.tiptap-wrapper padding-left in TipTapEditor.svelte)
+   the handle moves INTO it — same column the desktop hover pill
+   (.block-handles) uses, so the two read as one affordance family instead
+   of two different geometries. The tap target is the FULL gutter width by
+   the block's own height (top/bottom: 0 against the block's own
+   `position: relative` box), a tall thin strip rather than a small corner
+   glyph — comfortable to hit without spending any more horizontal space
+   than the gutter already costs. The visible glyph stays small and
+   centred within that strip. Sized to the desktop 32px gutter here; a
+   phone-width override narrows both the gutter and this handle together
+   (see TipTapEditor.svelte's `@media (max-width: 480px)` block).
 
    Glyph is a CSS ::before, not text content — see touch-block-handle.js
    for why (a real text node would make an empty paragraph misreport as
-   non-empty). It also now splits by content, mirroring the desktop
-   column's own insert-vs-act split: `[data-empty="true"]` (an empty
-   block — touchHandleKind returns "insert") shows "+" and opens the slash
-   menu; the default (a block with content — "actions") shows "⋯" and
-   opens the block-actions sheet.
+   non-empty).
 
    Hidden outside `(pointer: coarse)` — never renders on desktop, where
    the hover pill already covers every block type. */
@@ -1052,10 +1053,21 @@
     user-select: none;
   }
   .prose .touch-block-handle::before {
-    content: "\22EF"; /* ⋯ — block has content, opens the actions sheet */
+    content: "+"; /* the only glyph this handle ever shows — insert */
   }
-  .prose .touch-block-handle[data-empty="true"]::before {
-    content: "+"; /* block is empty, opens the slash/insert menu */
+}
+/* Phone-width gutter narrowing (not pointer-scoped — a wide touchscreen
+   laptop is pointer:coarse too, and must keep the desktop 32px geometry
+   above; only an actually narrow viewport gets the tighter phone numbers).
+   Sized in rem so it tracks --ui-scale's phone default (0.875, set at this
+   same breakpoint in global.css) rather than freezing at a pixel value —
+   see TipTapEditor.svelte's matching .tiptap-wrapper/.block-handles
+   override for the rest of this gutter's phone sizing. */
+@media (max-width: 480px) {
+  .prose .touch-block-handle {
+    left: -1.5rem;
+    width: 1.5rem;
+    font-size: 0.8125rem;
   }
 }
 
