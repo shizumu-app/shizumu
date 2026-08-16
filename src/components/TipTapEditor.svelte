@@ -1202,11 +1202,15 @@
     // Nothing here calls preventDefault — the tap still places the caret
     // through the normal path; this only ever adds the reveal alongside it.
     if (block) {
-      const tag = block.tagName?.toLowerCase();
-      const typeName = tag === "p" ? "paragraph" : /^h[1-3]$/.test(tag || "") ? "heading" : "";
-      if (needsTouchHandle(typeName) && block.textContent?.trim()) {
-        revealBlockHandlesForNode(block);
-      }
+      // EVERY top-level block, not just chip-less ones. This was gated on
+      // needsTouchHandle(), which only answers true for paragraph/heading —
+      // a board (task list, quote, code) is a <div>, so it resolved to "",
+      // the gate said no, and tapping a list revealed nothing at all. The
+      // type chip is an ADDITIONAL way into a board's actions, never the
+      // only one. revealBlockHandlesForNode works out which controls apply
+      // (content / board / plus) from the node itself, so it is safe to
+      // call for any block.
+      revealBlockHandlesForNode(block);
     }
 
     // Arm long-press: released without moving → the block actions sheet
@@ -2999,8 +3003,12 @@
       width: 1rem;
       height: auto;
       padding: 0.3rem 0;
-      font-size: 0.625rem;
-      opacity: 0.6;
+      /* Legible, not merely present. 0.625rem at --ui-scale 0.875 renders
+         ~8.75px at 0.6 opacity — technically visible, in practice a smudge
+         the user could not read as a "+". Sized and weighted up until the
+         glyph reads as a control; still quiet against the canvas. */
+      font-size: 0.8125rem;
+      opacity: 0.8;
       border-radius: 3px;
     }
     .pin-handle {

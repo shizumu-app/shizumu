@@ -597,56 +597,28 @@ body {
    (already `position: relative`) takes the slot out of flow entirely —
    revealing it overlays the space above the content instead of expanding
    into it, so the content never moves regardless of where inside the
-   block the tap landed.
-   Code-review fix (post-120d403): the ORIGINAL shape of this rule (`top:
-   0` plus an opaque `background` "masking" whatever first line sat under
-   it) painted over up to ~32px of live content — `.block-shell` reserved
-   no top padding, so the revealed slot sat directly on top of the block's
-   own text, and the auto-hide it depended on wasn't even armed on this
-   path (see the body-tap fix in TipTapEditor.svelte). Covering the user's
-   text is never acceptable, masked or not.
-   Fix: `.block-shell`/`.code-block-wrap` reserve a PERMANENT top margin on
-   touch (below, `prose.css`) sized to the slot's own `max-height: 2.6em`
-   (0.78em font-size * 1.9 line-height * 2.6 ≈ 32.4px at the 16px default
-   `--editor-font-size` — both values share the same em chain, so the
-   reserved space tracks the slot's real height whatever the user's font
-   size is). Because that margin is constant whether or not the title is
-   revealed, nothing shifts on reveal. The slot itself is anchored with
-   `bottom: 100%` instead of `top: 0` — its bottom edge sits exactly at the
-   block's own border-box top (block-shell has no top border/padding), so
-   it renders entirely inside the reserved margin, above the content box,
-   never over it. No masking background needed; kept for visual polish
-   only (a quiet chip against the canvas), not to hide an overlap. */
-@media (hover: none) {
-  .ProseMirror .block-shell.block-active-touch > .board-title-slot,
-  .ProseMirror .code-block-wrap.block-active-touch > .board-title-slot {
-    position: absolute;
-    bottom: 100%;
-    left: 0;
-    right: 0;
-    z-index: 1;
-    background: var(--canvas-bg);
-    max-height: 2.6em;
-    opacity: 0.85;
-    margin: 0;
-    transform: translateY(0);
-    pointer-events: auto;
-  }
-  /* An UNTITLED nested board reserves no strip (prose.css reserves only for
-     `.board-content .block-shell[data-block-title]`), so revealing its empty
-     "+ title" affordance would render it into the previous row's content —
-     the exact overlap this whole fix exists to prevent. So it simply does not
-     reveal on touch. A titled nested board DOES reserve space and reveals
-     normally, which is the case that matters: a title that exists must be
-     readable. Setting a title on a nested board is still possible on desktop,
-     where the reveal is in-flow and shifts nothing under a finger. */
-  .ProseMirror .board-content .block-shell:not([data-block-title]).block-active-touch > .board-title-slot,
-  .ProseMirror .board-content .code-block-wrap:not([data-block-title]).block-active-touch > .board-title-slot {
-    max-height: 0;
-    opacity: 0;
-    pointer-events: none;
-  }
-}
+   block the tap landed. */
+
+/* The touch title-overlay rules that lived here are gone, along with the
+   reserved strip in prose.css that held space for them.
+   Why: the overlay could only render into space reserved for it, and that
+   reservation had to be UNCONDITIONAL (a permanent `margin-top: 2.3em` on
+   every board) because reserving it at reveal-time would shift the text out
+   from under the finger that tapped it. So every board on every phone
+   carried ~37px of empty space above it to keep an overlay possible —
+   reported, correctly, as a very large gap above blocks.
+   That trade is no longer worth making: the block's title is now reached
+   from the gutter toolbar and the type chip, alongside pin/copy/delete, so
+   tapping the block no longer needs to reveal it. Focus still reveals it
+   (`.board-title-slot:focus` below) in normal flow, exactly as on desktop —
+   reflow on a deliberate action is fine; it was only ever a problem as a
+   side effect of tapping the text.
+   NOTE: TipTapEditor.svelte still stamps `.block-active-touch` (the
+   `touchActiveBoard` $effect). With these rules gone nothing styles it, so
+   that stamping and the state behind it are now unused and should be removed
+   — left in place here only to keep this change to CSS. Do not add rules
+   keyed on that class expecting it to mean anything. */
+
 .ProseMirror .board-title-slot::placeholder {
   font-style: italic;
   color: inherit;

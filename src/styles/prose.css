@@ -119,48 +119,21 @@
   /* shizumu's warm orange marks the region — quiet but on-brand. */
   border-left: 1px solid color-mix(in srgb, var(--warm-accent) 26%, transparent);
 }
-/* Code-review fix (post-120d403): on touch, tapping a block reveals its
-   title as an absolutely-positioned overlay anchored with `bottom: 100%`
-   (global.css, `.block-active-touch > .board-title-slot`) so it renders
-   entirely ABOVE the block's own border-box, never over its content. That
-   only works if there is reserved space above the box for it to render
-   into — a `position: absolute` child doesn't push layout, so without a
-   real top margin the overlay would render into the PREVIOUS block's
-   bottom margin / content instead of blank space.
-   2.3em ≈ 36.8px at the default 16px `--editor-font-size` comfortably
-   covers the slot's own `max-height: 2.6em` (itself 0.78em font-size *
-   1.9 line-height * 2.6 ≈ 32.4px) — both figures share the same
-   inherited-font-size em chain, so the reserved margin tracks the slot's
-   real rendered height at any editor font size, not just the default.
-   Applies to `.block-shell` AND `.code-block-wrap` — the latter's NodeView
-   (code-block.js) stamps both classes on the same element via
-   createBlockShell, so this selector already covers it, but it's named
-   explicitly below too since that sharing is an implementation detail.
-   Desktop is unaffected: hover-reveal keeps the original in-flow
-   max-height/margin animation (no `(hover: none)`), and this permanent
-   margin bump only ever applies on touch. */
-@media (hover: none) {
-  .prose .block-shell,
-  .prose .code-block-wrap {
-    margin-top: 2.3em;
-  }
-  /* Nested boards (a list inside a list item) zero their margin via the
-     higher-specificity `.board-content .block-shell` rule below, so they
-     get no reserved strip from the rule above. Reserve it for exactly the
-     nested boards that carry a title: `[data-block-title]` is stamped on
-     the shell by createBlockShell's setTitle (block-shell.js) whenever the
-     block has one. Scoping the reservation to titled nested boards keeps
-     every other nested list row at its normal spacing — widening all of
-     them by 2.3em to cover a case most never hit would be a worse trade —
-     while still guaranteeing a nested title has somewhere to render that
-     is not the previous row's content. Untitled nested boards reserve
-     nothing, so their reveal is suppressed outright in global.css rather
-     than allowed to overlap. */
-  .prose .board-content .block-shell[data-block-title],
-  .prose .board-content .code-block-wrap[data-block-title] {
-    margin-top: 2.3em;
-  }
-}
+/* No reserved strip above a board on touch.
+   There used to be a permanent `margin-top: 2.3em` here, holding space for
+   an absolutely-positioned title overlay that a tap revealed
+   (`.block-active-touch`). Two things killed it: the overlay's trigger is
+   gone — block actions (title included) now open from the gutter toolbar and
+   the type chip, and nothing stamps `.block-active-touch` any more — and the
+   reservation was unconditional, so every board on every phone carried ~37px
+   of empty space above it for chrome that could no longer appear. That gap
+   was visible and was reported as "the space between the block and the line
+   above it is very huge".
+   The title still reveals when it is focused (`.board-title-slot:focus` in
+   global.css), in normal flow, the way desktop does it. Reflowing on a
+   DELIBERATE action is fine — it was only ever a problem when a tap on the
+   text triggered it and moved the words out from under the finger. */
+
 /* The content hugs the hairline: zero the board content's own margin so the
    left rule doesn't float above/below it (the shell's margin handles the gap
    to neighbouring blocks). */
