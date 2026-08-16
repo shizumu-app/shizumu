@@ -1,6 +1,7 @@
 <script>
   import { fade } from "svelte/transition";
-  import { isPhoneViewport } from "../lib/responsive.js";
+  import { isPhoneViewport, isCoarsePointer } from "../lib/responsive.js";
+  import { focusField } from "../lib/focus-field.js";
 
   /** @type {{ category: string, defaultTitle?: string, position?: {top: number, left: number}, onShare: (title: string) => void, onDismiss: () => void, prefix?: string, confirmLabel?: string }} */
   let { category, defaultTitle = "", position = { top: 0, left: 0 }, onShare, onDismiss, prefix = "pin as", confirmLabel = "pin" } = $props();
@@ -35,15 +36,20 @@
     };
   });
 
-  import { onMount } from "svelte";
-  onMount(() => {
-    // Two-step focus: rAF + a small fallback. The slash-command flow calls
-    // editor.chain().focus() synchronously before dispatching the title-
-    // prompt event, so we need to take focus back from the editor after it
-    // settles. rAF handles the common case; the timeout covers slower paint.
-    if (!inputEl) return;
-    requestAnimationFrame(() => inputEl.focus());
-    setTimeout(() => { if (inputEl && document.activeElement !== inputEl) inputEl.focus(); }, 30);
+  // Desktop (fine pointer): steal focus back from the editor programmatically
+  // — the slash-command flow calls editor.chain().focus() synchronously
+  // before dispatching the title-prompt event, so the input needs to grab
+  // focus after the editor's own focus settles. focusField's rAF handles that.
+  //
+  // Touch (coarse pointer): do NOT call focus() here at all. A mobile webview
+  // only raises the soft keyboard for focus that traces to a direct user
+  // gesture — programmatic .focus() on a freshly-mounted overlay is exactly
+  // the class of call it refuses to honor (the same failure LineageSelector's
+  // search/rename fields had, fixed there by tap-to-type: see isCoarsePointer
+  // there). The input renders visibly and is already tappable; the user's own
+  // tap on it raises the keyboard.
+  $effect(() => {
+    if (inputEl && !isCoarsePointer()) focusField(inputEl);
   });
 
   function handleKeydown(e) {

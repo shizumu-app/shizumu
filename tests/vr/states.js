@@ -113,6 +113,74 @@ export const STATE_DRIVERS = {
     }
   },
 
+  // The touch pin flow, end to end. Every prior mobile block-action fix in
+  // this app's history was reasoned about ONE seam — the reveal, or the
+  // popup, or the button — and passed here while still failing on a real
+  // phone, because nothing exercised the whole gesture chain a phone
+  // actually walks. This state does: tap the block (reveal) → tap PIN
+  // (the gutter button, not a shortcut) → assert a pin now exists, both
+  // in the backend the app itself talks to AND in the toolbar's own
+  // already-pinned indicator. If handlePinBlock regresses — the popup
+  // eats the tap again, block resolution goes stale, the quick-pin path
+  // breaks — this fails HERE.
+  [STATES.PIN_FLOW_TOUCH]: async (page) => {
+    const wrapper = page.locator(".tiptap-wrapper").first();
+    await wrapper.waitFor({ state: "visible" });
+    const block = page.locator(".tiptap-wrapper .ProseMirror > p").first();
+    await block.waitFor({ state: "visible" });
+
+    // Ground truth lives in the mock invoke the app itself calls
+    // (window.__VR_INVOKE__, installed by src/lib/vr/bootstrap.js) — not
+    // in what merely rendered. Asserting an INCREASE, not a fixed count,
+    // holds even if a future fixture starts seeding its own pins.
+    const before = await page.evaluate(() =>
+      window.__VR_INVOKE__("get_pins", { lineageId: null }),
+    );
+
+    // Real touch tap — same reveal BLOCK_HANDLES_TOUCH exercises.
+    await block.tap();
+    await settle(page, 200);
+
+    const handles = page.locator(".block-handles");
+    await handles.waitFor({ state: "visible" });
+    const pin = handles.locator('[data-label="pin"]');
+    await pin.waitFor({ state: "visible" });
+    const classBefore = (await pin.getAttribute("class")) || "";
+    if (classBefore.includes("already-pinned")) {
+      throw new Error("pin-flow-touch: fixture's block already reads as pinned before the flow starts");
+    }
+
+    // The actual reported bug: tapping PIN did nothing on touch.
+    await pin.tap();
+    await settle(page, 250);
+
+    const after = await page.evaluate(() =>
+      window.__VR_INVOKE__("get_pins", { lineageId: null }),
+    );
+    if (after.length !== before.length + 1) {
+      throw new Error(
+        `pin-flow-touch: expected ${before.length + 1} pin(s) after tapping PIN, backend has ${after.length} — the tap produced no pin`,
+      );
+    }
+    const blockText = ((await block.textContent()) || "").trim();
+    const newest = after[after.length - 1];
+    const expectedTitle = blockText.slice(0, 50);
+    if (!newest || newest.title !== expectedTitle) {
+      throw new Error(
+        `pin-flow-touch: newest pin's title ("${newest?.title}") doesn't match the tapped block's text ` +
+        `("${expectedTitle}") — pinned the wrong content, or pinned nothing recognizable`,
+      );
+    }
+
+    // The toolbar's own already-pinned indicator must reflect the new pin
+    // immediately, not on some later re-reveal — a screenshot taken now
+    // proves both facts at once (a pin exists AND the UI knows it).
+    const classAfter = (await pin.getAttribute("class")) || "";
+    if (!classAfter.includes("already-pinned")) {
+      throw new Error("pin-flow-touch: pin button did not flip to already-pinned after pinning");
+    }
+  },
+
   // The header collapses to a pill and the shell resizes when the keyboard
   // is up. Shrinking the viewport is enough to trigger it: isKeyboardOpen()
   // reads a drop in innerHeight below the tallest seen, precisely so the
@@ -140,13 +208,18 @@ export const STATE_DRIVERS = {
     await settle(page);
   },
 
-  // Code-review fix (post-120d403): tapping a board block on touch reveals
-  // its title. A reviewer found the reveal painted over the block's own
-  // first line (no reserved space above the content) and never auto-hid on
-  // this specific path (armTouchHandleHide wasn't called here, unlike the
-  // margin-tap and long-press paths). This is the state that would show
-  // either regression: the title visible AND the block's first two lines
-  // still fully legible beneath it.
+  // Reroute note (this pass): this state used to tap the block's body and
+  // assert the title revealed via a `.block-active-touch` CSS class — but
+  // c912aae's cleanup pass deleted the CSS that class drove (see prose.css
+  // and global.css's notes on the removed touch-overlay rules) while the
+  // JS kept stamping the now-inert class. Run against that code this state
+  // timed out waiting for a title that CSS no longer had any way to show —
+  // exactly the "passed here, would have failed forever on-device" gap
+  // this task exists to close. The real, current path is the gutter
+  // toolbar's own T button (this pass's title fix): tap the block to
+  // reveal the toolbar, tap T, and T's own handler focuses the slot
+  // synchronously — `.board-title-slot:focus` is the CSS rule that's
+  // actually still wired up.
   [STATES.BLOCK_TITLE_TOUCH]: async (page) => {
     const wrapper = page.locator(".tiptap-wrapper").first();
     await wrapper.waitFor({ state: "visible" });
@@ -158,45 +231,45 @@ export const STATE_DRIVERS = {
       throw new Error("block-title-touch: block is not inside the editor viewport");
     }
 
-    // Tap the BODY of the block, at least 32px from the left edge, so this
-    // exercises the body-tap path (handleEditorPointerDown's unconditional
-    // `touchActiveBoard = block`) and not the separate deliberate
-    // margin-tap gesture — the two paths used to arm the auto-hide
-    // differently, which is exactly the regression this state guards.
-    // pointerType MUST be "touch" — handleEditorPointerDown returns
-    // immediately for anything else (see BLOCK_HANDLES above).
-    const x = box.x + Math.min(60, box.width / 2);
-    const y = box.y + box.height / 2;
-    const opts = { pointerType: "touch", pointerId: 1, isPrimary: true, clientX: x, clientY: y, bubbles: true };
-    await page.dispatchEvent(".tiptap-wrapper", "pointerdown", opts);
-    // Release well before TOUCH_LONG_PRESS_MS (700ms) — a long-press here
-    // would arm drag-to-reorder instead of a plain tap-to-reveal.
+    // Tap the block's body — reveals its gutter toolbar (pin/copy/delete,
+    // and T, since this board renders a `.board-title-slot`). Same real
+    // tap BLOCK_HANDLES_TOUCH drives.
+    await block.tap();
+    await settle(page, 200);
+
+    const handles = page.locator(".block-handles");
+    await handles.waitFor({ state: "visible" });
+    const titleButton = handles.locator('[data-label="title"]');
+    await titleButton.waitFor({ state: "visible" });
+
+    // Tap T. Its click handler must focus the slot SYNCHRONOUSLY (the tap
+    // on T is the user gesture a mobile webview requires before it will
+    // raise the IME) — assert actual DOM focus, not just visibility, since
+    // a rAF/setTimeout-deferred focus() would still eventually land the
+    // slot on-screen but miss the keyboard on a real device.
+    await titleButton.tap();
     await settle(page, 150);
-    await page.dispatchEvent(".tiptap-wrapper", "pointerup", opts);
-    await settle(page);
 
     const titleSlot = block.locator(".board-title-slot").first();
     await titleSlot.waitFor({ state: "visible" });
+    const isFocused = await titleSlot.evaluate((el) => el === document.activeElement);
+    if (!isFocused) {
+      throw new Error("block-title-touch: tapping T did not focus the title slot");
+    }
     const titleBox = await titleSlot.boundingBox();
     if (!titleBox || titleBox.width === 0 || titleBox.height === 0) {
       throw new Error("block-title-touch: the title never revealed");
     }
-    // The hard constraint under test: the revealed title must not cover
-    // any part of the block's own content box (must sit at/above its
-    // top edge), and the block's own top must not have moved from where
-    // it measured before the tap (nothing shifts on reveal).
-    const boxAfter = await block.boundingBox();
-    if (Math.abs(boxAfter.y - box.y) > 0.5) {
-      throw new Error(
-        `block-title-touch: block moved on reveal (${box.y} -> ${boxAfter.y})`,
-      );
-    }
-    if (titleBox.y + titleBox.height > boxAfter.y + 0.5) {
-      throw new Error(
-        `block-title-touch: title bottom (${titleBox.y + titleBox.height}) ` +
-        `overlaps the block's content top (${boxAfter.y})`,
-      );
-    }
+    // No "block didn't move" / "title doesn't overlap content" checks here
+    // any more — the removed `.block-active-touch` overlay this state used
+    // to guard was `position: absolute`, specifically so a reveal couldn't
+    // reflow the block under the user's finger mid-tap. The current
+    // `:focus` reveal (global.css) is deliberately IN NORMAL FLOW instead —
+    // same as desktop's hover reveal — because this is now reached only by
+    // a second, deliberate tap on T, not a side effect of tapping the text
+    // itself; reflowing on a deliberate action is fine (see prose.css's
+    // note by .block-shell). Asserting zero reflow here would be asserting
+    // the wrong design.
   },
   // The /chart builder, opened the real way: focus the empty page's lone
   // paragraph, type "/chart" so the slash-command Suggestion plugin opens

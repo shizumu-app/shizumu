@@ -49,6 +49,16 @@ export const STATES = {
   // this string via document.documentElement.dataset.vrState, so the VR
   // harness can photograph the reveal before it clears itself.
   BLOCK_HANDLES_TOUCH: "block-handles",
+  // The touch pin flow, end to end, real input the whole way: tap a
+  // chip-less block (reveals .block-handles, same as BLOCK_HANDLES_TOUCH
+  // above) → tap its pin button → assert a pin now exists. Exists because
+  // every prior mobile block-action fix was reasoned about a single seam
+  // (the reveal, the popup, the button) and passed here while still
+  // failing on-device — this state walks the full gesture chain a phone
+  // actually exercises, so a regression anywhere in it (reveal wrong block,
+  // popup eats the tap, quick-pin path regresses) fails HERE instead of
+  // on the next release.
+  PIN_FLOW_TOUCH: "pin-flow-touch",
   // /chart builder modal (ChartBuilder.svelte), reached the real way: type
   // "/chart" in the editor and pick the row from the slash menu, same as a
   // user would — no hook that sets chartBuilderState directly, which is a
@@ -70,7 +80,7 @@ export const SCENES = {
   },
   "page-content": {
     space: "page", fixture: FIXTURES.pageWithContent, onboarding: false,
-    states: [STATES.BLOCK_HANDLES_TOUCH, STATES.KEYBOARD, STATES.PIN_PANEL, STATES.WHAT_SETTLED],
+    states: [STATES.BLOCK_HANDLES_TOUCH, STATES.PIN_FLOW_TOUCH, STATES.KEYBOARD, STATES.PIN_PANEL, STATES.WHAT_SETTLED],
   },
   "page-board-content": {
     space: "page", fixture: FIXTURES.pageWithBoardContent, onboarding: false,

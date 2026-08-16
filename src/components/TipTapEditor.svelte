@@ -199,6 +199,23 @@
   let handleShowPlus = $state(true);
   let handleIsBoard = $state(false);
   let handleHasContent = $state(false);
+  // Whether the revealed block actually renders a `.board-title-slot` child
+  // to focus — mirrors block-actions.js's `hasTitle` (the same signal the
+  // touch action-sheet uses to decide whether to offer "title"; not every
+  // board type gets a slot, e.g. table's title is a CSS pseudo-element).
+  // Drives the gutter toolbar's T button on touch (see markup below).
+  let handleHasTitleSlot = $state(false);
+
+  // The exact DOM node a touch reveal (revealBlockHandlesForNode, called
+  // from handleEditorPointerDown's touch branch) put the toolbar up for —
+  // kept separate from `hoveredBlock` so a later mouse-hover-compat event
+  // (Chromium synthesizes one after every touch tap; see
+  // isTrustedMouseHover/block-hover-guard.js) can never make the toolbar's
+  // buttons act on a different block than the one the finger is over.
+  // resolveHandleBlock() prefers this on a coarse pointer, ahead of
+  // hoveredBlock. Not reactive state — read synchronously inside the same
+  // tap's event handlers, never rendered.
+  let touchRevealedBlock = null;
 
   // Pin popup state
   let showPinPopup = $state(false);
@@ -1038,6 +1055,7 @@
     touchHandleHideTimer = setTimeout(() => {
       handleVisible = false;
       hoveredBlock = null;
+      touchRevealedBlock = null;
       touchActiveBoard = null;
       touchHandleHideTimer = null;
     }, TOUCH_HANDLE_REVEAL_MS);
@@ -1211,6 +1229,7 @@
       // (content / board / plus) from the node itself, so it is safe to
       // call for any block.
       revealBlockHandlesForNode(block);
+      touchRevealedBlock = block;
     }
 
     // Arm long-press: released without moving → the block actions sheet
@@ -1345,17 +1364,7 @@
     } else if (id === "copy") {
       await handleCopyBlock();
     } else if (id === "title") {
-      // .block-active-touch is what the title's touch-reveal CSS keys on
-      // (global.css) — set it so the slot is visible+hit-testable, then
-      // enter edit mode the same way keyboard nav does (block-title.js's
-      // ArrowUp/Backspace handlers call the identical __enterEdit()).
-      touchActiveBoard = block;
-      const slot = block.querySelector(".board-title-slot");
-      if (slot && typeof slot.__enterEdit === "function") {
-        slot.__enterEdit();
-      } else if (slot) {
-        slot.focus();
-      }
+      enterBlockTitleEdit(block);
     } else if (id === "insert-below") {
       handleBlockHandleClick();
     } else if (id === "delete") {
@@ -1768,6 +1777,7 @@
     handleShowPlus = tag === "p" || tag === "h1" || tag === "h2" || tag === "h3";
     handleIsBoard = node.classList?.contains("block-shell") || node.classList?.contains("code-block-wrap");
     handleHasContent = !!(node.textContent?.trim());
+    handleHasTitleSlot = !!node.querySelector?.(".board-title-slot");
     blockAlreadyPinned = existingPinContents.has(node.textContent?.trim());
     handleVisible = true;
   }
@@ -1840,6 +1850,12 @@
   // and inert, no error, no popup, "nothing at all". So fall back to the
   // block under the handle's on-screen row, then to the block at the cursor.
   function resolveHandleBlock() {
+    // On touch, the block the reveal-tap actually landed on is the single
+    // source of truth for what the toolbar acts on — prefer it ahead of
+    // hoveredBlock, which a later mouse-hover-compat event (or the sheet's
+    // own `hoveredBlock = block` assignment for a different block) could in
+    // principle have moved on since. See touchRevealedBlock's declaration.
+    if (isCoarsePointer() && touchRevealedBlock?.isConnected) return touchRevealedBlock;
     if (hoveredBlock?.isConnected) return hoveredBlock;
     const proseMirror = editorEl?.querySelector(".ProseMirror");
     const wrapperRect = wrapperEl?.getBoundingClientRect();
@@ -1864,6 +1880,32 @@
       if (el?.isConnected && el.parentElement?.classList?.contains("ProseMirror")) return el;
     } catch {}
     return null;
+  }
+
+  // Shared by the touch action-sheet's "title" row (runBlockAction) and the
+  // gutter toolbar's own T button (handleTitleHandleClick below) — one path
+  // into a board's title slot, not two. .block-active-touch is stamped for
+  // parity with the desktop hover class (nothing currently keys off it —
+  // see prose.css's note on the removed touch-overlay rules — but it costs
+  // nothing to keep it accurate); the actual reveal is __enterEdit()/focus(),
+  // which the CSS's `.board-title-slot:focus` rule does still key on.
+  function enterBlockTitleEdit(block) {
+    if (!block) return;
+    touchActiveBoard = block;
+    const slot = block.querySelector(".board-title-slot");
+    if (slot && typeof slot.__enterEdit === "function") {
+      slot.__enterEdit();
+    } else if (slot) {
+      slot.focus();
+    }
+  }
+
+  // The gutter toolbar's T button (touch only — see handleHasTitleSlot).
+  // Focus must happen SYNCHRONOUSLY inside this click handler, not deferred
+  // via rAF/setTimeout: the tap on this button IS the user gesture a mobile
+  // webview requires before it will raise the IME for the focused input.
+  function handleTitleHandleClick() {
+    enterBlockTitleEdit(resolveHandleBlock());
   }
 
   async function handlePinBlock() {
@@ -2032,6 +2074,28 @@
     // silently with that title — no need to show the popup.
     if (isBoard && existingTitle) {
       await confirmPin(existingTitle);
+      return;
+    }
+
+    // Touch: skip the title popup and pin immediately with the derived
+    // default title, the same one-tap path quickPinFromCursor uses for the
+    // keyboard shortcut. SharePopup's input can't reliably raise the IME on
+    // a freshly-mounted overlay (Android WebView only honors focus that
+    // traces to a direct user gesture — the same class of bug LineageSelector's
+    // search/rename fields had, fixed there by tap-to-type), so tapping the
+    // gutter's pin button must itself be the action that produces a pin, not
+    // the action that opens a dialog the user then has to fight to use.
+    // Renaming afterward is a first-class flow already (PinRow's inline
+    // rename), so nothing the user actually wants is lost.
+    if (isCoarsePointer()) {
+      const title = pinDefaultTitle;
+      await confirmPin(title);
+      // confirmPin doesn't touch blockAlreadyPinned — that flag is normally
+      // only recomputed on the NEXT reveal (revealBlockHandlesForNode /
+      // handleEditorMouseMove). Set it here so the pin-handle glyph dims
+      // immediately, without waiting for another tap.
+      blockAlreadyPinned = true;
+      showQuickPinToast(`pinned · ${title.slice(0, 40)}${title.length > 40 ? "…" : ""}`);
       return;
     }
 
@@ -2604,6 +2668,13 @@
       {#if !readonly && handleShowPlus && !handleHasContent}
         <button class="block-handle" data-label="insert" onclick={handleBlockHandleClick} aria-label="add block">+</button>
       {/if}
+      {#if handleHasTitleSlot && isCoarsePointer()}
+        <!-- Touch only: desktop reaches an untitled/titled board's slot by
+             hovering the block itself (see .board-title-slot's hover-reveal
+             in global.css) — there is no hover on touch, so this is the
+             deliberate entry point instead. -->
+        <button class="block-handle title-handle" data-label="title" onclick={handleTitleHandleClick} aria-label="add title">T</button>
+      {/if}
       {#if handleHasContent}
         <button class="block-handle pin-handle" data-label="pin" class:already-pinned={blockAlreadyPinned} onclick={handlePinBlock} aria-label="pin block">↗</button>
       {/if}
@@ -2981,38 +3052,47 @@
 
      Tap targets stay generous through padding, not box width: the glyph
      itself is small and the row spacing is tight (both deliberately, so
-     three stacked controls next to phone-sized type don't sprawl), but
-     each button's own vertical padding — not layout gap — is what a
-     finger actually has to land in. */
+     three (now up to four, with the T title button) stacked controls next
+     to phone-sized type don't sprawl), but each button's own vertical
+     padding — not layout gap — is what a finger actually has to land in.
+
+     Device report ("the toolbar is hard to hit on a phone"): 0.3rem
+     vertical padding on a 1rem-wide button read as too small a target.
+     Padding went to 0.4rem (+~3px of hit height per button) and width to
+     1.125rem (+2px) — both still comfortably inside the gutter (see the
+     centring comment below), a deliberately modest bump rather than a
+     redesign of the gutter-mounted layout. */
   @media (max-width: 480px) {
     /* Centred in the gutter, not flush against the text.
        The column was `left: 0` with a 1.25rem button — 19.5px of card
        (button + 1px border each side) inside a 21px gutter, so it sat hard
        against the text column with ~1.5px to spare and read as attached to
-       the words rather than as chrome beside them. Narrowing the button to
-       1rem frees ~5px, and the offset below splits that evenly so there is
-       daylight on BOTH sides. Kept as a calc of the same three values the
-       layout actually uses (gutter, button, borders) so it stays centred if
-       any of them is retuned, instead of a magic pixel that silently stops
-       being centred the next time the gutter moves. */
+       the words rather than as chrome beside them. The button is 1.125rem
+       (18px) — narrow enough that its 1px-bordered card (20px) still fits
+       inside the phone gutter (1.5rem/24px) with 4px to spare — and the
+       offset below splits that evenly so there is daylight on BOTH sides.
+       Kept as a calc of the same three values the layout actually uses
+       (gutter, button, borders) so it stays centred if any of them is
+       retuned, instead of a magic pixel that silently stops being centred
+       the next time the gutter moves. */
     .block-handles {
       gap: 0.125rem;
-      left: calc((1.5rem - 1rem - 2px) / 2);
+      left: calc((1.5rem - 1.125rem - 2px) / 2);
     }
     .block-handle {
-      width: 1rem;
+      width: 1.125rem;
       height: auto;
-      padding: 0.3rem 0;
+      padding: 0.4rem 0;
       /* Legible, not merely present. 0.625rem at --ui-scale 0.875 renders
          ~8.75px at 0.6 opacity — technically visible, in practice a smudge
          the user could not read as a "+". Sized and weighted up until the
          glyph reads as a control; still quiet against the canvas. */
-      font-size: 0.8125rem;
+      font-size: 0.875rem;
       opacity: 0.8;
       border-radius: 3px;
     }
     .pin-handle {
-      font-size: 0.625rem;
+      font-size: 0.6875rem;
     }
   }
 
