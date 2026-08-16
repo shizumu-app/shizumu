@@ -431,6 +431,19 @@
       },
       onBlur: ({ editor: ed }) => {
         pruneAllEmptyHeadings(ed, { preserveCursor: false });
+        // The touch toolbar has no timeout (see armTouchHandleHide), so
+        // leaving the editor is what puts it away. Deferred a frame: a tap
+        // on one of the toolbar's own buttons blurs the editor BEFORE the
+        // button's click fires, and clearing synchronously here would
+        // unmount the button mid-tap — reintroducing the dead-button
+        // symptom by a different route. isConnected on the next frame
+        // tells us whether the tap landed somewhere that kept the bar.
+        if (isCoarsePointer()) {
+          requestAnimationFrame(() => {
+            if (document.activeElement?.closest?.(".block-handles")) return;
+            clearTouchReveal();
+          });
+        }
       },
       onTransaction: () => {
         updateTableToolbar();
@@ -1037,28 +1050,41 @@
     return null;
   }
 
+  // The touch toolbar does NOT time out. It used to hide itself four
+  // seconds after the reveal, and that was the bug behind "the toolbar
+  // buttons do nothing": tap a block, take a moment to aim at a small
+  // control, and the bar was already gone — the tap landed on empty
+  // canvas. Nothing to see, nothing logged, indistinguishable from a dead
+  // button.
+  //
+  // It also could not be caught here. The VR harness FROZE this timer
+  // (`dataset.vrState === "block-handles"` returned early) precisely
+  // because a control that removes itself in four seconds cannot be
+  // photographed — so in the test the bar stayed up forever and every tap
+  // landed, while on a device it vanished. A test that disables the thing
+  // that breaks is the test/prod divergence CLAUDE.md already warns about
+  // (see the migration harness that skipped the recreate and hid a dropped
+  // column). Removing the timer removes the divergence with it: there is
+  // no longer anything for VR to special-case.
+  //
+  // Touch has no mouse-leave, which is what the timer was standing in for.
+  // The touch-native equivalent is dismissal by the next deliberate act:
+  // tapping another block re-reveals there, and clearTouchReveal() below
+  // handles leaving the editor. So the bar stays put while the user is
+  // working on that block, which is what a phone user expects.
   function armTouchHandleHide() {
-    // A control that removes itself after four seconds cannot be
-    // photographed: toHaveScreenshot's stability pass takes longer than
-    // that, so every capture of this state came back with the bar already
-    // gone (measured: present at 3s, gone at 4.2s). The VR harness asks for
-    // the state by name; when it does, the bar stays up.
-    //
-    // This freezes the timer ONLY — the long-press that reveals the bar,
-    // and the placement that decides where it sits, both run exactly as
-    // they do for a user. The attribute only exists in a VR build.
-    if (typeof document !== "undefined" &&
-        document.documentElement.dataset.vrState === "block-handles") {
-      return;
-    }
-    if (touchHandleHideTimer) clearTimeout(touchHandleHideTimer);
-    touchHandleHideTimer = setTimeout(() => {
-      handleVisible = false;
-      hoveredBlock = null;
-      touchRevealedBlock = null;
-      touchActiveBoard = null;
-      touchHandleHideTimer = null;
-    }, TOUCH_HANDLE_REVEAL_MS);
+    // Deliberately a no-op: kept as the call site's name so the reveal
+    // paths read the same, and so a future change that wants a timeout has
+    // one obvious place to add it — with the VR consequence above in mind.
+    clearTouchHandleHide();
+  }
+
+  function clearTouchReveal() {
+    clearTouchHandleHide();
+    handleVisible = false;
+    hoveredBlock = null;
+    touchRevealedBlock = null;
+    touchActiveBoard = null;
   }
 
   function clearTouchHandleHide() {
