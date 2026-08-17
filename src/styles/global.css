@@ -587,6 +587,26 @@ body {
    programmatically rather than typed, which is exactly how an existing
    title is restored on load. The attribute is set by our own code and is
    reliable everywhere. */
+/* Tap is touch's hover. Tapping a block reveals its title slot — filled or
+   the quiet "+ title" affordance — in flow and editable, which is exactly
+   what hovering does on desktop. There is no separate button for it: the
+   block itself is the affordance on both.
+   IN FLOW is the whole point, and the difference from the version that was
+   removed. That one was absolutely positioned, so it needed space reserved
+   above EVERY board whether or not it was ever revealed (the ~37px gap).
+   Reflowing by one line on a deliberate tap is fine — the caret is placed
+   from the tap before the reveal runs (TipTapEditor's pointerUP handler),
+   so nothing moves out from under the finger. */
+@media (hover: none) {
+  .ProseMirror .block-shell.block-active-touch > .board-title-slot,
+  .ProseMirror .code-block-wrap.block-active-touch > .board-title-slot {
+    max-height: 2.6em;
+    opacity: 0.85;
+    margin: 0.125rem 0 0.25rem;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+}
 @media (hover: none) {
   .ProseMirror .block-shell[data-block-title] > .board-title-slot,
   .ProseMirror .code-block-wrap[data-block-title] > .board-title-slot {

@@ -1216,7 +1216,13 @@
     // Assigning the raw (unfiltered) find here and filtering inside the
     // effect mirrors hoveredMouseBlock's own shape exactly.
     const block = findBlockAtY(e.clientY);
-    touchActiveBoard = block;
+    // NOTE: touchActiveBoard (the title reveal) is deliberately NOT set
+    // here — see handleEditorPointerUp. The reveal is in flow and moves the
+    // block's content down by a line; doing that on pointerdown would shift
+    // the text before the browser has resolved this tap into a caret
+    // position, i.e. out from under the finger (the D-6 hazard). The
+    // toolbar reveal below is safe on pointerdown because it is absolutely
+    // positioned in the gutter and changes no layout.
     // Code-review fix (post-120d403): this path used to set
     // touchActiveBoard without arming the same auto-hide timer the
     // long-press path calls — the reveal never cleared on its own and
@@ -1301,6 +1307,14 @@
   function handleEditorPointerUp(e) {
     if (e.pointerType !== "touch") return;
     clearLongPress();
+    // Tap is touch's hover: reveal this block's title slot, editable, the
+    // same way hovering does on desktop. Done on pointerUP so the caret has
+    // already been placed from this tap's coordinates — the reveal adds a
+    // line above the content, and shifting that before the tap resolves is
+    // what put the caret in the wrong place before.
+    if (!dragActive) {
+      touchActiveBoard = findBlockAtY(e.clientY);
+    }
     if (dragActive) {
       // Touch-actions redesign: a long-press that never moved used to open
       // the block-actions sheet (dragMoved tracked "did this move at all"
@@ -2694,13 +2708,12 @@
       {#if !readonly && handleShowPlus && !handleHasContent}
         <button class="block-handle" data-label="insert" onclick={handleBlockHandleClick} aria-label="add block">+</button>
       {/if}
-      {#if handleHasTitleSlot && isCoarsePointer()}
-        <!-- Touch only: desktop reaches an untitled/titled board's slot by
-             hovering the block itself (see .board-title-slot's hover-reveal
-             in global.css) — there is no hover on touch, so this is the
-             deliberate entry point instead. -->
-        <button class="block-handle title-handle" data-label="title" onclick={handleTitleHandleClick} aria-label="add title">T</button>
-      {/if}
+      <!-- No T button. Touch reaches the title the same way desktop does:
+           by addressing the block itself. Desktop hovers it; touch taps it,
+           and the slot reveals in flow (global.css, `.block-active-touch`)
+           ready to edit. A dedicated button was a second, touch-only way to
+           do a thing the block already affords, and it spent one of the few
+           slots in a narrow phone gutter to do it. -->
       {#if handleHasContent}
         <button class="block-handle pin-handle" data-label="pin" class:already-pinned={blockAlreadyPinned} onclick={handlePinBlock} aria-label="pin block">↗</button>
       {/if}

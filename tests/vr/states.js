@@ -231,45 +231,42 @@ export const STATE_DRIVERS = {
       throw new Error("block-title-touch: block is not inside the editor viewport");
     }
 
-    // Tap the block's body — reveals its gutter toolbar (pin/copy/delete,
-    // and T, since this board renders a `.board-title-slot`). Same real
-    // tap BLOCK_HANDLES_TOUCH drives.
+    // Tap the block's body. That single tap IS the whole interaction now:
+    // it is touch's equivalent of desktop hover, so it both reveals the
+    // gutter toolbar and reveals this board's title slot, editable. There
+    // is no T button any more — a dedicated control for something the block
+    // already affords, occupying one of very few slots in a narrow gutter.
     await block.tap();
-    await settle(page, 200);
+    await settle(page, 250);
 
     const handles = page.locator(".block-handles");
     await handles.waitFor({ state: "visible" });
-    const titleButton = handles.locator('[data-label="title"]');
-    await titleButton.waitFor({ state: "visible" });
-
-    // Tap T. Its click handler must focus the slot SYNCHRONOUSLY (the tap
-    // on T is the user gesture a mobile webview requires before it will
-    // raise the IME) — assert actual DOM focus, not just visibility, since
-    // a rAF/setTimeout-deferred focus() would still eventually land the
-    // slot on-screen but miss the keyboard on a real device.
-    await titleButton.tap();
-    await settle(page, 150);
 
     const titleSlot = block.locator(".board-title-slot").first();
     await titleSlot.waitFor({ state: "visible" });
-    const isFocused = await titleSlot.evaluate((el) => el === document.activeElement);
-    if (!isFocused) {
-      throw new Error("block-title-touch: tapping T did not focus the title slot");
-    }
     const titleBox = await titleSlot.boundingBox();
     if (!titleBox || titleBox.width === 0 || titleBox.height === 0) {
-      throw new Error("block-title-touch: the title never revealed");
+      throw new Error("block-title-touch: tapping the block did not reveal its title slot");
     }
-    // No "block didn't move" / "title doesn't overlap content" checks here
-    // any more — the removed `.block-active-touch` overlay this state used
-    // to guard was `position: absolute`, specifically so a reveal couldn't
-    // reflow the block under the user's finger mid-tap. The current
-    // `:focus` reveal (global.css) is deliberately IN NORMAL FLOW instead —
-    // same as desktop's hover reveal — because this is now reached only by
-    // a second, deliberate tap on T, not a side effect of tapping the text
-    // itself; reflowing on a deliberate action is fine (see prose.css's
-    // note by .block-shell). Asserting zero reflow here would be asserting
-    // the wrong design.
+
+    // The slot must be EDITABLE by tapping it — this is the half that a
+    // "did it render" check misses. A mobile webview only raises the IME
+    // for focus that traces to a user gesture, so the tap on the slot must
+    // land focus on the input itself.
+    await titleSlot.tap();
+    await settle(page, 150);
+    const isFocused = await titleSlot.evaluate((el) => el === document.activeElement);
+    if (!isFocused) {
+      throw new Error("block-title-touch: tapping the revealed title slot did not focus it — it cannot be edited");
+    }
+
+    // Deliberately no "nothing reflowed" assertion. The reveal is IN FLOW
+    // by design (same as desktop's hover reveal); the overlay that used to
+    // avoid reflow is what forced ~37px of reserved space above every
+    // board. What matters instead is WHEN it reflows: TipTapEditor reveals
+    // on pointerUP, after the caret has been placed from the tap, so the
+    // text cannot move out from under the finger mid-tap. Asserting zero
+    // reflow here would be asserting the design we deliberately dropped.
   },
   // The /chart builder, opened the real way: focus the empty page's lone
   // paragraph, type "/chart" so the slash-command Suggestion plugin opens
