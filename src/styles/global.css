@@ -568,6 +568,35 @@ body {
    recent real touch pointerdown — so touch's only path to this slot stays
    a deliberate focus (keyboard nav, slash-insert's pendingFocusPos), never
    a same-tap hover/compat-mousemove side effect. */
+/* On touch, a block that HAS a title shows it. Always.
+   Desktop reveals the title on hover, and a phone has no hover — so after
+   the touch title-overlay was removed a titled board displayed nothing at
+   all: you could set a title with the toolbar's T and then never see it
+   again. That is worse than the gap the overlay caused.
+   This is IN FLOW, not an overlay: the title takes its own line, pushing
+   the block's content down by exactly its own height. That is the crucial
+   difference from the version that was removed — that one was absolutely
+   positioned and therefore needed space RESERVED on every board whether or
+   not it had a title (the ~37px gap above every block). Here an untitled
+   board reserves nothing and shows nothing; only a real title costs space,
+   and it costs exactly what it occupies.
+   Keyed on `data-block-title`, which createBlockShell's setTitle stamps on
+   the shell whenever the title is non-empty. NOT `:not(:placeholder-shown)`
+   — that was tried and silently failed on this app's own engine, because
+   webkit2gtk does not re-evaluate the pseudo-class when the value is set
+   programmatically rather than typed, which is exactly how an existing
+   title is restored on load. The attribute is set by our own code and is
+   reliable everywhere. */
+@media (hover: none) {
+  .ProseMirror .block-shell[data-block-title] > .board-title-slot,
+  .ProseMirror .code-block-wrap[data-block-title] > .board-title-slot {
+    max-height: 2.6em;
+    opacity: 0.85;
+    margin: 0.125rem 0 0.25rem;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+}
 .ProseMirror .board-title-slot:focus {
   max-height: 2.6em;
   opacity: 0.85;
