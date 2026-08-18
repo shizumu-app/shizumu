@@ -86,6 +86,17 @@ Docker-capable host (or in CI):
 
 After that, `npm run test:vr:docker` is the authoritative gate.
 
+**Do not file a wall of red as "hinting drift" without looking.** Hinting
+drift is sub-pixel glyph noise; it does not move a header 26px or indent a
+column. Every android-webview baseline went stale for three sessions
+(2026-08-14 → 08-18) because a uniform shift across all scenes was written off
+with this section as the citation — the actual cause was intentional layout
+commits (inset floor removed, gutter restored, density pass) that nobody
+re-baselined. When many scenes fail at once: `git log -1 -- <baseline.png>`,
+diff the actual against it by eye, trace each difference to a commit, and only
+then regenerate. Regenerate on the same host kind the passing baselines came
+from (currently bare Fedora — see above), or the rest of the suite goes red.
+
 ## Real device coverage (future)
 
 - **Plan 2** — Tier-2 Linux real-pixel (Linux WebKitGTK app, actual GTK render).

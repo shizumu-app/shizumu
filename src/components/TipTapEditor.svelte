@@ -2101,41 +2101,57 @@
 
     if (!pinContent) return;
 
-    // Don't pin already-pinned content
+    // Don't pin already-pinned content. Says so, rather than returning
+    // mute: on the gutter button this guard is what the SECOND tap hits,
+    // and a control that does nothing twice reads as broken — which is
+    // exactly how it was reported ("tap on toolbar button does nothing").
+    // quickPinFromCursor has toasted "already pinned" here all along; this
+    // path simply never did.
     try {
       const existing = await getPins(lineageId || null);
       const isDuplicate = existing.some(p => p.content === pinContent);
-      if (isDuplicate) return;
+      if (isDuplicate) {
+        blockAlreadyPinned = true;
+        showQuickPinToast("already pinned");
+        return;
+      }
     } catch {}
 
     pinBlockEl = hoveredBlock;
 
-    // If the block already carries (or just committed) a blockTitle, pin
-    // silently with that title — no need to show the popup.
-    if (isBoard && existingTitle) {
-      await confirmPin(existingTitle);
-      return;
-    }
-
-    // Touch: skip the title popup and pin immediately with the derived
-    // default title, the same one-tap path quickPinFromCursor uses for the
-    // keyboard shortcut. SharePopup's input can't reliably raise the IME on
-    // a freshly-mounted overlay (Android WebView only honors focus that
-    // traces to a direct user gesture — the same class of bug LineageSelector's
-    // search/rename fields had, fixed there by tap-to-type), so tapping the
-    // gutter's pin button must itself be the action that produces a pin, not
-    // the action that opens a dialog the user then has to fight to use.
-    // Renaming afterward is a first-class flow already (PinRow's inline
-    // rename), so nothing the user actually wants is lost.
-    if (isCoarsePointer()) {
-      const title = pinDefaultTitle;
-      await confirmPin(title);
+    // Two ways to pin without asking for a title, and they must END the
+    // same way:
+    //
+    //   - the block already carries one (a board the user has named, or
+    //     one pinned once before — confirmPin stamps blockTitle), so there
+    //     is nothing to ask;
+    //   - touch, where we must not ask at all. SharePopup's input can't
+    //     reliably raise the IME on a freshly-mounted overlay (Android
+    //     WebView only honors focus tracing to a direct user gesture — the
+    //     same class of bug LineageSelector's search/rename fields had,
+    //     fixed there by tap-to-type), so tapping the gutter's pin button
+    //     must itself produce a pin, not open a dialog the user then has
+    //     to fight. Renaming afterward is first-class already (PinRow's
+    //     inline rename), so nothing wanted is lost.
+    //
+    // They used to be two branches, and only the touch one reported
+    // anything. The titled-board branch is FIRST, so on the case that
+    // actually reaches a phone — a named board, e.g. a task list titled by
+    // its author — it won every time and the tap produced no toast, no
+    // glyph change, nothing but confirmPin's faint 10%-tint flash. The pin
+    // landed; the UI just never said so, and the next tap hit the
+    // duplicate guard above and was mute too. Hence "does nothing".
+    const silentTitle = isBoard && existingTitle
+      ? existingTitle
+      : (isCoarsePointer() ? pinDefaultTitle : null);
+    if (silentTitle !== null) {
+      await confirmPin(silentTitle);
       // confirmPin doesn't touch blockAlreadyPinned — that flag is normally
       // only recomputed on the NEXT reveal (revealBlockHandlesForNode /
       // handleEditorMouseMove). Set it here so the pin-handle glyph dims
       // immediately, without waiting for another tap.
       blockAlreadyPinned = true;
-      showQuickPinToast(`pinned · ${title.slice(0, 40)}${title.length > 40 ? "…" : ""}`);
+      showQuickPinToast(`pinned · ${silentTitle.slice(0, 40)}${silentTitle.length > 40 ? "…" : ""}`);
       return;
     }
 

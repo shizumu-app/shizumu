@@ -181,6 +181,99 @@ export const STATE_DRIVERS = {
     }
   },
 
+  // The same flow as PIN_FLOW_TOUCH, on a BOARD block. PIN_FLOW_TOUCH runs
+  // on a plain <p>, which has no title slot — so the reveal-tap there adds
+  // only the absolutely-positioned gutter column and moves nothing. A
+  // board reveals its title IN FLOW on that same tap, shifting its own
+  // content down a line, and THAT is the case the "tapping a toolbar
+  // button does nothing" device report came from. Same assertions as
+  // PIN_FLOW_TOUCH (backend ground truth via __VR_INVOKE__, not just what
+  // rendered) so a regression is reported in the same terms.
+  [STATES.PIN_FLOW_TOUCH_BOARD]: async (page) => {
+    const wrapper = page.locator(".tiptap-wrapper").first();
+    await wrapper.waitFor({ state: "visible" });
+    const block = page.locator(".tiptap-wrapper .ProseMirror > .block-shell").first();
+    await block.waitFor({ state: "visible" });
+
+    const before = await page.evaluate(() =>
+      window.__VR_INVOKE__("get_pins", { lineageId: null }),
+    );
+
+    await block.tap();
+    await settle(page, 250);
+
+    const handles = page.locator(".block-handles");
+    await handles.waitFor({ state: "visible" });
+    const pin = handles.locator('[data-label="pin"]');
+    await pin.waitFor({ state: "visible" });
+
+    // Where the button IS, at the moment before the tap. Captured so a
+    // failure can say whether the button moved out from under the finger
+    // (the in-flow title reveal shifting the block) rather than the click
+    // handler itself doing nothing — two very different bugs that look
+    // identical from the outside.
+    const boxBefore = await pin.boundingBox();
+
+    await pin.tap();
+    await settle(page, 250);
+
+    const after = await page.evaluate(() =>
+      window.__VR_INVOKE__("get_pins", { lineageId: null }),
+    );
+    if (after.length !== before.length + 1) {
+      const boxAfter = await pin.boundingBox();
+      const moved = boxBefore && boxAfter
+        ? Math.round(Math.abs(boxAfter.y - boxBefore.y))
+        : "unknown";
+      throw new Error(
+        `pin-flow-touch-board: expected ${before.length + 1} pin(s) after tapping PIN, ` +
+        `backend has ${after.length} — the tap produced no pin. ` +
+        `Pin button moved ${moved}px vertically across the tap.`,
+      );
+    }
+
+    // The two halves of "the button did something", both of which a titled
+    // board used to skip: the glyph dims, and the toast names what landed.
+    // Neither is cosmetic here — with the pin already created, they are the
+    // ONLY difference between a working button and a dead one, and their
+    // absence is the whole of the device report.
+    const classAfter = (await pin.getAttribute("class")) || "";
+    if (!classAfter.includes("already-pinned")) {
+      throw new Error("pin-flow-touch-board: pin button did not flip to already-pinned after pinning");
+    }
+    const toast = page.locator(".quick-pin-toast");
+    if (!(await toast.isVisible())) {
+      throw new Error(
+        "pin-flow-touch-board: no toast after the pin landed — the tap gave the user " +
+        "no feedback at all, which is indistinguishable from a dead button",
+      );
+    }
+    const toastText = ((await toast.textContent()) || "").trim();
+    if (!toastText.startsWith("pinned ·")) {
+      throw new Error(`pin-flow-touch-board: unexpected toast text "${toastText}"`);
+    }
+
+    // Tapping it again must also say something. This is the guard the
+    // second tap hits, and it returned mute — so a user who missed the
+    // first confirmation got nothing on the retry either.
+    await pin.tap();
+    await settle(page, 250);
+    const toastAgain = ((await page.locator(".quick-pin-toast").textContent()) || "").trim();
+    if (toastAgain !== "already pinned") {
+      throw new Error(
+        `pin-flow-touch-board: second tap said "${toastAgain}" — expected "already pinned"`,
+      );
+    }
+    const afterTwo = await page.evaluate(() =>
+      window.__VR_INVOKE__("get_pins", { lineageId: null }),
+    );
+    if (afterTwo.length !== after.length) {
+      throw new Error(
+        `pin-flow-touch-board: second tap created a duplicate pin (${after.length} → ${afterTwo.length})`,
+      );
+    }
+  },
+
   // The header collapses to a pill and the shell resizes when the keyboard
   // is up. Shrinking the viewport is enough to trigger it: isKeyboardOpen()
   // reads a drop in innerHeight below the tallest seen, precisely so the

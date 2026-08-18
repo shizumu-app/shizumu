@@ -69,6 +69,14 @@ export const STATES = {
   // Same, plus the soft keyboard up (shrunk viewport, same technique as
   // KEYBOARD above) — the reported bug involved fields with the IME open.
   CHART_BUILDER_KEYBOARD: "chart-builder-keyboard",
+  // The same pin flow as PIN_FLOW_TOUCH, but on a BOARD block (one with a
+  // title slot) instead of a plain paragraph. PIN_FLOW_TOUCH could not
+  // catch the reported "tap on the toolbar button does nothing", because a
+  // plain <p> has no title slot: tapping it reveals only the gutter
+  // column, which is absolutely positioned and changes no layout. A board
+  // reveals its title IN FLOW on the same tap, which moves the block — and
+  // that is the case the device report is about.
+  PIN_FLOW_TOUCH_BOARD: "pin-flow-touch-board",
 };
 
 
@@ -84,7 +92,7 @@ export const SCENES = {
   },
   "page-board-content": {
     space: "page", fixture: FIXTURES.pageWithBoardContent, onboarding: false,
-    states: [STATES.BLOCK_TITLE_TOUCH],
+    states: [STATES.BLOCK_TITLE_TOUCH, STATES.PIN_FLOW_TOUCH_BOARD],
   },
   "memory-list": { space: "memory", fixture: FIXTURES.memoryWithPages, onboarding: false },
   "pin-view": { space: "memory", fixture: FIXTURES.pinsRich, onboarding: false },
