@@ -38,6 +38,7 @@
   import { isCoarsePointer } from "../lib/responsive.js";
   import { blockActionsFor, BLOCK_ACTION_LABELS } from "../lib/editor/block-actions.js";
   import { needsTouchHandle } from "../lib/editor/touch-block-handle.js";
+  import { shouldDismissOnBlur, isAffordanceTarget } from "../lib/editor/touch-reveal-dismiss.js";
   import { getViewportHeight, keyboardOpen } from "../lib/keyboard-state.js";
   import { getSchema } from "@tiptap/core";
   import SharePopup from "./SharePopup.svelte";
@@ -216,6 +217,11 @@
   // hoveredBlock. Not reactive state — read synchronously inside the same
   // tap's event handlers, never rendered.
   let touchRevealedBlock = null;
+  // Did the gesture in progress start on the toolbar (or another affordance)?
+  // The blur handler's only reliable witness that the user is mid-tap on a
+  // control — focus is not, because the button does not receive it until
+  // mouseup, one event AFTER the blur. See touch-reveal-dismiss.js.
+  let pointerDownOnToolbar = false;
 
   // Pin popup state
   let showPinPopup = $state(false);
@@ -432,17 +438,25 @@
       onBlur: ({ editor: ed }) => {
         pruneAllEmptyHeadings(ed, { preserveCursor: false });
         // The touch toolbar has no timeout (see armTouchHandleHide), so
-        // leaving the editor is what puts it away. Deferred a frame: a tap
-        // on one of the toolbar's own buttons blurs the editor BEFORE the
-        // button's click fires, and clearing synchronously here would
-        // unmount the button mid-tap — reintroducing the dead-button
-        // symptom by a different route. isConnected on the next frame
-        // tells us whether the tap landed somewhere that kept the bar.
-        if (isCoarsePointer()) {
-          requestAnimationFrame(() => {
-            if (document.activeElement?.closest?.(".block-handles")) return;
-            clearTouchReveal();
-          });
+        // leaving the editor is what puts it away — but NOT when the blur
+        // is itself the first half of a tap on one of the toolbar's own
+        // buttons, which would unmount the button before its click fires.
+        //
+        // This used to defer a frame and ask whether document.activeElement
+        // was inside .block-handles. It is not: a tap blurs the editor at
+        // mousedown and focuses the button at mouseup, so at blur time
+        // activeElement is BODY, every time. The check only ever passed
+        // because a synthetic tap fires mouseup and click in the same task,
+        // so the frame landed after them. On a device the frame lands in
+        // the real touchend->click gap, the toolbar disappears, and the tap
+        // does nothing — which is the "tap many times" report. The decision
+        // now reads the pointerdown that started the gesture instead of
+        // guessing from focus. See touch-reveal-dismiss.js.
+        if (shouldDismissOnBlur({
+          pointerDownOnToolbar,
+          coarsePointer: isCoarsePointer(),
+        })) {
+          clearTouchReveal();
         }
       },
       onTransaction: () => {
@@ -1176,6 +1190,12 @@
     }
     if (e.pointerType !== "touch") return;
     if (!editorEl) return;
+    // This handler OWNS pointerDownOnToolbar: every touch gesture reassigns
+    // it, so it always describes the gesture in flight and nothing else has
+    // to remember to clear it. It has to survive until the click, because
+    // the blur that would otherwise dismiss the toolbar lands between the
+    // two — see the blur handler and touch-reveal-dismiss.js.
+    pointerDownOnToolbar = isAffordanceTarget(e.target);
     // Tapping a block-handle button — let the button's own onclick fire,
     // don't interfere with the reveal state.
     if (e.target instanceof Element && e.target.closest(".block-handles")) {
@@ -1307,6 +1327,28 @@
   function handleEditorPointerUp(e) {
     if (e.pointerType !== "touch") return;
     clearLongPress();
+    // A tap that ADDRESSES an affordance is not a tap on a block, and must
+    // not re-resolve which block is active. pointerdown has said so for a
+    // while, one early-out per bug; pointerup never did, and that gap is a
+    // defect of its own: the toolbar is taller than a short block, so its
+    // lower buttons hang past that block and over the next one. Tapping
+    // them re-pointed touchActiveBoard at THAT block, which moves the
+    // in-flow title reveal — a reflow between pointerup and click, so the
+    // button moves out from under the finger and the click misses. Both
+    // handlers now ask the same shared question (touch-reveal-dismiss.js)
+    // so they cannot drift apart again.
+    // Deliberately does NOT clear pointerDownOnToolbar. The blur arrives
+    // AFTER this handler (touchend -> pointerup -> mousedown -> blur ->
+    // mouseup -> click), so clearing here left the blur handler looking at
+    // a false flag and dismissing the toolbar mid-tap — the very bug this
+    // is fixing, reintroduced from the other end. It was, and the
+    // pin-flow-touch state caught it. The flag is owned by pointerdown,
+    // which reassigns it for every new gesture.
+    const onAffordance = isAffordanceTarget(e.target) || pointerDownOnToolbar;
+    if (onAffordance) {
+      if (dragActive) endDrag();
+      return;
+    }
     // Tap is touch's hover: reveal this block's title slot, editable, the
     // same way hovering does on desktop. Done on pointerUP so the caret has
     // already been placed from this tap's coordinates — the reveal adds a
@@ -3135,39 +3177,34 @@
       left: calc((1.5rem - 1.125rem - 2px) / 2);
     }
     .block-handle {
-      /* Width stays centred-in-gutter, and stays 1.125rem. Widening to
-         fill the gutter was tried for this fix and reverted: it buys
-         3.25px and spends the daylight this calc exists to protect, which
-         put the card hard against the text column again — the exact thing
-         the comment above records fixing. The height below is where the
-         tap budget actually goes. */
+      /* Width stays centred-in-gutter at 1.125rem. The gutter is 1.5rem and
+         .block-handles may never cross into the text column (asserted by
+         block-handles-touch), so there is no width to take without either
+         moving the text column or putting the card hard against it — the
+         latter was tried and reverted, see the comment above.
+
+         Height carries a floor, but a MODEST one, and this rule has now had
+         it wrong in both directions. First it was sized purely in rem, and
+         since every rem here is multiplied by --ui-scale, the phone density
+         pass silently shrank these to 15.75x21px. The correction overshot:
+         a 44px floor makes the column 137px tall, which on a two-item task
+         list hangs its lower buttons past the block entirely and over
+         whatever follows. That was not merely ugly — pointerup resolved a
+         tap to the block under it, so longer reach meant acting on the
+         wrong block more often. handleEditorPointerUp no longer does that,
+         but a control column three times the height of its own block is
+         still the wrong shape, and the user asking for this said so.
+
+         32px: clear of the 21px that was reported as unhittable, short
+         enough that three stacked stay beside the block they belong to.
+         Written as max(...px) rather than rem so --ui-scale cannot take it
+         away again — the hazard --touch-target's note in global.css
+         describes. The real answer to "make them easier to hit" turned out
+         to be tap reliability, not pixels. */
       width: 1.125rem;
-      /* THE TOUCH TARGET, and the reason it is not in rem.
-         These buttons were sized 1.125rem wide with 0.4rem of padding,
-         which reads as 18x~19px — except every rem here is multiplied by
-         --ui-scale, and the phone density pass set that to 0.875. The
-         rendered target was 15.75x21px: a third of the 44px platform
-         floor, and reported twice as "hard to tap". Nothing was wrong
-         with the density pass; the bug is that a TAP TARGET was expressed
-         in a unit something else is allowed to scale.
-         global.css defines --touch-target with exactly this hazard in
-         mind ("coarse-pointer rules use max(var(--touch-target), 44px) so
-         the floor holds even at --ui-scale: 0.875") — this rule simply
-         never used it. It does now, on the axis where there is room.
-         Height only: the gutter is 1.5rem wide and .block-handles may
-         never cross into the text column (asserted by the
-         block-handles-touch VR state), so 44px of WIDTH is not available
-         to give. Vertical space in the gutter is free, so that is where
-         the floor goes — and the vertical axis is the one that matters
-         most here anyway, since three targets are stacked along it and a
-         near miss lands on the neighbouring control. */
-      min-height: max(var(--touch-target), 44px);
+      min-height: max(2rem, 32px);
       height: auto;
       padding: 0;
-      /* Legible, not merely present. 0.625rem at --ui-scale 0.875 renders
-         ~8.75px at 0.6 opacity — technically visible, in practice a smudge
-         the user could not read as a "+". Sized and weighted up until the
-         glyph reads as a control; still quiet against the canvas. */
       font-size: 0.875rem;
       opacity: 0.8;
       border-radius: 3px;

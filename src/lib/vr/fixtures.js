@@ -167,6 +167,48 @@ export async function pageWithBoardContent(invoke) {
   });
 }
 
+// A SHORT titled board (a two-item task list) with plain blocks after it —
+// the shape the "tap many times" report came in on. Short matters: the
+// gutter toolbar is taller than this block, so its lower buttons hang past
+// the block and over what follows, which is the whole setup for the bug.
+// Titled matters: a board's title slot reveals and collapses IN FLOW, so
+// anything that moves .block-active-touch off this block reflows the page
+// under the finger. pageWithBoardContent's blockquote is too tall to show
+// either — every one of its buttons still lands inside it.
+export async function pageWithShortBoard(invoke) {
+  const { page } = await invoke("get_or_create_today", {});
+  await invoke("update_what_matters_now", {
+    pageId: page.id,
+    text: "a short titled board, and the buttons that hang past it",
+  });
+  await invoke("save_page_content", {
+    pageId: page.id,
+    contentJson: JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "list",
+          attrs: { blockTitle: "the short board" },
+          content: [
+            {
+              type: "listItem",
+              attrs: { marker: "task", checked: false },
+              content: [{ type: "paragraph", content: [{ type: "text", text: "first task" }] }],
+            },
+            {
+              type: "listItem",
+              attrs: { marker: "task", checked: false },
+              content: [{ type: "paragraph", content: [{ type: "text", text: "second task" }] }],
+            },
+          ],
+        },
+        { type: "paragraph", content: [{ type: "text", text: "a line under the board." }] },
+        { type: "paragraph", content: [{ type: "text", text: "and one more under that." }] },
+      ],
+    }),
+  });
+}
+
 export async function continuousTrail(invoke) {
   const { page } = await invoke("get_or_create_today", {});
   await invoke("update_what_matters_now", { pageId: page.id, text: "the book" });
@@ -194,6 +236,7 @@ export const FIXTURES = {
   emptyPage,
   pageWithContent,
   pageWithBoardContent,
+  pageWithShortBoard,
   memoryWithPages,
   pinsRich,
   continuousTrail,

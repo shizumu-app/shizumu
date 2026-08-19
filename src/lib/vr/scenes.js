@@ -77,6 +77,13 @@ export const STATES = {
   // reveals its title IN FLOW on the same tap, which moves the block — and
   // that is the case the device report is about.
   PIN_FLOW_TOUCH_BOARD: "pin-flow-touch-board",
+  // A toolbar button that is NOT the top one, tapped once, on a SHORT
+  // block. Reported as "you have to tap many times before anything
+  // happens", and every existing state missed it because they all tap the
+  // pin button — the top one, the only one that still lands inside a
+  // one-line block's own Y range. The lower buttons hang past the block,
+  // and pointerup was resolving the tap to whatever block sits under THEM.
+  DELETE_FLOW_TOUCH: "delete-flow-touch",
 };
 
 
@@ -93,6 +100,13 @@ export const SCENES = {
   "page-board-content": {
     space: "page", fixture: FIXTURES.pageWithBoardContent, onboarding: false,
     states: [STATES.BLOCK_TITLE_TOUCH, STATES.PIN_FLOW_TOUCH_BOARD],
+  },
+  // Exists for DELETE_FLOW_TOUCH: a short titled board, so the toolbar's
+  // lower buttons hang past it. See the fixture for why the other board
+  // scene cannot show this.
+  "page-short-board": {
+    space: "page", fixture: FIXTURES.pageWithShortBoard, onboarding: false,
+    states: [STATES.DELETE_FLOW_TOUCH],
   },
   "memory-list": { space: "memory", fixture: FIXTURES.memoryWithPages, onboarding: false },
   "pin-view": { space: "memory", fixture: FIXTURES.pinsRich, onboarding: false },

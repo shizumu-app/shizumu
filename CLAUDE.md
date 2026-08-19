@@ -149,6 +149,8 @@ reach them. See `src/lib/swipe-intent.js` (which edge means what),
 visualViewport reader), `src/lib/gesture-arming.js` (may a view-switch gesture
 arm at all), `src/lib/header-collapse.js` (may the header collapse right now),
 `src/lib/editor/block-actions.js` (which actions a block offers),
+`src/lib/editor/touch-reveal-dismiss.js` (may a blur put the touch toolbar
+away, and is this tap addressing an affordance rather than a block),
 `src/lib/pin-carry-forward.js` (`pinToNodes`). Every one of those was extracted
 *because* the bug it now guards shipped.
 

@@ -118,7 +118,16 @@ export const STATE_DRIVERS = {
     // which shrank rem-sized targets to 15.75x21px without touching this
     // file or failing anything. Measuring the RENDERED box is the point:
     // the CSS can keep saying 1.125rem while the device draws 15.75px.
-    const TAP_FLOOR_PX = 44;   // Apple HIG 44pt / Material 48dp, low end.
+    // Not 44 (Apple HIG) or 48 (Material), and deliberately so. A 44px
+    // floor was tried and reverted: three stacked make a 137px column,
+    // which on a two-item task list hangs past the block it belongs to and
+    // over the next one — and reaching further is how the lower buttons
+    // came to act on the wrong block. What this number is really guarding
+    // is the regression that produced the report: tap targets sized in rem,
+    // silently scaled to 15.75x21px by --ui-scale. 32 is clear of that and
+    // still keeps the column beside its own block. Raising it needs the
+    // overshoot answered first, not just a bigger number.
+    const TAP_FLOOR_PX = 32;
     for (const button of await handles.locator("button").all()) {
       const label = await button.getAttribute("data-label");
       const box = await button.boundingBox();
@@ -296,6 +305,120 @@ export const STATE_DRIVERS = {
     if (afterTwo.length !== after.length) {
       throw new Error(
         `pin-flow-touch-board: second tap created a duplicate pin (${after.length} → ${afterTwo.length})`,
+      );
+    }
+  },
+
+  // ONE tap on a LOWER toolbar button, on a SHORT block — the two things
+  // every other state here happens to avoid, and together they are the
+  // whole of "you have to tap many times before anything happens".
+  //
+  // The toolbar is taller than a one-line block, so its second and third
+  // buttons hang past that block's own Y range and sit over whatever comes
+  // next. handleEditorPointerUp resolved every touch — including one that
+  // started on a toolbar button — to findBlockAtY(e.clientY), so tapping
+  // those buttons reassigned touchActiveBoard to the block UNDER the
+  // button. That moves .block-active-touch, which reveals/collapses title
+  // slots in flow, which reflows the page between pointerup and click:
+  // the button leaves from under the finger and the click never lands on
+  // it. Nothing happens, repeatedly, until a tap happens to catch a layout
+  // that isn't moving.
+  //
+  // Delete is the assertion because its effect is unmissable (the block is
+  // gone or it is not) and because it is the furthest button from the
+  // block, i.e. the worst case. Pin — the button every other state taps —
+  // is the ONLY one that still lands inside a one-line block, which is
+  // exactly why this bug survived a suite that already covered "tap pin".
+  [STATES.DELETE_FLOW_TOUCH]: async (page) => {
+    const wrapper = page.locator(".tiptap-wrapper").first();
+    await wrapper.waitFor({ state: "visible" });
+    const blocks = page.locator(".tiptap-wrapper .ProseMirror > *");
+    const countBefore = await blocks.count();
+    const block = blocks.first();
+    await block.waitFor({ state: "visible" });
+    const textBefore = ((await block.textContent()) || "").trim();
+
+    await block.tap();
+    await settle(page, 250);
+    const handles = page.locator(".block-handles");
+    await handles.waitFor({ state: "visible" });
+    const del = handles.locator('[data-label="delete"]');
+    await del.waitFor({ state: "visible" });
+
+    // ── the device's ordering, spelled out ───────────────────────────
+    // A plain .tap() here CANNOT catch the reported bug. Playwright fires
+    // touchend, mouseup and click in one task, so anything scheduled for
+    // "the next frame" lands after the click and the tap survives. A real
+    // phone leaves a real gap between touchend and click — the IME is
+    // closing, the compat mouse events are queued — and the editor's blur
+    // fires inside that gap, at a moment when document.activeElement is
+    // still BODY because the button is not focused until mouseup.
+    //
+    // So drive it the way the device does: press, blur, let frames pass,
+    // and only then release. If the toolbar dismisses itself in between,
+    // the release lands on nothing. That is "you have to tap many times".
+    const box = await del.boundingBox();
+    if (!box) throw new Error("delete-flow-touch: delete button has no box");
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+
+    await page.dispatchEvent('.block-handles [data-label="delete"]', "pointerdown", {
+      pointerType: "touch", clientX: cx, clientY: cy, bubbles: true,
+    });
+    await page.evaluate(() => document.querySelector(".ProseMirror")?.blur());
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await settle(page, 120);
+
+    if ((await handles.count()) === 0) {
+      throw new Error(
+        "delete-flow-touch: the toolbar dismissed itself between the press and the " +
+        "release — the tap can no longer become a click on it, which is exactly the " +
+        '"nothing happens until you tap several times" report',
+      );
+    }
+
+    // Which block is "active" before the release, so the next assertion can
+    // tell whether the release moved it.
+    const activeBefore = await page.evaluate(() => {
+      const pm = document.querySelector(".tiptap-wrapper .ProseMirror");
+      return [...pm.children].findIndex((c) => c.classList.contains("block-active-touch"));
+    });
+
+    await page.dispatchEvent('.block-handles [data-label="delete"]', "pointerup", {
+      pointerType: "touch", clientX: cx, clientY: cy, bubbles: true,
+    });
+    await settle(page, 60);
+
+    // The release must not re-point the active block. This button hangs
+    // BELOW its own block (the whole reason the state uses a short one), so
+    // resolving the release by its Y coordinate lands on a different block
+    // — which moves an in-flow title reveal and reflows the page mid-tap.
+    const activeAfter = await page.evaluate(() => {
+      const pm = document.querySelector(".tiptap-wrapper .ProseMirror");
+      return [...pm.children].findIndex((c) => c.classList.contains("block-active-touch"));
+    });
+    if (activeAfter !== activeBefore) {
+      throw new Error(
+        `delete-flow-touch: releasing on the toolbar moved the active block ` +
+        `${activeBefore} -> ${activeAfter} — the tap was resolved to whatever sits ` +
+        `under the button, which reflows the page out from under the finger`,
+      );
+    }
+
+    await del.click();
+    await settle(page, 300);
+
+    const countAfter = await blocks.count();
+    if (countAfter !== countBefore - 1) {
+      throw new Error(
+        `delete-flow-touch: one delete left ${countAfter} blocks, expected ${countBefore - 1}`,
+      );
+    }
+    const firstText = ((await blocks.first().textContent()) || "").trim();
+    if (firstText === textBefore) {
+      throw new Error(
+        `delete-flow-touch: block count dropped but "${textBefore}" is still first — ` +
+        "the wrong block was deleted",
       );
     }
   },
