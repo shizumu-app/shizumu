@@ -111,6 +111,32 @@ export const STATE_DRIVERS = {
         `reaches past the block's text start (${blockBox.x}) — painting over text`,
       );
     }
+
+    // The other half of "usable": big enough to hit. Reported twice as
+    // "hard to tap", and both times the cause was a size nothing checked —
+    // most recently the phone density pass setting --ui-scale to 0.875,
+    // which shrank rem-sized targets to 15.75x21px without touching this
+    // file or failing anything. Measuring the RENDERED box is the point:
+    // the CSS can keep saying 1.125rem while the device draws 15.75px.
+    const TAP_FLOOR_PX = 44;   // Apple HIG 44pt / Material 48dp, low end.
+    for (const button of await handles.locator("button").all()) {
+      const label = await button.getAttribute("data-label");
+      const box = await button.boundingBox();
+      if (!box) throw new Error(`block-handles-touch: could not measure the "${label}" button`);
+      if (box.height < TAP_FLOOR_PX - 0.5) {
+        throw new Error(
+          `block-handles-touch: "${label}" is ${box.height}px tall, under the ${TAP_FLOOR_PX}px ` +
+          `touch floor — three of these are stacked, so a near miss hits the neighbour`,
+        );
+      }
+      // Width is deliberately NOT held to the same floor, and deliberately
+      // not held to "fills the gutter" either. The gutter is 1.5rem and the
+      // assertion above forbids crossing into the text, so 44px of width
+      // does not exist to give; filling the last 3.25px was tried and
+      // reverted because it puts the card hard against the text column.
+      // What the height floor cannot express, this does: the column must
+      // still fit its gutter, which the overlap assertion above covers.
+    }
   },
 
   // The touch pin flow, end to end. Every prior mobile block-action fix in

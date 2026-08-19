@@ -3135,9 +3135,35 @@
       left: calc((1.5rem - 1.125rem - 2px) / 2);
     }
     .block-handle {
+      /* Width stays centred-in-gutter, and stays 1.125rem. Widening to
+         fill the gutter was tried for this fix and reverted: it buys
+         3.25px and spends the daylight this calc exists to protect, which
+         put the card hard against the text column again — the exact thing
+         the comment above records fixing. The height below is where the
+         tap budget actually goes. */
       width: 1.125rem;
+      /* THE TOUCH TARGET, and the reason it is not in rem.
+         These buttons were sized 1.125rem wide with 0.4rem of padding,
+         which reads as 18x~19px — except every rem here is multiplied by
+         --ui-scale, and the phone density pass set that to 0.875. The
+         rendered target was 15.75x21px: a third of the 44px platform
+         floor, and reported twice as "hard to tap". Nothing was wrong
+         with the density pass; the bug is that a TAP TARGET was expressed
+         in a unit something else is allowed to scale.
+         global.css defines --touch-target with exactly this hazard in
+         mind ("coarse-pointer rules use max(var(--touch-target), 44px) so
+         the floor holds even at --ui-scale: 0.875") — this rule simply
+         never used it. It does now, on the axis where there is room.
+         Height only: the gutter is 1.5rem wide and .block-handles may
+         never cross into the text column (asserted by the
+         block-handles-touch VR state), so 44px of WIDTH is not available
+         to give. Vertical space in the gutter is free, so that is where
+         the floor goes — and the vertical axis is the one that matters
+         most here anyway, since three targets are stacked along it and a
+         near miss lands on the neighbouring control. */
+      min-height: max(var(--touch-target), 44px);
       height: auto;
-      padding: 0.4rem 0;
+      padding: 0;
       /* Legible, not merely present. 0.625rem at --ui-scale 0.875 renders
          ~8.75px at 0.6 opacity — technically visible, in practice a smudge
          the user could not read as a "+". Sized and weighted up until the
