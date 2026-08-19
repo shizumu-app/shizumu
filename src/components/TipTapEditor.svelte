@@ -3174,7 +3174,23 @@
        the next time the gutter moves. */
     .block-handles {
       gap: 0.125rem;
-      left: calc((1.5rem - 1.125rem - 2px) / 2);
+      /* Flush to the gutter's edges, spending the ~1.6px of slack that used
+         to sit unused on each side. That slack was deliberate once — it kept
+         the card from reading as attached to the words — but it is 1.6px,
+         which is not daylight anyone perceives, and it is 1.6px of the one
+         dimension these controls have none of. The `pointer: coarse` rule
+         above has always been flush for exactly this reason.
+         This is the ONLY unused space the column can actually take. There is
+         another 14px of margin to its left, but that belongs to `.page`, not
+         to `.tiptap-wrapper` — and the wrapper is the editor's scroll
+         container, so anything reaching past its padding edge is clipped and
+         stops hit-testing (measured: elementFromPoint there returns .page,
+         not the button, and the negative offset introduces horizontal
+         overflow). Claiming that 14px means either narrowing `.page`'s own
+         margin, which every other element on the page shares, or lifting
+         .block-handles out of the scroller — a layout decision, not a
+         tap-target tweak. */
+      left: 0;
     }
     .block-handle {
       /* Width stays centred-in-gutter at 1.125rem. The gutter is 1.5rem and
@@ -3201,7 +3217,7 @@
          away again — the hazard --touch-target's note in global.css
          describes. The real answer to "make them easier to hit" turned out
          to be tap reliability, not pixels. */
-      width: 1.125rem;
+      width: calc(1.5rem - 2px);
       min-height: max(2rem, 32px);
       height: auto;
       padding: 0;

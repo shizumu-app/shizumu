@@ -138,13 +138,19 @@ export const STATE_DRIVERS = {
           `touch floor — three of these are stacked, so a near miss hits the neighbour`,
         );
       }
-      // Width is deliberately NOT held to the same floor, and deliberately
-      // not held to "fills the gutter" either. The gutter is 1.5rem and the
+      // Width cannot take the same floor — the gutter is 1.5rem and the
       // assertion above forbids crossing into the text, so 44px of width
-      // does not exist to give; filling the last 3.25px was tried and
-      // reverted because it puts the card hard against the text column.
-      // What the height floor cannot express, this does: the column must
-      // still fit its gutter, which the overlap assertion above covers.
+      // does not exist to give. What CAN be required is that the button
+      // spends the whole gutter instead of centring itself in it: the
+      // ~1.6px-per-side slack that used to go unused is the only width
+      // actually available to these controls, and leaving it unspent is
+      // what this catches.
+      if (box.width < handlesBox.width - 2.5) {
+        throw new Error(
+          `block-handles-touch: "${label}" is ${box.width}px wide inside a ` +
+          `${handlesBox.width}px column — gutter width is going unused`,
+        );
+      }
     }
   },
 
