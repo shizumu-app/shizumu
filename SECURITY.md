@@ -55,9 +55,20 @@ the address above; say which one you mean.
 
 ## Threat model
 
-Read [docs/v0.4-sync-threat-model.md](./docs/v0.4-sync-threat-model.md) before
-reporting. It states plainly what the system does and does not defend against,
-and will tell you quickly whether a finding is in scope.
+In short, so you can tell quickly whether a finding is in scope.
+
+Your writing is encrypted on your device before it goes anywhere. The relay
+stores ciphertext and the minimum index needed to work out which device is
+missing which change. It never holds your keys, so a relay operator, a host
+with disk access, or anyone who obtains a backup learns what size things are
+and when they were written, and not what they say.
+
+What is therefore in scope: anything that lets plaintext or key material
+leave a device, anything that lets one account read another's data, and
+anything that lets a relay operator recover content.
+
+What is not: the metadata above, which is a stated property rather than a
+flaw, and denial of service against a relay you host yourself.
 
 ## Disclosure
 
