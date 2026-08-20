@@ -78,7 +78,7 @@
   </developer>
 
   <url type="homepage">https://shizumu.app</url>
-  <url type="bugtracker">https://gitlab.com/shizumu/shizumu-issues/-/issues</url>
+  <url type="bugtracker">https://gitlab.com/shizumu/shizumu-issues/-/work_items</url>
   <url type="donation">https://ko-fi.com/shizumu</url>
 
   <provides>
@@ -172,6 +172,13 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.7.0" date="2026-08-20">
+      <description>
+        <p>Open beta, and sync arrives. Your writing syncs between your devices end to end encrypted, and the relay that passes it never holds your keys, so it only ever sees ciphertext. Run that relay on your own server, free and unlimited under the AGPL, or use the hosted one: two devices and a gigabyte of attachments, permanently free. Writing itself is never metered on any tier.</p>
+        <p>Android and Windows join Linux as first builds. Both are honestly labelled: beta means rough edges remain, and it means we would like you to find them.</p>
+        <p>Both spaces are quieter. Less chrome across the page and memory, and a long pass through the accumulated bug list: the editor settles, the Windows installer settles, and the phone stops putting its controls on top of the words. On a phone the block toolbar keeps the keyboard up when you use it, so pinning a line no longer takes several attempts.</p>
+      </description>
+    </release>
     <release version="0.6.6" date="2026-08-11">
       <description>
         <p>Pinning works on a fresh install. A first-launch database bug dropped a column the pin queries needed, so the pin button did nothing until the app was relaunched. Injecting a pin now carries its title into the block and stays live, so editing the injected copy edits the pin. A synced attachment shows its real name on other devices instead of a content hash. "what settled" keeps its label when tapped, the block controls are smaller on a phone, and a collapsed image can be reopened.</p>
