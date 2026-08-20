@@ -1,6 +1,6 @@
 [package]
 name = "shizumu"
-version = "0.6.15"
+version = "0.7.0"
 description = "write to think. pin what matters. the rest sinks."
 authors = []
 license = "AGPL-3.0-or-later"
