@@ -172,6 +172,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.7.1" date="2026-08-20">
+      <description>
+        <p>Packaging and links. The Flatpak build now embeds the app's interface rather than looking for a development server that is not there, and the sandbox is allowed to reach the network, so sync works when installed that way. Bug reports point at the issue tracker on the public repository.</p>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-08-20">
       <description>
         <p>Open beta, and sync arrives. Your writing syncs between your devices end to end encrypted, and the relay that passes it never holds your keys, so it only ever sees ciphertext. Run that relay on your own server, free and unlimited under the AGPL, or use the hosted one: two devices and a gigabyte of attachments, permanently free. Writing itself is never metered on any tier.</p>
