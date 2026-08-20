@@ -76,8 +76,26 @@ modules:
       #    --bin twice so op_log_audit (a debugging tool) is neither built
       #    nor shipped.
       - cargo --offline fetch --manifest-path src-tauri/Cargo.toml
+      # MUST be `tauri build`, not `cargo build`. This is the same trap
+      # .gitlab-ci.yml documents for the e2e job, and the flatpak walked
+      # straight into it: a bare cargo build resolves the webview URL to
+      # tauri.conf.json's devUrl (http://localhost:1420) instead of
+      # embedding frontendDist, so the window opens on "Could not connect
+      # to localhost: Connection refused", svelte never mounts, and the app
+      # is a white box. Building the frontend separately does NOT help; the
+      # binary never reads dist/, the assets have to be compiled in, and
+      # only the tauri CLI arranges that.
+      #
+      # Measured on the produced binary: a cargo build embeds ZERO
+      # assets/index-*.js references. That is what shipped before this fix.
+      #
+      # --no-bundle stops it emitting deb/rpm/AppImage, which was the only
+      # reason cargo build was reached for here. It still leaves
+      # target/release/shizumu exactly where the install step below wants it.
+      - npx tauri build --no-bundle
+      # shizumu-cli is a plain binary that the tauri CLI does not build.
       - cargo build --offline --release --manifest-path src-tauri/Cargo.toml
-        --bin shizumu --bin shizumu-cli
+        --bin shizumu-cli
       # Install the GUI binary UNDER THE APP-ID so its argv[0] basename — and
       # therefore the Wayland app_id — is app.shizumu.Shizumu, matching the
       # exported desktop file and letting the compositor find the icon. The
