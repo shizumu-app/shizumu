@@ -18,6 +18,14 @@ sdk-extensions:
 command: app.shizumu.Shizumu
 finish-args:
   - --share=ipc
+  # Sync. Without this the sandbox has no network at all and the relay is
+  # simply unreachable: the app opens, writes, and silently never syncs.
+  # The published v0.3.2 manifest omits it correctly, because v0.3.2 had no
+  # sync to do. 0.7.0 is the release that adds it, so it is also the release
+  # that has to ask for the socket. Verified against a local build: without
+  # this line `flatpak info --show-permissions` reports `shared=ipc;` and
+  # nothing else.
+  - --share=network
   - --socket=fallback-x11
   - --socket=wayland
   - --device=dri
@@ -124,6 +132,32 @@ modules:
         x-checker-data:
           type: git
           tag-pattern: '^v([\d.]+)$'
+      # OpenSSL's C source, which nothing else brings in.
+      #
+      # rusqlite pulls bundled-sqlcipher-vendored-openssl, and this repo
+      # carries a PATCHED openssl-src at src-tauri/vendor/openssl-src
+      # (dd6a09c, no-asm for the Android x86_64 cross-build). That crate's
+      # build.rs downloads this tarball at build time unless the `openssl`
+      # directory is already beside it, and src-tauri/vendor/.gitignore
+      # excludes exactly that directory. So a clean checkout has the crate
+      # and not the source it wraps, and the build reaches for the network
+      # that flathub does not have:
+      #
+      #   openssl-src: downloading OpenSSL 3.6.2...
+      #   failed to download OpenSSL from https://github.com/openssl/...
+      #
+      # Fetching it here as a normal source satisfies build.rs's existence
+      # check before cargo ever runs, and keeps a 52 MB C tree out of the
+      # app's git history.
+      #
+      # The version is the part of openssl-src's version after the '+'
+      # (300.6.0+3.6.2), which is what its build.rs parses to build the URL.
+      # Bump both together. sha256 verified against openssl's own published
+      # .sha256 for the release, not just the bytes that arrived here.
+      - type: archive
+        url: https://github.com/openssl/openssl/releases/download/openssl-3.6.2/openssl-3.6.2.tar.gz
+        sha256: aaf51a1fe064384f811daeaeb4ec4dce7340ec8bd893027eee676af31e83a04f
+        dest: src-tauri/vendor/openssl-src/openssl
       # Offline dependency trees. Both are lockfile-derived and MUST be
       # regenerated whenever Cargo.lock or package-lock.json changes —
       # see scripts/update-manifests.sh.
