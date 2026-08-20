@@ -37,7 +37,7 @@
   import { isYjsEnabled } from "../lib/yjs/feature-flag.js";
   import { isCoarsePointer } from "../lib/responsive.js";
   import { blockActionsFor, BLOCK_ACTION_LABELS } from "../lib/editor/block-actions.js";
-  import { needsTouchHandle } from "../lib/editor/touch-block-handle.js";
+  import { showsGutterCard } from "../lib/editor/touch-block-handle.js";
   import { shouldDismissOnBlur, isAffordanceTarget } from "../lib/editor/touch-reveal-dismiss.js";
   import { getViewportHeight, keyboardOpen } from "../lib/keyboard-state.js";
   import { getSchema } from "@tiptap/core";
@@ -1859,6 +1859,21 @@
     handleShowPlus = tag === "p" || tag === "h1" || tag === "h2" || tag === "h3";
     handleIsBoard = node.classList?.contains("block-shell") || node.classList?.contains("code-block-wrap");
     handleHasContent = !!(node.textContent?.trim());
+    // An empty chip-less block on touch already carries a "+" — the widget
+    // decoration in touch-block-handle.js, anchored into this same gutter.
+    // Revealing the card there stacks a second, much larger "+" a few pixels
+    // from the first, which is what "why are there two + buttons" was about.
+    // Gated here rather than at either call site so the other entry point
+    // (syncBlockHandleToSelection) cannot reintroduce it.
+    if (!showsGutterCard({
+      coarsePointer: isCoarsePointer(),
+      canInsert: handleShowPlus,
+      hasContent: handleHasContent,
+      isBoard: handleIsBoard,
+    })) {
+      handleVisible = false;
+      return;
+    }
     handleHasTitleSlot = !!node.querySelector?.(".board-title-slot");
     blockAlreadyPinned = existingPinContents.has(node.textContent?.trim());
     handleVisible = true;
@@ -2758,13 +2773,20 @@
 >
   <!-- Block handles: + (insert), T (title for untitled boards), ↗ (pin), ⎘ (copy), × (delete) -->
   {#if handleVisible && !selectionPinVisible && (handleHasContent || (!readonly && (handleShowPlus || handleIsBoard)))}
+    <!-- Every button below swallows mousedown, the same guard bubble-btn and
+         table-btn already carry. Without it a tap moves focus out of the
+         editor: the IME closes, the visible viewport grows back, --kb-inset
+         and --app-height change, the shell reflows, and the button leaves
+         from under the finger before its click resolves — "I tap and nothing
+         happens and the keyboard disappears". This column was the only
+         editor toolbar in this file missing it. -->
     <div
       class="block-handles"
       style="top: {handleTop}px;"
       onmouseenter={() => handleVisible = true}
     >
       {#if !readonly && handleShowPlus && !handleHasContent}
-        <button class="block-handle" data-label="insert" onclick={handleBlockHandleClick} aria-label="add block">+</button>
+        <button class="block-handle" data-label="insert" onmousedown={(e) => e.preventDefault()} onclick={handleBlockHandleClick} aria-label="add block">+</button>
       {/if}
       <!-- No T button. Touch reaches the title the same way desktop does:
            by addressing the block itself. Desktop hovers it; touch taps it,
@@ -2773,13 +2795,13 @@
            do a thing the block already affords, and it spent one of the few
            slots in a narrow phone gutter to do it. -->
       {#if handleHasContent}
-        <button class="block-handle pin-handle" data-label="pin" class:already-pinned={blockAlreadyPinned} onclick={handlePinBlock} aria-label="pin block">↗</button>
+        <button class="block-handle pin-handle" data-label="pin" class:already-pinned={blockAlreadyPinned} onmousedown={(e) => e.preventDefault()} onclick={handlePinBlock} aria-label="pin block">↗</button>
       {/if}
       {#if handleHasContent && !readonly}
-        <button class="block-handle copy-handle" data-label="copy" onclick={handleCopyBlock} aria-label="copy block">⎘</button>
+        <button class="block-handle copy-handle" data-label="copy" onmousedown={(e) => e.preventDefault()} onclick={handleCopyBlock} aria-label="copy block">⎘</button>
       {/if}
       {#if (handleHasContent || handleIsBoard) && !readonly}
-        <button class="block-handle del-handle" data-label="delete" onclick={handleDeleteBlock} aria-label="delete block">×</button>
+        <button class="block-handle del-handle" data-label="delete" onmousedown={(e) => e.preventDefault()} onclick={handleDeleteBlock} aria-label="delete block">×</button>
       {/if}
     </div>
   {/if}
@@ -3107,7 +3129,16 @@
       background: color-mix(in srgb, var(--warm-accent) 12%, transparent);
     }
     .pin-handle.already-pinned {
-      opacity: 0.3;
+      /* Pinned reads as DONE, not as gone. This was 0.3 (desktop uses
+         0.15), which is a muted terracotta glyph on cream — on a phone the
+         button simply vanished the moment you used it, reported as "tap on
+         the pin button and the icon disappear". Desktop can afford to fade
+         this far because hovering brings it back to 0.8; touch has no
+         hover, so whatever it fades to is final.
+         Legible, and carrying the same soft accent wash :hover uses, so the
+         state reads as engaged rather than absent. */
+      opacity: 0.6;
+      background: var(--warm-accent-soft, rgba(196,77,40,0.08));
     }
     /* Hover-tooltip is mouse-only; suppress on coarse pointers. */
     .block-handle[data-label]:hover::before,
@@ -3126,8 +3157,19 @@
     background: var(--warm-accent-soft, rgba(196,77,40,0.08));
   }
 
-  .pin-handle.already-pinned {
-    opacity: 0.15;
+  /* Scoped to hover, because hover is what makes it survivable: at 0.15 the
+     glyph is all but gone, and the only reason that is acceptable on a
+     mouse is that `.pin-handle:hover` brings it straight back to 0.8.
+     Unscoped, this rule also applied on touch — it sits AFTER the
+     `pointer: coarse` block, and a media query adds no specificity, so
+     source order handed the phone the desktop value. The coarse rule above
+     looked like it governed touch and never did: the measured value on the
+     phone target was 0.15, not the 0.3 written there. That is the reported
+     "tap the pin button and the icon disappear". */
+  @media (hover: hover) {
+    .pin-handle.already-pinned {
+      opacity: 0.15;
+    }
   }
 
   /* Phone-width column sizing — its own numbers, not desktop's shrunk down.

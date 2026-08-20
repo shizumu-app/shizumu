@@ -35,3 +35,39 @@ const CHIPLESS_HANDLE_TYPES = new Set(["paragraph", "heading"]);
 export function needsTouchHandle(typeName) {
   return CHIPLESS_HANDLE_TYPES.has(typeName);
 }
+
+/**
+ * showsGutterCard(...) -> boolean
+ *
+ * The other half of "which insert affordance does this block get". Two
+ * things render a "+" into the SAME gutter on a coarse pointer: the widget
+ * decoration above (bare glyph, anchored to the block) and TipTapEditor's
+ * `.block-handles` card. For an empty chip-less block they both fire, which
+ * is the reported "why are there two + buttons" — one of them a card several
+ * times the size of the glyph beside it.
+ *
+ * The reveal used to exclude this case; c912aae widened it to every
+ * top-level block (fixing "tapping a list reveals nothing") and dropped the
+ * exclusion wholesale instead of narrowing it. This narrows it properly.
+ *
+ * Withheld ONLY where the decoration actually stands in:
+ *   - coarse pointer — prose.css hides .touch-block-handle outside
+ *     `(pointer: coarse)`, so on desktop this card is the only way in and
+ *     must stay;
+ *   - empty — a filled block's card carries pin/copy/delete, which the
+ *     decoration never offers;
+ *   - chip-less and not a board — a board's card still offers delete.
+ *
+ * @param {object} o
+ * @param {boolean} o.coarsePointer
+ * @param {boolean} o.canInsert  chip-less block type (paragraph/heading) —
+ *   the DOM-side mirror of needsTouchHandle, which the caller computes from
+ *   the live element's tag rather than a ProseMirror node.
+ * @param {boolean} o.hasContent
+ * @param {boolean} o.isBoard
+ * @returns {boolean} true when `.block-handles` should be revealed.
+ */
+export function showsGutterCard({ coarsePointer, canInsert, hasContent, isBoard }) {
+  const decorationCoversIt = coarsePointer && canInsert && !hasContent && !isBoard;
+  return !decorationCoversIt;
+}

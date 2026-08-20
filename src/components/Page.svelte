@@ -1259,10 +1259,11 @@
                 onNewPage={handleRailNew}
                 canNewPage={canCreateNewPage(viewingDate, getLocalDateStr())}
               />
-              <div class="eh-actions">
-                {@render pinsChip()}
-              </div>
             </div>
+            <!-- pins sits on line 2 with trail and pages, not up on line 1
+                 beside the date. All three are the same kind of thing — a
+                 way into somewhere else — and they now read as one row of
+                 them instead of one stray chip on the date's line. -->
             <div class="eh-line2">
               {@render trailChip(true)}
               {#if railFocuses.length > 0}
@@ -1275,6 +1276,9 @@
                   canNew={canCreateNewPage(viewingDate, getLocalDateStr())}
                 />
               {/if}
+              <div class="eh-actions">
+                {@render pinsChip()}
+              </div>
             </div>
           </div>
         {:else}
@@ -1681,7 +1685,10 @@
   /* Editorial header (phone): quiet, no boxes. One accent per line. */
   .eh { display: flex; flex-direction: column; gap: var(--space-2); padding-top: var(--space-3); }
   .eh-line1 { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: 0; }
-  .eh-actions { display: flex; align-items: center; gap: var(--space-1); flex-shrink: 0; }
+  /* Right-aligned on its row: pins keeps the edge it has always had, so
+     moving it down a line changes which row it belongs to without
+     rearranging where the eye looks for it. */
+  .eh-actions { display: flex; align-items: center; gap: var(--space-1); flex-shrink: 0; margin-left: auto; }
   .eh-line2 { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
   .eh-sep { width: 3px; height: 3px; border-radius: 50%; background: color-mix(in srgb, var(--ink) 15%, transparent); flex-shrink: 0; }
   /* Dangling separator: readonly untrailed past pages render no trail chip,

@@ -36,6 +36,24 @@ export const STATE_DRIVERS = {
 
     const handle = block.locator(".touch-block-handle");
     await handle.waitFor({ state: "visible" });
+
+    // Exactly ONE "+" in the gutter. An empty chip-less block is the one
+    // case where the widget decoration above and the .block-handles card
+    // both fire, into the same gutter, a few pixels apart — the reported
+    // "why do we have two + buttons", the larger of the two being a card
+    // several times the size of the glyph beside it. The decoration wins
+    // here because it is anchored to the block and costs no chrome; the
+    // card still appears for anything with content (it carries pin, copy
+    // and delete, which the decoration never offers).
+    const cardCount = await page.locator(".block-handles").count();
+    if (cardCount !== 0) {
+      const glyphs = await page.locator(".block-handles .block-handle").allTextContents();
+      throw new Error(
+        `touch-insert-handle: the .block-handles card is also showing (${glyphs.length} ` +
+        `button(s): ${JSON.stringify(glyphs)}) — that is a second "+" in the same gutter ` +
+        "as the decoration this state already asserted",
+      );
+    }
   },
 
   // Gutter-polish pass, the actual bug fix ("tap on block does not show
@@ -195,6 +213,28 @@ export const STATE_DRIVERS = {
     await pin.tap();
     await settle(page, 250);
 
+    // The editor must still hold focus. This is root cause 1 stated
+    // directly, and it needs no simulated device timing: if the button
+    // takes focus, the editor blurs, the IME closes, the viewport grows,
+    // the shell reflows, and the button moves out from under the finger
+    // before the click resolves. Every other toolbar in TipTapEditor
+    // (bubble-btn, table-btn) swallows mousedown for exactly this reason;
+    // this column did not, and "nothing happens and the keyboard
+    // disappears" is what that felt like.
+    const focusKept = await page.evaluate(() =>
+      !!document.activeElement?.closest?.(".ProseMirror"),
+    );
+    if (!focusKept) {
+      const where = await page.evaluate(() => {
+        const a = document.activeElement;
+        return a ? `${a.tagName}.${(a.className || "").toString().split(" ")[0]}` : "null";
+      });
+      throw new Error(
+        `pin-flow-touch: tapping PIN moved focus out of the editor (now ${where}) — ` +
+        "on a device that closes the keyboard and reflows the page mid-tap",
+      );
+    }
+
     const after = await page.evaluate(() =>
       window.__VR_INVOKE__("get_pins", { lineageId: null }),
     );
@@ -219,6 +259,21 @@ export const STATE_DRIVERS = {
     const classAfter = (await pin.getAttribute("class")) || "";
     if (!classAfter.includes("already-pinned")) {
       throw new Error("pin-flow-touch: pin button did not flip to already-pinned after pinning");
+    }
+
+    // ...and it must still be VISIBLE in that state. The already-pinned
+    // style faded the glyph to 0.3 on a muted accent over cream, which on a
+    // phone reads as the button vanishing the instant you use it ("tap on
+    // the pin button, the icon disappear"). Desktop gets away with an even
+    // fainter 0.15 because hover restores it; touch has no hover, so the
+    // faded value is the final one. A floor here keeps "pinned" a state
+    // rather than an absence.
+    const opacity = await pin.evaluate((el) => parseFloat(getComputedStyle(el).opacity));
+    if (!(opacity >= 0.5)) {
+      throw new Error(
+        `pin-flow-touch: after pinning, the pin glyph sits at opacity ${opacity} — ` +
+        "at that value it reads as having disappeared, not as pinned",
+      );
     }
   },
 
