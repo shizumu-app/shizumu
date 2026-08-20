@@ -21,7 +21,7 @@ the problem before writing code. If a patch is the clearest way to explain
 yourself, paste a diff into the issue — it will be applied by hand, with credit
 in the commit message.
 
-Issues: <https://gitlab.com/shizumu/shizumu-issues/-/work_items>
+Issues: <https://github.com/shizumu-app/shizumu/issues>
 
 This is a genuine limitation, not a preference. If contribution volume ever
 justifies it, the model will change.

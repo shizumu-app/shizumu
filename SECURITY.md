@@ -4,7 +4,7 @@
 
 Email **hello@shizumu.app** with `SECURITY` in the subject line. If you prefer a
 tracker, open a **confidential** issue at
-<https://gitlab.com/shizumu/shizumu-issues/-/work_items>.
+<https://github.com/shizumu-app/shizumu/issues>.
 
 Please do not open a public issue for a security problem before we have had a
 chance to respond.
