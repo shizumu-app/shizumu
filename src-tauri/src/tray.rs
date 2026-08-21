@@ -12,6 +12,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // Tauri upstream fix would be: broadcast an icon-theme name (e.g.
 // "app.shizumu.Shizumu", already exported via hicolor) instead of an
 // absolute path. Track at tauri-apps/tray-icon.
+//
+// That workaround is what flathub reports as "can read and write all
+// data in the directory", and with --share=network it is why the app
+// lists as Medium Risk. Reviewed 2026-08-21 and kept: dropping it costs
+// the icon and does not change the rating, since network alone holds it
+// there. See the comment on that finish-arg in the manifest.
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},

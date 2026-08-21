@@ -39,6 +39,25 @@ finish-args:
   # the broadcast path. Bind-mount the host's $XDG_RUNTIME_DIR/tray-icon
   # into the sandbox at the same name so the broadcast resolves
   # identically on both sides.
+  #
+  # This line is why flathub lists the app as Medium Risk, alongside
+  # --share=network. Reviewed 2026-08-21 and deliberately kept. Before
+  # removing it to quiet the label, know that it does not work:
+  #
+  #   - the label is driven mainly by --share=network, which cannot go
+  #     without removing sync, so dropping this changes the permission
+  #     list and not the rating;
+  #   - the scope is one runtime subdirectory, not $HOME;
+  #   - losing it does not disable the tray, it makes the icon generic,
+  #     which reads as broken rather than as private;
+  #   - the two things flathub weighs against permissions, auditable
+  #     code and a verified developer, are already in place and showing
+  #     as positives on the listing.
+  #
+  # The real fix is upstream: have tauri broadcast the icon-theme name
+  # app.shizumu.Shizumu, already exported via hicolor by the install
+  # steps below, instead of an absolute path. Tracked in
+  # src-tauri/src/tray.rs.
   - --filesystem=xdg-run/tray-icon:create
 modules:
   - shared-modules/libayatana-appindicator/libayatana-appindicator-gtk3.json
