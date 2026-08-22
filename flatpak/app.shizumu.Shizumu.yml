@@ -164,8 +164,8 @@ modules:
       # under flathub at the next release.
       - type: git
         url: https://github.com/shizumu-app/shizumu.git
-        tag: v0.7.1
-        commit: 4d4701170ab76b1cdb00429b0c1a551014081380
+        tag: v0.7.2
+        commit: c351d8207a52aad03a67dd96d23699bdec09fc8b
         x-checker-data:
           type: git
           tag-pattern: '^v([\d.]+)$'

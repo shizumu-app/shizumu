@@ -197,3 +197,31 @@ Earlier iterations described a "rising line" / FLOW mode mechanic (typed lines r
 
 
 For kamae authoring (project.yml, skills, graph verbs): see @docs/kamae-protocol.md
+## Two trees (from 2026-08-22 until P5 of the mobile shell)
+
+Two Claude sessions work this repo at once. Which tree you are in decides
+what you may touch — check with `git branch --show-current` before editing.
+
+**`main` — the stability session.** Fixes and releases for the shipping app.
+May touch anything EXCEPT:
+- `src/shell/**`, `docs/superpowers/specs/2026-08-22-mobile-shell-design.md`,
+  and any plan under `docs/superpowers/plans/` whose name contains
+  `mobile-shell` or `editor-core` — shell-owned.
+- `src/components/TipTapEditor.svelte` and, once they exist,
+  `src/components/editor/**` — frozen while P0 (the `EditorCore` split) is in
+  progress on `shell/mobile`. A fix that truly must land there: keep it
+  minimal, commit it alone, prefix the message `tiptap:` so the shell session
+  can carry it across the split at the next merge.
+
+**`shell/mobile` — the redesign session**, worktree `../notebook-shell`.
+Builds the mobile shell per the spec above. May touch: `src/shell/**`, its
+specs and plans, `src/components/TipTapEditor.svelte` (P0 only) and the
+`src/components/editor/**` it becomes, tokens APPENDED to
+`src/styles/global.css` (new names only — never edit an existing token),
+and a boot fork in `src/App.svelte`. Never touches any other desktop
+component, any Rust, or the website. Merges `main` into `shell/mobile`
+weekly (`git merge main`); never the reverse until a phase gate.
+
+Shell → `main` merges happen only at the spec's phase gates (§7), performed
+by the shell session while the stability session is idle, with the gate's
+proof (P0: byte-identical desktop VR) attached to the merge commit.
