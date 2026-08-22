@@ -165,7 +165,7 @@ modules:
       - type: git
         url: https://github.com/shizumu-app/shizumu.git
         tag: v0.7.3
-        commit: c351d8207a52aad03a67dd96d23699bdec09fc8b
+        commit: 279a0068734d4c10c03d682af54e255f8e9f1614
         x-checker-data:
           type: git
           tag-pattern: '^v([\d.]+)$'
