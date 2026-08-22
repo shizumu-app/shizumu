@@ -172,6 +172,14 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.7.3" date="2026-08-22">
+      <description>
+        <p>Sync correctness. A page arriving on your second device now keeps its focus line and its trail: each field carries its own timestamp, so a newer edit to one field no longer discards an older edit to a different one. That failure was not cosmetic, because a page with no focus line and no trail looked empty to the tidy-up pass and was deleted.</p>
+        <p>The two sides of that tidy-up now agree on what empty means. A page holding a focus line or belonging to a trail is never garbage, and one device can no longer delete a page another device considers worth keeping.</p>
+        <p>Pages are addressed by their own identifier rather than by a per-device number, so reopening the page you were last on takes you to that page on every device.</p>
+        <p>On Android, export and database backup work. Both previously failed with an invalid path error; they now hand the file to the system share sheet.</p>
+      </description>
+    </release>
     <release version="0.7.1" date="2026-08-20">
       <description>
         <p>Packaging and links. The Flatpak build now embeds the app's interface rather than looking for a development server that is not there, and the sandbox is allowed to reach the network, so sync works when installed that way. Bug reports point at the issue tracker on the public repository.</p>
