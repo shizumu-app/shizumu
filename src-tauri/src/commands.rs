@@ -564,8 +564,11 @@ pub fn cleanup_orphan_pages_inner(db: &Db, engine: &op_log::OpLog) -> Result<i64
     };
 
     let mut deleted = 0i64;
-    for (id, content_json) in candidates {
-        if !is_page_empty(&content_json) {
+    for (id, _content_json) in candidates {
+        // The SQL above is only a prefilter; `page_is_gc_eligible` is the
+        // decision, and it is the same one the receiving device applies to
+        // the tombstone this loop is about to broadcast.
+        if !page_is_gc_eligible(&conn, &id).unwrap_or(false) {
             continue;
         }
         // Never sweep a page whose newest foreign op wasn't itself a GC
@@ -4048,6 +4051,8 @@ pub async fn export_pages_gui(
     to: Option<String>,
 ) -> Result<usize, String> {
     use crate::export::{self, ExportFormat};
+    // Desktop only: Android never opens a save dialog (see below).
+    #[cfg(not(target_os = "android"))]
     use tauri_plugin_dialog::DialogExt;
 
     let fmt = ExportFormat::from_str(&format)?;
@@ -4057,48 +4062,59 @@ pub async fn export_pages_gui(
         chrono::Local::now().format("%Y-%m-%d")
     );
 
-    let zip_path = app
-        .dialog()
-        .file()
-        .set_title("save export as")
-        .set_file_name(&default_name)
-        .add_filter("zip archive", &["zip"])
-        .blocking_save_file();
+    // Android has no writable path to give us. Its save dialog goes through
+    // the Storage Access Framework and returns a `content://` URI, which
+    // `FilePath::as_path()` reports as None by contract — so this command
+    // answered "invalid file path" on every Android export it ever ran.
+    // Stage the zip in the cache dir and hand it to the system share sheet
+    // instead, which is how an Android app gives the user a file, and which
+    // this codebase already does for attachments.
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+        let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+        let staged_dir = cache_dir.join("shared");
+        std::fs::create_dir_all(&staged_dir).map_err(|e| format!("create share dir: {e}"))?;
+        let zip_path = staged_dir.join(&default_name);
+        let count = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            export::export_pages(&conn, fmt, from.as_deref(), to.as_deref(), &zip_path)?
+        };
+        crate::attachments::share::share_via_intent(
+            &zip_path.to_string_lossy(),
+            "application/zip",
+        )?;
+        return Ok(count);
+    }
 
-    let zip_path = match zip_path {
-        Some(path) => path
-            .as_path()
-            .ok_or_else(|| "invalid file path".to_string())?
-            .to_path_buf(),
-        None => return Err("export cancelled".to_string()),
-    };
+    #[cfg(not(target_os = "android"))]
+    {
+        let zip_path = match app
+            .dialog()
+            .file()
+            .set_title("save export as")
+            .set_file_name(&default_name)
+            .add_filter("zip archive", &["zip"])
+            .blocking_save_file()
+        {
+            Some(path) => export::dialog_save_path(path)?,
+            None => return Err("export cancelled".to_string()),
+        };
 
-    let conn = db.lock().map_err(|e| e.to_string())?;
-    export::export_pages(&conn, fmt, from.as_deref(), to.as_deref(), &zip_path)
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        export::export_pages(&conn, fmt, from.as_deref(), to.as_deref(), &zip_path)
+    }
 }
 
 #[tauri::command]
 pub async fn backup_database_gui(app: tauri::AppHandle) -> Result<String, String> {
     use crate::export;
+    // Desktop only: Android never opens a save dialog (see below).
+    #[cfg(not(target_os = "android"))]
     use tauri_plugin_dialog::DialogExt;
 
     let now = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let default_name = format!("shizumu-backup-{now}.db");
-
-    let path = app
-        .dialog()
-        .file()
-        .set_title("save database backup")
-        .set_file_name(&default_name)
-        .blocking_save_file();
-
-    let path = match path {
-        Some(p) => p
-            .as_path()
-            .ok_or_else(|| "invalid file path".to_string())?
-            .to_path_buf(),
-        None => return Err("backup cancelled".to_string()),
-    };
 
     let db_dir = app
         .path()
@@ -4106,8 +4122,39 @@ pub async fn backup_database_gui(app: tauri::AppHandle) -> Result<String, String
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
     let db_path = db_dir.join("settles.db");
 
-    export::backup_database(&db_path, &path)?;
-    Ok(path.display().to_string())
+    // Same Android story as export_pages_gui: the SAF hands back a
+    // `content://` URI that `as_path()` reports as None, so backup answered
+    // "invalid file path" on every Android run. Stage and share instead.
+    #[cfg(target_os = "android")]
+    {
+        let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+        let staged_dir = cache_dir.join("shared");
+        std::fs::create_dir_all(&staged_dir).map_err(|e| format!("create share dir: {e}"))?;
+        let staged = staged_dir.join(&default_name);
+        export::backup_database(&db_path, &staged)?;
+        crate::attachments::share::share_via_intent(
+            &staged.to_string_lossy(),
+            "application/octet-stream",
+        )?;
+        return Ok(staged.display().to_string());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let path = match app
+            .dialog()
+            .file()
+            .set_title("save database backup")
+            .set_file_name(&default_name)
+            .blocking_save_file()
+        {
+            Some(p) => export::dialog_save_path(p)?,
+            None => return Err("backup cancelled".to_string()),
+        };
+
+        export::backup_database(&db_path, &path)?;
+        Ok(path.display().to_string())
+    }
 }
 
 /// Copy an image from any location into the app's images directory and return
@@ -4294,6 +4341,61 @@ pub fn cleanup_empty_day_markers(db: State<'_, Db>) -> Result<i64, String> {
 /// dropped-in photo is real content, even before the user types anything
 /// next to it. See contains_media_node: extract_text_from_tiptap alone
 /// can't see these, since they're atom nodes with no "text" field.
+/// Is this page GC garbage — i.e. may a `cleanup_orphan_page` tombstone
+/// delete it?
+///
+/// The one definition of "empty enough to sweep", shared by the device
+/// that decides to sweep (`cleanup_orphan_pages_inner`) and the device
+/// that receives the resulting tombstone (`sync::merge::merge_tombstone`).
+///
+/// Extracted because the two sides disagreed, and the disagreement
+/// deleted pages. The sweeper required five things — no focus line, no
+/// what-shifted, no trail, no lines, empty content — while the tombstone
+/// guard checked only the last one. A page this device would never sweep
+/// could therefore be deleted by a peer's tombstone, and a GC tombstone
+/// is only ever a *guess* ("this looked empty at launch"), which is
+/// precisely the premise local state is supposed to be able to disprove.
+///
+/// Seen live on a real account (2026-08-22): two pages held an empty
+/// TipTap doc, a real focus line, and a trail. Either would have lost its
+/// focus line the moment a peer swept its own copy.
+///
+/// A missing row is not eligible: there is nothing to delete, and
+/// returning true would invite callers to read absence as permission.
+pub(crate) fn page_is_gc_eligible(
+    conn: &rusqlite::Connection,
+    page_id: &str,
+) -> rusqlite::Result<bool> {
+    use rusqlite::OptionalExtension;
+    let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT what_matters_now, what_shifted, lineage_id, content_json
+               FROM pages WHERE id = ?",
+            params![page_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((what_matters, what_shifted, lineage_id, content_json)) = row else {
+        return Ok(false);
+    };
+    let blank = |v: &Option<String>| v.as_deref().map_or(true, |t| t.trim().is_empty());
+    if !blank(&what_matters) || !blank(&what_shifted) {
+        return Ok(false);
+    }
+    if lineage_id.is_some() {
+        return Ok(false);
+    }
+    if !is_page_empty(&content_json) {
+        return Ok(false);
+    }
+    let has_lines: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM lines WHERE page_id = ?)",
+        params![page_id],
+        |r| r.get(0),
+    )?;
+    Ok(!has_lines)
+}
+
 pub(crate) fn is_page_empty(content_json: &Option<String>) -> bool {
     let Some(s) = content_json else { return true; };
     if s.trim().is_empty() { return true; }

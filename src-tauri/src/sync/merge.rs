@@ -424,9 +424,11 @@ fn merge_page(
             }
             conn.execute(
                 "UPDATE pages
-                   SET content_json = ?, updated_at = ?, applied_hlc_ts = ?
-                 WHERE id = ? AND applied_hlc_ts < ?",
-                params![content, &now, hlc_ts, page_id, hlc_ts],
+                   SET content_json = ?, updated_at = ?,
+                       hlc_content = ?,
+                       applied_hlc_ts = MAX(applied_hlc_ts, ?)
+                 WHERE id = ? AND hlc_content < ?",
+                params![content, &now, hlc_ts, hlc_ts, page_id, hlc_ts],
             )?;
             if let Err(e) = check_pin_divergence(conn, page_id) {
                 log::warn!("pin divergence check failed for page {page_id}: {e}");
@@ -449,42 +451,72 @@ fn merge_page(
             let text = fields.get("text").and_then(|v| v.as_str()).unwrap_or("");
             // The column name is one of two whitelisted literals so `format!`
             // is injection-safe.
-            let column = if op == "update_what_matters_now" {
-                "what_matters_now"
+            let (column, stamp) = if op == "update_what_matters_now" {
+                ("what_matters_now", "hlc_focus")
             } else {
-                "what_shifted"
+                ("what_shifted", "hlc_shifted")
             };
             // Empty op text = clear (store NULL).
             let value: Option<&str> = if text.is_empty() { None } else { Some(text) };
             // A focus op can arrive before the page's create, so fabricate the
-            // row if absent. ensure_page_exists stamps it at this op's hlc, so
-            // the gate below uses `<=` to let this very op write its value while
-            // still rejecting a strictly-older (stale) op.
+            // row if absent. ensure_page_exists leaves every per-field stamp
+            // at 0 precisely so this op can then write its own field.
+            //
+            // `<=` rather than `<` on the field stamp: pre-14.17 ops carry
+            // hlc_ts 0 (pull.rs demotes them), and `0 < 0` would refuse them
+            // outright. Re-applying an op at an equal stamp is idempotent —
+            // same op, same value — so `<=` costs nothing and keeps that path
+            // alive.
             ensure_page_exists(conn, page_id, hlc_ts)?;
             let sql = format!(
                 "UPDATE pages
-                   SET {column} = ?, updated_at = ?, applied_hlc_ts = ?
-                 WHERE id = ? AND applied_hlc_ts <= ?"
+                   SET {column} = ?, updated_at = ?,
+                       {stamp} = ?,
+                       applied_hlc_ts = MAX(applied_hlc_ts, ?)
+                 WHERE id = ? AND {stamp} <= ?"
             );
-            conn.execute(&sql, params![value, &now, hlc_ts, page_id, hlc_ts])?;
+            let n = conn.execute(
+                &sql,
+                params![value, &now, hlc_ts, hlc_ts, page_id, hlc_ts],
+            )?;
+            // Report what happened. This used to return Applied whatever the
+            // UPDATE matched, which meant a refused write was indistinguishable
+            // from a successful one — the op was dropped, the cursor advanced,
+            // and nothing ever retried it. Zero rows here now means exactly one
+            // thing: a newer write to THIS field already won.
+            if n == 0 {
+                return Ok(MergeOutcome::SkippedStaleHlc);
+            }
             Ok(MergeOutcome::Applied)
         }
         "set_focus_lineage" => {
             let lineage_id = fields.get("lineage_id").and_then(|v| v.as_str());
-            let n = conn.execute(
-                "UPDATE pages
-                   SET lineage_id = ?, updated_at = ?, applied_hlc_ts = ?
-                 WHERE id = ? AND applied_hlc_ts < ?",
-                params![lineage_id, &now, hlc_ts, page_id, hlc_ts],
+            // Gated on the trail's own stamp. Sharing `applied_hlc_ts` with
+            // content meant a page could arrive with its body and no trail —
+            // which is the state that makes it invisible to memory
+            // (`is_page_relevant` passes anything trailed) and eligible for
+            // the launch sweeper. See migration 029.
+            const SQL: &str = "UPDATE pages
+                   SET lineage_id = ?, updated_at = ?,
+                       hlc_lineage = ?,
+                       applied_hlc_ts = MAX(applied_hlc_ts, ?)
+                 WHERE id = ? AND hlc_lineage <= ?";
+            let mut n = conn.execute(
+                SQL,
+                params![lineage_id, &now, hlc_ts, hlc_ts, page_id, hlc_ts],
             )?;
             if n == 0 {
+                // Either the row is absent (create not merged yet) or a newer
+                // trail write already won. Fabricate only for the first case;
+                // the retry then distinguishes them for us.
                 ensure_page_exists(conn, page_id, hlc_ts)?;
-                conn.execute(
-                    "UPDATE pages
-                       SET lineage_id = ?, updated_at = ?, applied_hlc_ts = ?
-                     WHERE id = ? AND applied_hlc_ts < ?",
-                    params![lineage_id, &now, hlc_ts, page_id, hlc_ts],
+                n = conn.execute(
+                    SQL,
+                    params![lineage_id, &now, hlc_ts, hlc_ts, page_id, hlc_ts],
                 )?;
+            }
+            if n == 0 {
+                return Ok(MergeOutcome::SkippedStaleHlc);
             }
             Ok(MergeOutcome::Applied)
         }
@@ -498,6 +530,9 @@ fn ensure_page_exists(conn: &Connection, page_id: &str, hlc_ts: i64) -> rusqlite
     let now = chrono::Utc::now().to_rfc3339();
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let page_number = next_free_page_number(conn, &today)?;
+    // Every per-field stamp stays at its 0 default. The row is a placeholder
+    // carrying no field values, so the op that fabricated it must still be
+    // able to write its own field afterwards.
     conn.execute(
         "INSERT OR IGNORE INTO pages
            (id, date, page_number, created_at, updated_at, applied_hlc_ts)
@@ -587,9 +622,13 @@ fn stale_or_missing_page(
     page_id: &str,
     hlc_ts: i64,
 ) -> Result<Option<MergeOutcome>, MergeError> {
+    // `hlc_content`, not `applied_hlc_ts`: the row-level stamp is bumped by
+    // every field, so gating content on it let a newer focus line or trail
+    // assignment refuse a content save that supersedes nothing. See
+    // migration 029.
     let applied: Option<i64> = conn
         .query_row(
-            "SELECT applied_hlc_ts FROM pages WHERE id = ?",
+            "SELECT hlc_content FROM pages WHERE id = ?",
             params![page_id],
             |r| r.get(0),
         )
@@ -658,16 +697,28 @@ fn insert_page_with_collision_resolution(
     // device received the sync op. This keeps rail order consistent
     // across devices (HLC is monotonic and synced).
     let created_at = hlc_to_rfc3339(hlc_ts).unwrap_or_else(|| now.to_string());
+    // Stamp only the fields this op actually carried. A create or backfill
+    // that names no focus line must leave `hlc_focus` at 0, or it would
+    // refuse the very `update_what_matters_now` that follows it whenever
+    // that op happens to carry a lower HLC — the cross-field refusal
+    // migration 029 exists to end, reintroduced at the insert.
+    let stamp = |present: bool| if present { hlc_ts } else { 0 };
+    let non_blank = |v: Option<&str>| v.map_or(false, |t| !t.trim().is_empty());
     conn.execute(
         "INSERT INTO pages
            (id, date, page_number, lineage_id, content_json,
             what_matters_now, what_shifted,
-            created_at, updated_at, applied_hlc_ts)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            created_at, updated_at, applied_hlc_ts,
+            hlc_content, hlc_focus, hlc_shifted, hlc_lineage)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             page_id, date, page_number, lineage_id, content,
             what_matters, what_shifted,
-            created_at, now, hlc_ts
+            created_at, now, hlc_ts,
+            stamp(non_blank(content)),
+            stamp(non_blank(what_matters)),
+            stamp(non_blank(what_shifted)),
+            stamp(lineage_id.is_some())
         ],
     )?;
     Ok(())
@@ -1106,27 +1157,36 @@ fn merge_tombstone(
                 return Ok(MergeOutcome::SkippedMalformed);
             };
             // A GC tombstone is a guess ("this page looked empty at
-            // launch"), not a user delete. If the local row now holds
-            // non-empty content, that guess is disproven and the delete
-            // must be refused outright — independent of HLC ordering,
-            // mirroring the resurrect gate in merge_page's
-            // save_page_content arm. Only an empty row is eligible for
-            // this delete at all.
-            let content_json: Option<Option<String>> = conn
-                .query_row(
-                    "SELECT content_json FROM pages WHERE id = ?",
-                    params![page_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(content) = &content_json {
-                if !crate::commands::is_page_empty(content) {
-                    log::info!(
-                        "sync merge: GC tombstone for page {page_id} refused — \
-                         local row is non-empty, the emptiness guess is disproven"
-                    );
-                    return Ok(MergeOutcome::SkippedStaleHlc);
-                }
+            // launch"), not a user delete. Local state that disproves the
+            // guess refuses the delete outright, independent of HLC
+            // ordering, mirroring the resurrect gate in merge_page's
+            // save_page_content arm.
+            //
+            // "Disproves" asks the SAME question the sending device asked
+            // before it decided to sweep. This used to inspect only
+            // `content_json`, while the sweeper required five things (no
+            // focus line, no what-shifted, no trail, no lines, empty
+            // content) — so a page the local sweeper would never touch
+            // could still be deleted by a peer's tombstone. That gap was
+            // live on a real account: pages with an empty TipTap doc, a
+            // real focus line, and a trail, one peer sweep away from
+            // losing the focus line. One predicate now, both sides.
+            //
+            // A row that is absent is not eligible either, and
+            // `page_is_gc_eligible` reports false for it — the DELETE
+            // below is then a harmless no-op, which is the idempotent
+            // outcome we want for a replayed tombstone.
+            let present: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pages WHERE id = ?)",
+                params![page_id],
+                |r| r.get(0),
+            )?;
+            if present && !crate::commands::page_is_gc_eligible(conn, page_id)? {
+                log::info!(
+                    "sync merge: GC tombstone for page {page_id} refused — \
+                     local row is not GC garbage, the emptiness guess is disproven"
+                );
+                return Ok(MergeOutcome::SkippedStaleHlc);
             }
             // HLC-gate the delete like the other tombstones (delete_pin /
             // delete_lineage). Without this, a stale or forged cleanup op
@@ -2931,6 +2991,240 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM pages WHERE id='pg-empty'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "empty row is still swept");
+    }
+
+    /// FINDING (device report, 2026-08-22): `applied_hlc_ts` was ONE
+    /// last-write-wins stamp shared by content_json, what_matters_now,
+    /// what_shifted and lineage_id. Every arm gated on it AND bumped it, so
+    /// a newer op on one field permanently refused an older op on another —
+    /// even though the fields are independent and neither op supersedes the
+    /// other.
+    ///
+    /// This is not a theoretical reordering. Ops merge in relay `user_seq`
+    /// order, which is upload order, not per-field HLC order; a device that
+    /// was offline replays a backlog whose HLCs interleave with the other
+    /// device's. Landing a body before a focus line is ordinary.
+    ///
+    /// The consequence is data loss, not just a missing title: a row with no
+    /// focus line, no trail and an empty body fails `is_page_relevant` (so it
+    /// vanishes from memory) and matches the launch sweeper exactly (so the
+    /// next launch deletes it and broadcasts a tombstone).
+    #[test]
+    fn a_newer_content_save_does_not_block_an_older_focus_line() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, created_at, updated_at)
+             VALUES ('pg-x', '2026-08-22', 1, '0', '0')",
+            [],
+        )
+        .unwrap();
+
+        let content = json!({
+            "op": "save_page_content", "page_id": "pg-x",
+            "fields": {"content_json": r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"body"}]}]}"#},
+            "hlc_ts": 200_i64
+        });
+        assert_eq!(
+            apply(&conn, "page_blob", &serde_json::to_vec(&content).unwrap()).unwrap(),
+            MergeOutcome::Applied
+        );
+
+        // Older by HLC, but it is the FIRST op ever to touch this field.
+        let focus = json!({
+            "op": "update_what_matters_now", "page_id": "pg-x",
+            "fields": {"text": "review current stage 2b"}, "hlc_ts": 100_i64
+        });
+        assert_eq!(
+            apply(&conn, "page_blob", &serde_json::to_vec(&focus).unwrap()).unwrap(),
+            MergeOutcome::Applied
+        );
+
+        let (wmn, body): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT what_matters_now, content_json FROM pages WHERE id='pg-x'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(wmn.as_deref(), Some("review current stage 2b"), "focus line must land");
+        assert!(body.unwrap().contains("body"), "and must not disturb the newer body");
+    }
+
+    /// Same defect, the trail arm — this is the one that turns a page
+    /// invisible, because `is_page_relevant` passes anything with a trail.
+    #[test]
+    fn a_newer_content_save_does_not_block_an_older_trail_assignment() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO lineages (id, name, created_at) VALUES ('ln-k', 'kamae', '0')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, created_at, updated_at)
+             VALUES ('pg-y', '2026-08-22', 1, '0', '0')",
+            [],
+        )
+        .unwrap();
+        let content = json!({
+            "op": "save_page_content", "page_id": "pg-y",
+            "fields": {"content_json": r#"{"type":"doc","content":[{"type":"paragraph"}]}"#},
+            "hlc_ts": 200_i64
+        });
+        apply(&conn, "page_blob", &serde_json::to_vec(&content).unwrap()).unwrap();
+
+        let focus = json!({
+            "op": "set_focus_lineage", "page_id": "pg-y",
+            "fields": {"lineage_id": "ln-k"}, "hlc_ts": 100_i64
+        });
+        assert_eq!(
+            apply(&conn, "page_blob", &serde_json::to_vec(&focus).unwrap()).unwrap(),
+            MergeOutcome::Applied
+        );
+        let lin: Option<String> = conn
+            .query_row("SELECT lineage_id FROM pages WHERE id='pg-y'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(lin.as_deref(), Some("ln-k"), "trail assignment must land");
+    }
+
+    /// Per-field, not no-field: a genuinely superseded write on the SAME
+    /// field is still refused, and now says so instead of reporting Applied
+    /// for an UPDATE that matched nothing.
+    #[test]
+    fn a_superseded_focus_line_is_refused_and_reported_as_stale() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, created_at, updated_at)
+             VALUES ('pg-z', '2026-08-22', 1, '0', '0')",
+            [],
+        )
+        .unwrap();
+        for (text, hlc) in [("newer", 200_i64), ("older", 100_i64)] {
+            let op = json!({
+                "op": "update_what_matters_now", "page_id": "pg-z",
+                "fields": {"text": text}, "hlc_ts": hlc
+            });
+            let out = apply(&conn, "page_blob", &serde_json::to_vec(&op).unwrap()).unwrap();
+            if hlc == 100 {
+                assert_eq!(
+                    out,
+                    MergeOutcome::SkippedStaleHlc,
+                    "an op whose write matched no row must not claim it applied"
+                );
+            }
+        }
+        let wmn: Option<String> = conn
+            .query_row("SELECT what_matters_now FROM pages WHERE id='pg-z'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(wmn.as_deref(), Some("newer"), "same-field LWW still holds");
+    }
+
+    /// FINDING (device report, 2026-08-22): the two sides of the GC
+    /// contract disagreed about what "empty" means, and the disagreement
+    /// deletes pages.
+    ///
+    /// The local sweeper (`commands::cleanup_orphan_pages_inner`) will not
+    /// touch a page unless FIVE things hold: no focus line, no what-shifted,
+    /// no trail, no lines, and empty content. The remote tombstone guard
+    /// above checked only the last one. So a page this device would never
+    /// sweep could still be deleted by a peer's tombstone — and the peer's
+    /// tombstone is a *guess* ("looked empty at launch"), which is exactly
+    /// the premise the guard exists to let local state disprove.
+    ///
+    /// This was live on a real account: two pages sat with an empty TipTap
+    /// doc, a real focus line, and a trail. Either one would have been
+    /// deleted, focus line and all, the moment a peer swept its own copy.
+    ///
+    /// Both sides now ask one shared question,
+    /// `commands::page_is_gc_eligible`, so they cannot drift apart again.
+    #[test]
+    fn tombstone_cleanup_orphan_page_refuses_a_row_that_still_has_a_focus_line() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, content_json, what_matters_now, created_at, updated_at)
+             VALUES ('pg-focus', '2026-08-13', 1, ?, 'review current stage 2b', '0', '0')",
+            params![r#"{"type":"doc","content":[{"type":"paragraph"}]}"#],
+        )
+        .unwrap();
+        let payload = json!({"op":"cleanup_orphan_page","page_id":"pg-focus","hlc_ts": 500_i64});
+        let out = apply(&conn, "tombstone", &serde_json::to_vec(&payload).unwrap()).unwrap();
+        assert_eq!(
+            out,
+            MergeOutcome::SkippedStaleHlc,
+            "a focus line is writing the sweeper itself treats as un-sweepable"
+        );
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pages WHERE id='pg-focus'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "the focus line must not be deleted by a peer's guess");
+    }
+
+    /// Same contract, the trail arm. A page assigned to a trail is a
+    /// deliberate act of continuity; the local sweeper excludes it by
+    /// `lineage_id IS NULL` and the remote guard must agree.
+    #[test]
+    fn tombstone_cleanup_orphan_page_refuses_a_row_that_belongs_to_a_trail() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO lineages (id, name, created_at) VALUES ('ln-1', 'kamae', '0')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, content_json, lineage_id, created_at, updated_at)
+             VALUES ('pg-trail', '2026-08-13', 1, ?, 'ln-1', '0', '0')",
+            params![r#"{"type":"doc","content":[{"type":"paragraph"}]}"#],
+        )
+        .unwrap();
+        let payload = json!({"op":"cleanup_orphan_page","page_id":"pg-trail","hlc_ts": 500_i64});
+        let out = apply(&conn, "tombstone", &serde_json::to_vec(&payload).unwrap()).unwrap();
+        assert_eq!(out, MergeOutcome::SkippedStaleHlc, "a trailed page is never GC garbage");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pages WHERE id='pg-trail'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "a trailed page must survive a peer's GC tombstone");
+    }
+
+    /// The remaining two arms of the sweeper's definition, so the whole
+    /// predicate is covered rather than the two that happened to bite.
+    #[test]
+    fn tombstone_cleanup_orphan_page_refuses_rows_with_what_shifted_or_lines() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        let empty_doc = r#"{"type":"doc","content":[{"type":"paragraph"}]}"#;
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, content_json, what_shifted, created_at, updated_at)
+             VALUES ('pg-shift', '2026-08-13', 1, ?, 'the argument turned', '0', '0')",
+            params![empty_doc],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, content_json, created_at, updated_at)
+             VALUES ('pg-lines', '2026-08-13', 2, ?, '0', '0')",
+            params![empty_doc],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO lines (id, page_id, position, text, state, created_at)
+             VALUES ('l-1', 'pg-lines', 0, 'a line', 'settled', '0')",
+            [],
+        )
+        .unwrap();
+
+        for id in ["pg-shift", "pg-lines"] {
+            let payload = json!({"op":"cleanup_orphan_page","page_id": id,"hlc_ts": 500_i64});
+            let out = apply(&conn, "tombstone", &serde_json::to_vec(&payload).unwrap()).unwrap();
+            assert_eq!(out, MergeOutcome::SkippedStaleHlc, "{id} must refuse the GC delete");
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM pages WHERE id = ?", params![id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1, "{id} must survive");
+        }
     }
 
     #[test]

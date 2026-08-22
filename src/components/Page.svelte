@@ -25,6 +25,7 @@
   import PagesChip from "../lib/ui/PagesChip.svelte";
   import Icon from "../lib/ui/Icon.svelte";
   import { isPhoneViewport, watchPhoneViewport, watchKeyboardOpen } from "../lib/responsive.js";
+  import { pageAddress } from "../lib/page-address.js";
   import { navPush, navClose, subscribe as navSubscribe } from "../lib/navstack.js";
   import { verticalFlick } from "../lib/gestures.js";
   import { canCreateNewPage } from "../lib/pageCapabilities.js";
@@ -264,7 +265,7 @@
           if (row) {
             const result = row.lineage_mode === "continuous" && row.lineage_id
               ? await getCanonicalTrailPage(row.lineage_id)
-              : await getPage(row.date, row.page_number);
+              : await getPage(...pageAddress(row));
             if (result) {
               await loadPage(result, row.date);
               restored = true;
@@ -287,7 +288,7 @@
         try {
           const result = page.lineage_mode === "continuous" && page.lineage_id
             ? await getCanonicalTrailPage(page.lineage_id)
-            : await getPage(viewingDate, page.page_number);
+            : await getPage(...pageAddress(page));
           if (result) {
             page = result.page;
             lines = result.lines || [];
@@ -299,6 +300,22 @@
             if (result.page?.content_json && flowModeRef?.reloadFromContent) {
               flowModeRef.reloadFromContent(result.page.content_json);
             }
+          } else if (viewingDate === getLocalDateStr()) {
+            // The page we were on is gone. On the FIRST pull after launch
+            // that is the expected outcome, not an error: `get_or_create_today`
+            // mints a blank page for today before sync has had a chance to
+            // say what today already holds, and the first-pull orphan sweep
+            // then removes it once the real pages arrive. Without this the
+            // user keeps staring at a deleted blank page while their own
+            // writing from another device sits one reload away — the
+            // "mobile looks empty" half of the 2026-08-22 report.
+            //
+            // Only for today: a past page vanishing is a delete the user
+            // asked for somewhere, and snapping them to today would hide it.
+            try {
+              const today = await getOrCreateToday();
+              if (today) await loadPage(today, getLocalDateStr());
+            } catch {}
           }
         } catch {}
       }
@@ -683,7 +700,7 @@
       }
       const result = row.lineage_mode === "continuous" && row.lineage_id
         ? await getCanonicalTrailPage(row.lineage_id)
-        : await getPage(row.date, row.page_number);
+        : await getPage(...pageAddress(row));
       if (result) await loadPage(result, row.date);
     } catch (err) {
       console.error("mention navigate failed:", err);
@@ -875,7 +892,7 @@
       if (focus.isContinuousCanonical && focus.lineage_id) {
         result = await getCanonicalTrailPage(focus.lineage_id);
       } else {
-        result = await getPage(focus.date, focus.page_number);
+        result = await getPage(...pageAddress(focus));
       }
       // Pass focus.date as the date context so the canonical stays under
       // whichever day the rail was displaying when the user clicked.
@@ -1040,7 +1057,7 @@
     try {
       const focuses = await getFocusesForDate(selectedDate);
       if (focuses.length > 0) {
-        const result = await getPage(focuses[0].date, focuses[0].page_number);
+        const result = await getPage(...pageAddress(focuses[0]));
         if (result) await loadPage(result, selectedDate);
         await loadRailFocuses();
         return;
@@ -1138,7 +1155,7 @@
             }
           }
         }
-        const result = await getPage(continueFocus.date, continueFocus.page_number);
+        const result = await getPage(...pageAddress(continueFocus));
         if (result) await loadPage(result, continueFocus.date);
       } catch (err) {
         console.warn("continueFocus load failed:", err);
@@ -1253,7 +1270,7 @@
                 onFocusSelect={async (f) => {
                   const result = f.isContinuousCanonical && f.lineage_id
                     ? await getCanonicalTrailPage(f.lineage_id)
-                    : await getPage(f.date, f.page_number);
+                    : await getPage(...pageAddress(f));
                   if (result) await loadPage(result, f.date);
                 }}
                 onNewPage={handleRailNew}
@@ -1410,7 +1427,7 @@
             onFocusSelect={async (f) => {
               const result = f.isContinuousCanonical && f.lineage_id
                 ? await getCanonicalTrailPage(f.lineage_id)
-                : await getPage(f.date, f.page_number);
+                : await getPage(...pageAddress(f));
               if (result) await loadPage(result, f.date);
             }}
             onNewPage={handleRailNew}

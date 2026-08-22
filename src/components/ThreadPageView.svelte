@@ -7,7 +7,11 @@
   import { getLocalDateStr } from "../lib/utils.js";
 
   /** @type {{ date: string, pageNumber: number, onClose: () => void, onContinue: () => void }} */
-  let { date, pageNumber, onClose, onContinue = () => {} } = $props();
+  // pageId is optional and takes precedence when present: page_number is
+  // minted per device, so (date, pageNumber) addresses a DIFFERENT page on
+  // each device once two of them write on the same day. See
+  // src/lib/page-address.js.
+  let { date, pageNumber, pageId = null, onClose, onContinue = () => {} } = $props();
 
   let page = $state(null);
   let lines = $state([]);
@@ -66,7 +70,7 @@
 
   onMount(async () => {
     try {
-      const result = await getPage(date, pageNumber);
+      const result = await getPage(date, pageNumber, pageId ?? null);
       if (result) {
         page = result.page;
         lines = result.lines;

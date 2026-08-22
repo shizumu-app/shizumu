@@ -56,8 +56,14 @@ pub fn init_db(app_data_dir: PathBuf, passphrase: Option<&str>) -> Result<Db, St
     Ok(Arc::new(Mutex::new(conn)))
 }
 
-fn run_migrations(conn: &Connection) -> Result<(), String> {
-    let migrations = [
+/// Every schema migration, in order, as one list.
+///
+/// This used to be written out twice — once here and once in
+/// `test_helpers::apply_migrations` — so a new migration that reached
+/// production could be missing from every test's schema, and the tests
+/// would fail with `no such column` long after the code was correct.
+/// One list, two callers.
+pub(crate) const MIGRATIONS: &[&str] = &[
         include_str!("../migrations/001_initial.sql"),
         include_str!("../migrations/002_settings.sql"),
         include_str!("../migrations/003_focus_model.sql"),
@@ -86,7 +92,11 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         include_str!("../migrations/026_attachment_object_epoch.sql"),
         include_str!("../migrations/027_attachment_gc_swept.sql"),
         include_str!("../migrations/028_attachment_upload_backoff.sql"),
-    ];
+        include_str!("../migrations/029_page_field_hlc.sql"),
+];
+
+fn run_migrations(conn: &Connection) -> Result<(), String> {
+    let migrations = MIGRATIONS;
 
     for migration_sql in migrations {
         // execute_batch handles multi-statement scripts including

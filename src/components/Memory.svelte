@@ -824,6 +824,7 @@
   <ThreadPageView
     date={viewingPage.date}
     pageNumber={viewingPage.pageNumber}
+    pageId={viewingPage.pageId ?? null}
     onClose={() => (viewingPage = null)}
     onContinue={() => {
       const vp = { date: viewingPage.date, page_number: viewingPage.pageNumber, page_id: viewingPage.pageId };

@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ExportFormat {
@@ -135,6 +135,43 @@ pub fn export_page_text(conn: &Connection, page_id: &str) -> Result<String, Stri
 
 /// Export all matching pages into a single zip file at `zip_path`.
 /// Returns the number of pages written.
+/// Resolve a save-dialog result to a filesystem path we can hand to
+/// `std::fs`.
+///
+/// The dialog returns `FilePath`, which the fs plugin documents as "either
+/// a filesystem path or a URI pointing to a file such as `file://` URIs or
+/// Android `content://` URIs". Both call sites used `as_path()`, which is
+/// `None` for the `Url` variant *by contract*:
+///
+/// ```text
+/// pub fn as_path(&self) -> Option<&Path> {
+///     match self { Self::Url(_) => None, Self::Path(p) => Some(p) }
+/// }
+/// ```
+///
+/// On Android the SAF always returns a `content://` URI, so export and
+/// database backup failed with "invalid file path" every single time — not
+/// a regression, they never worked there. Android no longer takes this path
+/// at all (see `export_pages_gui`); it stages the file and hands it to the
+/// share sheet.
+///
+/// Desktop still needs this, though, because a portal-backed GTK dialog can
+/// return a `file://` URL rather than a bare path, and `as_path()` would
+/// have said `None` for that too. `into_path()` converts it; anything that
+/// is neither becomes a message naming what came back instead of the
+/// uniformly unhelpful "invalid file path".
+pub fn dialog_save_path(picked: tauri_plugin_dialog::FilePath) -> Result<PathBuf, String> {
+    match picked {
+        tauri_plugin_dialog::FilePath::Path(p) => Ok(p),
+        other => {
+            let shown = other.to_string();
+            other
+                .into_path()
+                .map_err(|_| format!("the file picker returned {shown}, which cannot be written to directly"))
+        }
+    }
+}
+
 pub fn export_pages(
     conn: &Connection,
     format: ExportFormat,
@@ -280,4 +317,55 @@ pub fn search_fts(conn: &Connection, query: &str) -> Result<Vec<SearchResult>, S
         .map_err(|e| e.to_string())?;
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod dialog_path_tests {
+    use super::dialog_save_path;
+    use std::str::FromStr;
+    use tauri_plugin_dialog::FilePath;
+
+    /// The reported Android bug, stated as a decision.
+    ///
+    /// `export_pages_gui` and `backup_database_gui` both did
+    /// `picked.as_path().ok_or("invalid file path")`, and `as_path()` is
+    /// documented to return None for the `Url` variant. Android's SAF
+    /// returns nothing but `content://` URIs, so both commands failed 100%
+    /// of the time there — not a regression, they never worked.
+    ///
+    /// Android no longer reaches this function (it stages and shares), but
+    /// this case must still produce a message that names what came back
+    /// rather than the uniformly unhelpful "invalid file path" — a desktop
+    /// picker on some future platform could hand us one too.
+    #[test]
+    fn a_content_uri_is_refused_with_a_message_that_names_it() {
+        let picked = FilePath::from_str("content://com.android.providers/document/1234").unwrap();
+        let err = dialog_save_path(picked).expect_err("a content URI is not writable");
+        assert!(
+            err.contains("content://"),
+            "the error must show what the picker actually returned: {err}"
+        );
+    }
+
+    /// The regression this function exists to prevent on DESKTOP: a
+    /// portal-backed GTK save dialog can return `file:///…` rather than a
+    /// bare path, and `as_path()` answers None for that too — so the old
+    /// code would have failed with "invalid file path" on a perfectly
+    /// writable location. Not a no-op assertion: it converts.
+    #[test]
+    fn a_file_url_converts_to_the_path_it_names() {
+        let picked = FilePath::from_str("file:///tmp/shizumu-export.zip").unwrap();
+        let path = dialog_save_path(picked).expect("a file:// URL is writable");
+        assert_eq!(path.to_str(), Some("/tmp/shizumu-export.zip"));
+    }
+
+    /// The ordinary desktop case stays untouched.
+    #[test]
+    fn a_plain_path_passes_through() {
+        let picked = FilePath::from(std::path::PathBuf::from("/tmp/shizumu-export.zip"));
+        assert_eq!(
+            dialog_save_path(picked).unwrap(),
+            std::path::PathBuf::from("/tmp/shizumu-export.zip")
+        );
+    }
 }

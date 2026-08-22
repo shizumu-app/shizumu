@@ -17,6 +17,7 @@ import {
   getPage,
   getPageForMention,
 } from "../api.js";
+import { pageAddress } from "../page-address.js";
 import { trailPathFor } from "../mention-label.js";
 import { renderDocHTML } from "./doc-renderer.js";
 import { hydrateBlobImages } from "./blob-image-hydrate.js";
@@ -100,7 +101,7 @@ export async function getPagePreviewFor(pageId) {
         if (row.lineage_mode === "continuous" && row.lineage_id) {
           pageWithLines = await getCanonicalTrailPage(row.lineage_id);
         } else {
-          pageWithLines = await getPage(row.date, row.page_number);
+          pageWithLines = await getPage(...pageAddress(row));
         }
       } catch {}
       const raw = pageWithLines?.page?.content_json;

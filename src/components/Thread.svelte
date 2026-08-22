@@ -169,7 +169,7 @@
               <ThreadCard
                 {summary}
                 dimmed={isDimmed(summary.id)}
-                onclick={() => viewingPage = { date: summary.date, pageNumber: summary.page_number }}
+                onclick={() => viewingPage = { date: summary.date, pageNumber: summary.page_number, pageId: summary.id }}
               />
             {/each}
           </div>
@@ -185,7 +185,7 @@
               <ThreadCard
                 {summary}
                 dimmed={isDimmed(summary.id)}
-                onclick={() => viewingPage = { date: summary.date, pageNumber: summary.page_number }}
+                onclick={() => viewingPage = { date: summary.date, pageNumber: summary.page_number, pageId: summary.id }}
               />
             {/each}
           </div>
@@ -205,6 +205,7 @@
   <ThreadPageView
     date={viewingPage.date}
     pageNumber={viewingPage.pageNumber}
+    pageId={viewingPage.pageId ?? null}
     onClose={() => viewingPage = null}
   />
 {/if}

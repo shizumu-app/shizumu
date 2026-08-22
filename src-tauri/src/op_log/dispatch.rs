@@ -123,6 +123,19 @@ fn stamp_applied_hlc(conn: &Connection, op: &Op, hlc_ts: i64) -> rusqlite::Resul
                     "UPDATE pages SET applied_hlc_ts = MAX(applied_hlc_ts, ?) WHERE id = ?",
                     params![hlc_ts, id],
                 )?;
+                // ...and the per-field stamp the op actually wrote, or a
+                // local write would stop protecting its own field from a
+                // stale remote op once the receive gates moved off the
+                // row-level column (migration 029). The row-level stamp
+                // above still moves, because tombstone gates read it.
+                for column in page_field_stamp_columns(op) {
+                    // `column` is one of four hard-coded literals below, so
+                    // the format! is injection-safe.
+                    conn.execute(
+                        &format!("UPDATE pages SET {column} = MAX({column}, ?) WHERE id = ?"),
+                        params![hlc_ts, id],
+                    )?;
+                }
             }
         }
         "lineage_op" => {
@@ -162,6 +175,46 @@ fn stamp_applied_hlc(conn: &Connection, op: &Op, hlc_ts: i64) -> rusqlite::Resul
     Ok(())
 }
 
+/// Which per-field HLC columns a locally-emitted page op writes.
+///
+/// `backfill_page_initial_state` carries the whole row, so it stamps every
+/// field it actually filled — the emptiness check mirrors
+/// `insert_page_with_collision_resolution`, so a backfill that names no
+/// focus line does not lock out the focus op that follows it.
+///
+/// `create_new_page` / `get_or_create_today` carry no field values at all
+/// and deliberately stamp nothing.
+fn page_field_stamp_columns(op: &Op) -> Vec<&'static str> {
+    let name = op.payload.get("op").and_then(|v| v.as_str()).unwrap_or("");
+    let fields = op.payload.get("fields");
+    let filled = |key: &str| {
+        fields
+            .and_then(|f| f.get(key))
+            .map_or(false, |v| match v {
+                serde_json::Value::Null => false,
+                serde_json::Value::String(s) => !s.trim().is_empty(),
+                _ => true,
+            })
+    };
+    match name {
+        "save_page_content" => vec!["hlc_content"],
+        "update_what_matters_now" => vec!["hlc_focus"],
+        "update_what_shifted" => vec!["hlc_shifted"],
+        "set_focus_lineage" => vec!["hlc_lineage"],
+        "backfill_page_initial_state" => {
+            let mut cols = Vec::new();
+            if filled("content_json") { cols.push("hlc_content"); }
+            if filled("what_matters_now") { cols.push("hlc_focus"); }
+            if filled("what_shifted") { cols.push("hlc_shifted"); }
+            if filled("lineage_id") { cols.push("hlc_lineage"); }
+            cols
+        }
+        // page_yjs ops mutate the doc, which is the content field.
+        _ if op.kind.as_str() == "page_yjs" => vec!["hlc_content"],
+        _ => Vec::new(),
+    }
+}
+
 fn wall_clock_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -181,39 +234,17 @@ mod tests {
         // failures. Mirrors the production db.rs path; the in-memory
         // connection is otherwise identical to test_helpers::test_db().
         let conn = Connection::open_in_memory().unwrap();
-        let migrations = [
-            include_str!("../../migrations/001_initial.sql"),
-            include_str!("../../migrations/002_settings.sql"),
-            include_str!("../../migrations/003_focus_model.sql"),
-            include_str!("../../migrations/004_session_markers.sql"),
-            include_str!("../../migrations/005_blocks.sql"),
-            include_str!("../../migrations/006_lineage.sql"),
-            include_str!("../../migrations/007_content_json.sql"),
-            include_str!("../../migrations/008_shared_objects.sql"),
-            include_str!("../../migrations/009_shukonin_sessions.sql"),
-            include_str!("../../migrations/010_trail_modes.sql"),
-            include_str!("../../migrations/011_global_pins.sql"),
-            include_str!("../../migrations/012_pin_auto_insert.sql"),
-            include_str!("../../migrations/013_pin_pointer_semantics.sql"),
-            include_str!("../../migrations/014_page_refs.sql"),
-            include_str!("../../migrations/015_pin_refs.sql"),
-            include_str!("../../migrations/016_op_log.sql"),
-            include_str!("../../migrations/017_sync_state.sql"),
-            include_str!("../../migrations/018_applied_hlc_ts.sql"),
-            include_str!("../../migrations/019_pages_yjs_state.sql"),
-            include_str!("../../migrations/024_epochs.sql"),
-        ];
-        for sql in migrations {
-            for stmt in sql.split(';') {
-                let trimmed = stmt.trim();
-                if !trimmed.is_empty() {
-                    let r = conn.execute_batch(trimmed);
-                    if let Err(e) = r {
-                        let msg = e.to_string();
-                        if !(msg.contains("duplicate column") || msg.contains("already exists")) {
-                            panic!("migration error: {msg}");
-                        }
-                    }
+        // The production list, shared rather than copied — this one had
+        // drifted to a 15-entry subset and would have missed 029 entirely.
+        // execute_batch per FILE, like db.rs. Splitting on ';' first cut
+        // multi-statement CREATE TABLE bodies in half, which is why this
+        // helper had drifted to a hand-picked subset of migrations that
+        // happened to survive the split.
+        for sql in crate::db::MIGRATIONS {
+            if let Err(e) = conn.execute_batch(sql) {
+                let msg = e.to_string();
+                if !(msg.contains("duplicate column") || msg.contains("already exists")) {
+                    panic!("migration error: {msg}");
                 }
             }
         }

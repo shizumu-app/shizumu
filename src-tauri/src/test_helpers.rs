@@ -20,37 +20,10 @@ pub fn test_db_at(path: &std::path::Path) -> Arc<Mutex<Connection>> {
 }
 
 fn apply_migrations(conn: Connection) -> Arc<Mutex<Connection>> {
-    // Run migrations inline (same as db.rs but without the shared_objects drop)
-    let migrations = [
-        include_str!("../migrations/001_initial.sql"),
-        include_str!("../migrations/002_settings.sql"),
-        include_str!("../migrations/003_focus_model.sql"),
-        include_str!("../migrations/004_session_markers.sql"),
-        include_str!("../migrations/005_blocks.sql"),
-        include_str!("../migrations/006_lineage.sql"),
-        include_str!("../migrations/007_content_json.sql"),
-        include_str!("../migrations/008_shared_objects.sql"),
-        include_str!("../migrations/009_shukonin_sessions.sql"),
-        include_str!("../migrations/010_trail_modes.sql"),
-        include_str!("../migrations/011_global_pins.sql"),
-        include_str!("../migrations/012_pin_auto_insert.sql"),
-        include_str!("../migrations/013_pin_pointer_semantics.sql"),
-        include_str!("../migrations/014_page_refs.sql"),
-        include_str!("../migrations/015_pin_refs.sql"),
-        include_str!("../migrations/016_op_log.sql"),
-        include_str!("../migrations/017_sync_state.sql"),
-        include_str!("../migrations/018_applied_hlc_ts.sql"),
-        include_str!("../migrations/019_pages_yjs_state.sql"),
-        include_str!("../migrations/020_pin_diverged.sql"),
-        include_str!("../migrations/021_op_log_merge_error.sql"),
-        include_str!("../migrations/022_sync_error_history.sql"),
-        include_str!("../migrations/023_attachments.sql"),
-        include_str!("../migrations/024_epochs.sql"),
-        include_str!("../migrations/025_attachment_object_key.sql"),
-        include_str!("../migrations/026_attachment_object_epoch.sql"),
-        include_str!("../migrations/027_attachment_gc_swept.sql"),
-        include_str!("../migrations/028_attachment_upload_backoff.sql"),
-    ];
+    // The same list production runs (minus db.rs's shared_objects recreate),
+    // shared rather than copied so a new migration cannot reach production
+    // while every test still runs the old schema.
+    let migrations = crate::db::MIGRATIONS;
 
     for migration_sql in migrations {
         // execute_batch handles multi-statement scripts including
