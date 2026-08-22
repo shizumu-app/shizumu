@@ -5254,7 +5254,7 @@ dependencies = [
 
 [[package]]
 name = "shizumu"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "age",
  "base64 0.22.1",
