@@ -65,26 +65,36 @@ without touching the test file.
 
 ## Baseline location
 
-    tests/vr/baselines/win-webview2/      committed (provisional, see status)
-    tests/vr/baselines/android-webview/   committed (provisional, see status)
-    tests/vr/baselines/linux-webkitgtk/   NOT yet generated (Docker-only)
+    tests/vr/baselines/win-webview2/      Docker-generated, canonical
+    tests/vr/baselines/android-webview/   Docker-generated, canonical
+    tests/vr/baselines/android-landscape/ Docker-generated, canonical
+    tests/vr/baselines/linux-webkitgtk/   Docker-generated, canonical
 
-## Baseline status (read before relying on the Docker gate)
+## Baseline status
 
-The committed `win-webview2/` and `android-webview/` baselines were generated on
-a bare Fedora host (chromium). They prove the harness is deterministic locally,
-but they are **provisional**: Ubuntu/Docker font hinting differs, so they will
-not match Docker-rendered chromium, and **no `linux-webkitgtk/` baselines exist
-yet** (the webkit engine only runs in the Docker image, which was not run in the
-environment that built this).
+All four projects are baselined from the Docker image, and
+`npm run test:vr:docker` is the authoritative gate: 103 passing on
+2026-08-22, which is also the state `vr-tier1` sees in CI.
 
-To establish the canonical, cross-machine baselines, run **once** on a
-Docker-capable host (or in CI):
+**`vr-tier1` was red for weeks, and this is why.** Baselines regenerated on
+the bare Fedora host pass locally and fail in CI, because CI runs the same
+pinned Ubuntu image this Dockerfile builds and its font metrics differ by a
+sub-pixel here and there. It costs about 1% of pixels — over the 0.002
+`maxDiffPixelRatio` threshold, well under anything a human would notice. So
+the suite looks broken while every screenshot looks right, and the temptation
+is to stop reading it. That is how the 08-14 → 08-18 regression got through.
 
-    npm run test:vr:docker:update    # regenerates chromium ×2 + webkit ×1 = 54 baselines
-    git add tests/vr/baselines && git commit
+The rule that prevents it: **never run `test:vr:update` (bare local) and
+commit the result.** Only `test:vr:docker:update` produces baselines CI
+agrees with. `test:vr` and `test:vr:update` are for a fast local look while
+iterating; nothing they write should reach a commit.
 
-After that, `npm run test:vr:docker` is the authoritative gate.
+One trap worth knowing: a Docker run mounts the repo read-write as root and
+Playwright WRITES any snapshot it finds missing, then reports that test as
+failed for the run that created it. So a plain `test:vr:docker` can leave new
+untracked `.png` files behind. They are legitimate baselines for scenes that
+had none — check `git status` after a run, and commit them deliberately
+rather than letting them accumulate untracked.
 
 **Do not file a wall of red as "hinting drift" without looking.** Hinting
 drift is sub-pixel glyph noise; it does not move a header 26px or indent a

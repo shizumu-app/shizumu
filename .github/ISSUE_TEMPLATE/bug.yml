@@ -1,0 +1,58 @@
+name: something is broken
+description: a bug in the app, the relay, or a build
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        beta means we want the report. no template rules will stop us reading
+        an issue that skips half of this, so fill in what you know.
+  - type: textarea
+    id: what
+    attributes:
+      label: what happened
+      description: what you did, what you expected, what you got instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: version
+      description: settings shows it, or the flathub listing.
+      placeholder: "0.7.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: platform
+      options:
+        - linux (flathub)
+        - linux (deb / rpm / tarball)
+        - windows
+        - android (apk)
+        - android (play, closed testing)
+        - the relay, self-hosted
+    validations:
+      required: true
+  - type: dropdown
+    id: sync
+    attributes:
+      label: is sync on
+      description: >
+        worth asking even when the bug looks unrelated. several defects we
+        have fixed only appear once a second device exists, and the writing
+        that goes missing is usually on the device that did not report it.
+      options:
+        - "off, one device"
+        - "on, our relay"
+        - "on, my own relay"
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: anything else
+      description: >
+        screenshots help. so does whether it survives a restart, and whether
+        the other device shows the same thing.

@@ -1,0 +1,23 @@
+name: an idea
+description: something shizumu could do
+labels: ["idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        worth reading first: prompts, tags, folders, templates, streaks,
+        social features, plugins, graph view and AI-generated writing are
+        permanent refusals, not a backlog. an idea that routes around one of
+        them is still welcome — say what you are trying to do and we will
+        look for a way that fits.
+  - type: textarea
+    id: what
+    attributes:
+      label: what you are trying to do
+      description: the behaviour you want, not the feature you would build.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: what you do today instead

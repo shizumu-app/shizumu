@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: a security problem
+    url: https://github.com/shizumu-app/shizumu/security/policy
+    about: please do not open a public issue for anything security related.
+  - name: email
+    url: mailto:hello@shizumu.app
+    about: support, billing, privacy requests, or anything you would rather not post.
