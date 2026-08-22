@@ -24,6 +24,11 @@ use rusqlite::{params, Connection};
 /// pick a smaller value so a single failure has less to re-pull.
 pub const PULL_BATCH_LIMIT: i64 = 100;
 
+/// How many blob fetches a single batch may have in flight at once. Only
+/// the waiting overlaps — ordering and cursor semantics are decided
+/// afterwards, sequentially, exactly as before.
+pub const PULL_FETCH_CONCURRENCY: usize = 6;
+
 #[derive(Debug, Default, Clone)]
 pub struct PullStats {
     pub batches: usize,
@@ -83,7 +88,10 @@ pub fn run_pass(
         .expect("is_active() guarantees user_id");
 
     let mut stats = PullStats::default();
-    let mut cursor = cfg.last_seen_user_seq;
+    let mut cursor = match crate::sync::snapshot::bootstrap(db, cfg, user_keys, device_keys)? {
+        Some(seq) => seq,
+        None => cfg.last_seen_user_seq,
+    };
 
     loop {
         // GET /ops is HTTP — no lock held.
@@ -116,11 +124,67 @@ pub fn run_pass(
             })
         });
 
+        // Fetch this batch's blobs in parallel, ingest in order. Ordering
+        // and cursor semantics are untouched: only the waiting overlaps.
+        // Duplicates are excluded up front so a re-pull does not re-download.
+        // This is an OPTIMIZATION, not the source of truth: ingest_one's
+        // lock-scoped already_have check below is still what decides
+        // DuplicateSkipped. Do not fold the two into one check — that would
+        // mean holding the db lock across the fetch threads below.
+        let already: std::collections::HashSet<i64> = {
+            let conn = db.lock().map_err(|e| PullError::Db(e.to_string()))?;
+            let mut stmt = conn.prepare("SELECT user_seq FROM op_log WHERE user_seq IS NOT NULL")
+                .map_err(|e| PullError::Db(e.to_string()))?;
+            let rows = stmt.query_map([], |r| r.get::<_, i64>(0)).map_err(|e| PullError::Db(e.to_string()))?;
+            rows.filter_map(Result::ok).collect()
+        };
+        let to_fetch: Vec<&RemoteOp> = sorted.iter()
+            .filter(|op| !already.contains(&op.user_seq) && op.op_kind != crate::op_log::OpKind::SNAPSHOT)
+            .collect();
+        let mut prefetched: std::collections::HashMap<i64, Result<Vec<u8>, WireError>> =
+            std::collections::HashMap::with_capacity(to_fetch.len());
+        std::thread::scope(|s| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            for chunk in to_fetch.chunks(to_fetch.len().div_ceil(PULL_FETCH_CONCURRENCY).max(1)) {
+                let tx = tx.clone();
+                s.spawn(move || {
+                    for op in chunk {
+                        let r = get_blob(relay, device_keys, user_id, &op.blob_hash);
+                        let _ = tx.send((op.user_seq, r));
+                    }
+                });
+            }
+            drop(tx);
+            for (seq, r) in rx {
+                prefetched.insert(seq, r);
+            }
+        });
+
         let mut merge_blocked = false;
         for op in sorted {
             let seq = op.user_seq;
+            if op.op_kind == crate::op_log::OpKind::SNAPSHOT {
+                // Another device's snapshot. Nothing for a device that is
+                // already past bootstrap; the blob is the whole account, so
+                // do not even fetch it. The cursor still moves past it.
+                stats.ops_skipped_duplicate += 1;
+                if seq > cursor {
+                    cursor = seq;
+                    let conn = db.lock().map_err(|e| PullError::Db(e.to_string()))?;
+                    config::set_last_seen_user_seq(&conn, cursor)?;
+                }
+                continue;
+            }
             // ingest_one releases the lock around its own HTTP blob fetch.
-            let outcome = ingest_one(db, user_keys, relay, device_keys, user_id, &op)?;
+            let outcome = ingest_one(
+                db,
+                user_keys,
+                relay,
+                device_keys,
+                user_id,
+                &op,
+                prefetched.remove(&op.user_seq),
+            )?;
             let advance = match outcome {
                 IngestOutcome::Stored => {
                     stats.ops_received += 1;
@@ -188,6 +252,7 @@ fn ingest_one(
     device_keys: &DeviceKeys,
     user_id: &str,
     op: &RemoteOp,
+    prefetched: Option<Result<Vec<u8>, WireError>>,
 ) -> Result<IngestOutcome, PullError> {
     // Dedup by user_seq — the relay's monotonic identifier. If we
     // already have a row for this seq (because we uploaded it, or a
@@ -229,10 +294,16 @@ fn ingest_one(
         return Ok(IngestOutcome::DecryptError);
     };
 
-    // Fetch + decrypt — NO LOCK during this HTTP call. Decrypt is CPU
-    // only. A decrypt failure means the blob is corrupt or not for us;
-    // log and skip rather than poison the cursor.
-    let ciphertext = get_blob(relay, device_keys, user_id, &op.blob_hash)?;
+    // Fetch + decrypt — NO LOCK during this HTTP call (unless the blob was
+    // already prefetched by run_pass's batch fan-out, in which case the
+    // wait already happened concurrently with other ops in this batch).
+    // Decrypt is CPU only. A decrypt failure means the blob is corrupt or
+    // not for us; log and skip rather than poison the cursor.
+    let ciphertext = match prefetched {
+        Some(Ok(bytes)) => bytes,
+        Some(Err(e)) => return Err(e.into()),
+        None => get_blob(relay, device_keys, user_id, &op.blob_hash)?,
+    };
     let opened = match crate::sync::op_auth::open_authored(&content_key, &ciphertext) {
         Ok(o) => o,
         Err(e) => {
@@ -484,6 +555,50 @@ mod tests {
         }
     }
 
+    // Copied verbatim from worker.rs's test mod (~906) — enrolls a real
+    // sync_state row on `db` so `config::load` returns an active config
+    // pointed at the mock relay, rather than hand-building a SyncConfig.
+    fn active_db_config(db: &Db, base_url: &str) {
+        let conn = db.lock().unwrap();
+        crate::sync::config::set_relay_url(&conn, base_url).unwrap();
+        crate::sync::config::set_enrollment(&conn, "u", "d", 1).unwrap();
+        crate::sync::config::set_enabled(&conn, true).unwrap();
+    }
+
+    /// Build + seal a `setting_op` payload under epoch 0, exactly the way
+    /// Task 6's bootstrap test seals a snapshot blob. Returns the sealed
+    /// ciphertext and its content hash, ready to serve from a mock blob
+    /// endpoint and reference from a mock /ops listing.
+    fn sealed_setting_op(
+        db: &Db,
+        uk: &UserKeys,
+        dk: &DeviceKeys,
+        key: &str,
+        value: &str,
+    ) -> (Vec<u8>, String) {
+        let payload = json!({"op": "set", "key": key, "value": value, "hlc_ts": 1_i64});
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        let c = db.lock().unwrap();
+        let ck = crate::sync::epoch::content_master_key_for_epoch(&c, uk, 0).unwrap().unwrap();
+        let sp = crate::sync::epoch::user_sign_priv_for_epoch(&c, uk, 0).unwrap().unwrap();
+        let ct = crate::sync::op_auth::seal_authored(&ck, &uuid::Uuid::new_v4(), &bytes, dk, &sp);
+        let hash = crate::sync::envelope::blob_hash_hex(&ct);
+        (ct, hash)
+    }
+
+    // httpmock 0.7.0 (the version vendored here) has no
+    // `query_param_missing`. This closes the same gap with a plain
+    // matcher function that inspects the raw query pairs: true when the
+    // request carries no `stream` param at all. Used to keep "the normal
+    // since=0 pull never carries a stream filter" a real assertion rather
+    // than an accidental match against the stream=3 listing.
+    fn query_lacks_stream(req: &HttpMockRequest) -> bool {
+        !req.query_params
+            .as_ref()
+            .map(|qs| qs.iter().any(|(k, _)| k == "stream"))
+            .unwrap_or(false)
+    }
+
     /// Inactive config: the engine stays silent.
     #[test]
     fn pull_pass_is_a_noop_when_config_is_inactive() {
@@ -512,6 +627,11 @@ mod tests {
         let ciphertext = encrypt_op(&uk.content_master_key, &op_uuid, payload);
         let hash = blob_hash_hex(&ciphertext);
 
+        // bootstrap probes stream 3 first on an empty device; answer it honestly.
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("stream", "3");
+            then.status(200).json_body(json!({"ops": [], "has_more": false}));
+        });
         server.mock(|when, then| {
             when.method(GET).path("/v1/users/u/ops");
             then.status(200).json_body(json!({
@@ -583,6 +703,11 @@ mod tests {
         let ciphertext = encrypt_op(&uk.content_master_key, &op_uuid, payload);
         let hash = blob_hash_hex(&ciphertext);
 
+        // bootstrap probes stream 3 first on an empty device; answer it honestly.
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("stream", "3");
+            then.status(200).json_body(json!({"ops": [], "has_more": false}));
+        });
         server.mock(|when, then| {
             when.method(GET).path("/v1/users/u/ops");
             then.status(200).json_body(json!({
@@ -632,6 +757,11 @@ mod tests {
         );
         let hash = blob_hash_hex(&bad_ct);
 
+        // bootstrap probes stream 3 first on an empty device; answer it honestly.
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("stream", "3");
+            then.status(200).json_body(json!({"ops": [], "has_more": false}));
+        });
         server.mock(|when, then| {
             when.method(GET).path("/v1/users/u/ops");
             then.status(200).json_body(json!({
@@ -786,6 +916,11 @@ mod tests {
         let (s1, ct1, h1) = make_op(10);
         let (s2, ct2, h2) = make_op(11);
 
+        // bootstrap probes stream 3 first on an empty device; answer it honestly.
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("stream", "3");
+            then.status(200).json_body(json!({"ops": [], "has_more": false}));
+        });
         server.mock(|when, then| {
             when.method(GET)
                 .path("/v1/users/u/ops")
@@ -837,5 +972,187 @@ mod tests {
         assert_eq!(stats.ops_received, 2);
         let conn = db.lock().unwrap();
         assert_eq!(config::load(&conn).unwrap().last_seen_user_seq, 11);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Task 6: bootstrap an empty device from the newest snapshot.
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn an_empty_device_with_cursor_zero_takes_the_newest_snapshot_then_pulls_after_it() {
+        let server = MockServer::start();
+        let db = test_db();
+        active_db_config(&db, &server.base_url());
+        let (uk, dk) = crate::sync::test_keys();
+
+        // Build a real snapshot blob from a seeded source db, sealed under epoch 0.
+        let src = test_db();
+        let (ct, hash) = {
+            let c = src.lock().unwrap();
+            c.execute("INSERT INTO pages (id, date, page_number, what_matters_now, created_at, updated_at) VALUES ('from-snap','2026-08-22',1,'kept','0','0')", []).unwrap();
+            let snap = crate::sync::snapshot::capture(&c, 40).unwrap();
+            let bytes = crate::sync::snapshot::encode(&snap).unwrap();
+            let ck = crate::sync::epoch::content_master_key_for_epoch(&c, &uk, 0).unwrap().unwrap();
+            let sp = crate::sync::epoch::user_sign_priv_for_epoch(&c, &uk, 0).unwrap().unwrap();
+            let ct = crate::sync::op_auth::seal_authored(&ck, &uuid::Uuid::new_v4(), &bytes, &dk, &sp);
+            let hash = crate::sync::envelope::blob_hash_hex(&ct);
+            (ct, hash)
+        };
+
+        // Stream 3 listing: two snapshots, newest last.
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("stream", "3");
+            then.status(200).json_body(serde_json::json!({"ops": [
+                {"user_seq": 10, "blob_hash": "0".repeat(64), "blob_size": 1, "doc_id_ct": "", "op_kind": "snapshot", "stream_id": 3, "device_id": "x", "created_at": 0, "epoch": 0},
+                {"user_seq": 40, "blob_hash": hash, "blob_size": ct.len(), "doc_id_ct": "", "op_kind": "snapshot", "stream_id": 3, "device_id": "x", "created_at": 0, "epoch": 0}
+            ], "has_more": false}));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path(format!("/v1/users/u/blobs/{hash}"));
+            then.status(200).body(ct.clone());
+        });
+        // The normal pull must resume AFTER the snapshot, not from 0.
+        let after = server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("since", "40");
+            then.status(200).json_body(serde_json::json!({"ops": [], "has_more": false}));
+        });
+        let from_zero = server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("since", "0").matches(query_lacks_stream);
+            then.status(200).json_body(serde_json::json!({"ops": [], "has_more": false}));
+        });
+
+        let cfg = { let c = db.lock().unwrap(); crate::sync::config::load(&c).unwrap() };
+        run_pass(&db, &cfg, &uk, &dk).unwrap();
+
+        after.assert();
+        assert_eq!(from_zero.hits(), 0, "history before the snapshot is never replayed");
+        let c = db.lock().unwrap();
+        let focus: String = c.query_row("SELECT what_matters_now FROM pages WHERE id='from-snap'", [], |r| r.get(0)).unwrap();
+        assert_eq!(focus, "kept");
+        let cursor = crate::sync::config::load(&c).unwrap().last_seen_user_seq;
+        assert_eq!(cursor, 40);
+    }
+
+    #[test]
+    fn a_corrupt_snapshot_falls_back_to_op_replay() {
+        // A snapshot blob that fails to open (tampered, wrong key, garbage
+        // bytes) must not strand the device: every op is individually
+        // authenticated, so falling back to plain op replay from 0 is never
+        // worse than trusting a snapshot that didn't verify. bootstrap logs
+        // and returns Ok(None) instead of propagating the open/decode error,
+        // exactly like the missing-content-key branch.
+        let server = MockServer::start();
+        let db = test_db();
+        active_db_config(&db, &server.base_url());
+        let (uk, dk) = crate::sync::test_keys();
+
+        let hash = "c".repeat(64);
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("stream", "3");
+            then.status(200).json_body(serde_json::json!({"ops": [
+                {"user_seq": 40, "blob_hash": hash, "blob_size": 9, "doc_id_ct": "", "op_kind": "snapshot", "stream_id": 3, "device_id": "x", "created_at": 0, "epoch": 0}
+            ], "has_more": false}));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path(format!("/v1/users/u/blobs/{hash}"));
+            then.status(200).body("garbage-not-a-real-sealed-blob");
+        });
+        let from_zero = server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("since", "0").matches(query_lacks_stream);
+            then.status(200).json_body(serde_json::json!({"ops": [], "has_more": false}));
+        });
+
+        let cfg = { let c = db.lock().unwrap(); crate::sync::config::load(&c).unwrap() };
+        run_pass(&db, &cfg, &uk, &dk).expect("a bad snapshot must not fail the whole pull pass");
+
+        assert_eq!(from_zero.hits(), 1, "the fallback IS the normal since=0 replay now");
+        let c = db.lock().unwrap();
+        let cursor = crate::sync::config::load(&c).unwrap().last_seen_user_seq;
+        assert_eq!(cursor, 0, "nothing after 0 was ever offered, so the loop leaves it there");
+    }
+
+    #[test]
+    fn a_device_with_writing_never_bootstraps_from_a_snapshot() {
+        // Reason this is the right "nothing happens": applying a snapshot
+        // over existing rows would be an unruled merge. The op path is the
+        // only one allowed to touch a non-empty device.
+        let server = MockServer::start();
+        let db = test_db();
+        active_db_config(&db, &server.base_url());
+        { let c = db.lock().unwrap();
+          c.execute("INSERT INTO pages (id, date, page_number, created_at, updated_at) VALUES ('mine','2026-08-01',1,'0','0')", []).unwrap(); }
+        let (uk, dk) = crate::sync::test_keys();
+        let stream3 = server.mock(|when, then| { when.method(GET).query_param("stream", "3"); then.status(500); });
+        server.mock(|when, then| { when.method(GET).path("/v1/users/u/ops"); then.status(200).json_body(serde_json::json!({"ops": [], "has_more": false})); });
+        let cfg = { let c = db.lock().unwrap(); crate::sync::config::load(&c).unwrap() };
+        run_pass(&db, &cfg, &uk, &dk).unwrap();
+        assert_eq!(stream3.hits(), 0);
+    }
+
+    #[test]
+    fn snapshot_ops_in_the_normal_stream_are_skipped_without_fetching_the_blob() {
+        // Every device sees every other device's snapshots in its pull. They
+        // carry nothing a non-empty device can use, and each is the whole
+        // account — fetching them would cost more than the ops they summarise.
+        let server = MockServer::start();
+        let db = test_db();
+        active_db_config(&db, &server.base_url());
+        { let c = db.lock().unwrap();
+          c.execute("INSERT INTO pages (id, date, page_number, created_at, updated_at) VALUES ('mine','2026-08-01',1,'0','0')", []).unwrap(); }
+        let (uk, dk) = crate::sync::test_keys();
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("since", "0");
+            then.status(200).json_body(serde_json::json!({"ops": [
+                {"user_seq": 5, "blob_hash": "a".repeat(64), "blob_size": 9, "doc_id_ct": "", "op_kind": "snapshot", "stream_id": 3, "device_id": "x", "created_at": 0, "epoch": 0}
+            ], "has_more": false}));
+        });
+        server.mock(|when, then| { when.method(GET).path("/v1/users/u/ops").query_param("since", "5"); then.status(200).json_body(serde_json::json!({"ops": [], "has_more": false})); });
+        let blob = server.mock(|when, then| { when.method(GET).path_matches(Regex::new("/blobs/").unwrap()); then.status(200).body("x"); });
+        let cfg = { let c = db.lock().unwrap(); crate::sync::config::load(&c).unwrap() };
+        run_pass(&db, &cfg, &uk, &dk).unwrap();
+        assert_eq!(blob.hits(), 0);
+        let c = db.lock().unwrap();
+        assert_eq!(crate::sync::config::load(&c).unwrap().last_seen_user_seq, 5, "the cursor still advances past it");
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Task 7: fetch a batch's blobs in parallel.
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn blobs_of_one_batch_are_fetched_concurrently() {
+        use std::time::{Duration, Instant};
+        let server = MockServer::start();
+        let db = test_db();
+        active_db_config(&db, &server.base_url());
+        let (uk, dk) = crate::sync::test_keys();
+        // bootstrap probes stream 3 first on an empty device; answer it honestly.
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("stream", "3");
+            then.status(200).json_body(json!({"ops": [], "has_more": false}));
+        });
+        // 12 tiny setting ops, each blob served with a 150 ms delay.
+        let mut ops = Vec::new();
+        for i in 1..=12 {
+            let (ct, hash) = sealed_setting_op(&db, &uk, &dk, &format!("k{i}"), "v");
+            server.mock(|when, then| {
+                when.method(GET).path(format!("/v1/users/u/blobs/{hash}"));
+                then.status(200).delay(Duration::from_millis(150)).body(ct);
+            });
+            ops.push(serde_json::json!({"user_seq": i, "blob_hash": hash, "blob_size": 1, "doc_id_ct": "", "op_kind": "setting_op", "stream_id": 0, "device_id": "x", "created_at": 0, "epoch": 0}));
+        }
+        server.mock(|when, then| { when.method(GET).path("/v1/users/u/ops").query_param("since", "0"); then.status(200).json_body(serde_json::json!({"ops": ops, "has_more": false})); });
+        server.mock(|when, then| { when.method(GET).path("/v1/users/u/ops").query_param("since", "12"); then.status(200).json_body(serde_json::json!({"ops": [], "has_more": false})); });
+        let cfg = { let c = db.lock().unwrap(); crate::sync::config::load(&c).unwrap() };
+
+        let t0 = Instant::now();
+        let stats = run_pass(&db, &cfg, &uk, &dk).unwrap();
+        let took = t0.elapsed();
+        assert_eq!(stats.ops_received, 12);
+        // Sequential would be ≥ 12 × 150 ms = 1.8 s. Six-wide is ~2 rounds.
+        // timing is the contract here; a process-global in-flight counter was
+        // tried and rejected because parallel tests share it (see worker.rs
+        // FIRST_PULL_DONE).
+        assert!(took < Duration::from_millis(1200), "took {took:?}; blobs were not fetched in parallel");
     }
 }

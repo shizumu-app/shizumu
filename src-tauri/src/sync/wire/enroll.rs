@@ -202,43 +202,22 @@ pub fn self_enroll(
         crate::sync::wire::normalize_base_url(base_url)
     );
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| EnrollError::Transport(e.to_string()))?;
-
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .map_err(|e| EnrollError::Transport(e.to_string()))?;
-
-    let status = resp.status().as_u16();
-    let raw = resp
-        .text()
-        .map_err(|e| EnrollError::Transport(e.to_string()))?;
-
-    if (200..300).contains(&status) {
-        serde_json::from_str::<EnrollResponse>(&raw)
-            .map_err(|e| EnrollError::BadResponse(e.to_string()))
-    } else if status == 409 {
+    // self-enroll special-cases 409 (a relay that already has a user)
+    // into a distinct code the frontend keys off of, so it cannot go
+    // through the generic send_bootstrap — everything else is shared.
+    let (status, raw) = post_bootstrap(&url, &body)?;
+    if status == 409 {
         // Relay already has a user — surface a specific code so the
         // frontend can show a clear message.
-        Err(EnrollError::Wire {
+        return Err(EnrollError::Wire {
             status: 409,
             body: WireErrorBody {
                 code: "relay_already_claimed".to_string(),
                 message: "this relay already has a registered user".to_string(),
             },
-        })
-    } else if let Ok(env) = serde_json::from_str::<WireErrorEnvelope>(&raw) {
-        Err(EnrollError::Wire {
-            status,
-            body: env.error,
-        })
-    } else {
-        Err(EnrollError::UnexpectedStatus { status, body: raw })
+        });
     }
+    parse_bootstrap_response(status, raw)
 }
 
 // ---------------------------------------------------------------
@@ -256,19 +235,47 @@ pub fn init(
     device_label: &str,
 ) -> Result<EnrollResponse, EnrollError> {
     let body = build_self_enroll_body(user_keys, device_keys, device_label);
-    let url = format!(
-        "{}/v1/devices/init",
-        crate::sync::wire::normalize_base_url(base_url)
-    );
+    send_bootstrap(
+        &format!(
+            "{}/v1/devices/init",
+            crate::sync::wire::normalize_base_url(base_url)
+        ),
+        &body,
+    )
+}
 
+/// Attach this device to the account the phrase already belongs to.
+/// `init` creates; this one finds. The relay answers 404 user_not_found
+/// for a phrase it has never seen, which the UI turns into "no account
+/// matches this phrase" instead of a silent empty account.
+pub fn recover(
+    base_url: &str,
+    user_keys: &UserKeys,
+    device_keys: &DeviceKeys,
+    device_label: &str,
+) -> Result<EnrollResponse, EnrollError> {
+    let body = build_self_enroll_body(user_keys, device_keys, device_label);
+    send_bootstrap(
+        &format!(
+            "{}/v1/devices/recover",
+            crate::sync::wire::normalize_base_url(base_url)
+        ),
+        &body,
+    )
+}
+
+/// Do the actual HTTP round-trip for a bootstrap verb (init / self-enroll
+/// / recover) and hand back the raw status/body pair. Shared so the
+/// three verbs cannot drift in how the request itself is built and sent.
+fn post_bootstrap(url: &str, body: &serde_json::Value) -> Result<(u16, String), EnrollError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| EnrollError::Transport(e.to_string()))?;
 
     let resp = client
-        .post(&url)
-        .json(&body)
+        .post(url)
+        .json(body)
         .send()
         .map_err(|e| EnrollError::Transport(e.to_string()))?;
 
@@ -277,6 +284,13 @@ pub fn init(
         .text()
         .map_err(|e| EnrollError::Transport(e.to_string()))?;
 
+    Ok((status, raw))
+}
+
+/// Map the relay's envelope into EnrollResponse / EnrollError for the
+/// bootstrap verbs that have no special-cased status code (init,
+/// recover). self_enroll intercepts 409 before falling into this.
+fn parse_bootstrap_response(status: u16, raw: String) -> Result<EnrollResponse, EnrollError> {
     if (200..300).contains(&status) {
         serde_json::from_str::<EnrollResponse>(&raw)
             .map_err(|e| EnrollError::BadResponse(e.to_string()))
@@ -288,6 +302,14 @@ pub fn init(
     } else {
         Err(EnrollError::UnexpectedStatus { status, body: raw })
     }
+}
+
+/// POST an unsigned bootstrap body (init / self-enroll / recover) and
+/// map the relay's envelope into EnrollResponse / EnrollError. Shared so
+/// the three bootstrap verbs cannot drift in how they read a 4xx.
+fn send_bootstrap(url: &str, body: &serde_json::Value) -> Result<EnrollResponse, EnrollError> {
+    let (status, raw) = post_bootstrap(url, body)?;
+    parse_bootstrap_response(status, raw)
 }
 
 #[cfg(test)]
@@ -486,5 +508,35 @@ mod tests {
         let (uk, dk) = fresh_keys();
         let err = init("http://127.0.0.1:1", &uk, &dk, "laptop").unwrap_err();
         assert!(matches!(err, EnrollError::Transport(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn recover_posts_the_bootstrap_body_and_returns_the_existing_user() {
+        let server = MockServer::start();
+        let m = server.mock(|when, then| {
+            when.method(POST).path("/v1/devices/recover");
+            then.status(200).json_body(serde_json::json!({
+                "user_id": "11111111-1111-1111-1111-111111111111",
+                "device_id": "22222222-2222-2222-2222-222222222222"
+            }));
+        });
+        let (uk, dk) = fresh_keys();
+        let resp = recover(&server.base_url(), &uk, &dk, "phone").unwrap();
+        m.assert();
+        assert_eq!(resp.user_id, "11111111-1111-1111-1111-111111111111");
+    }
+
+    #[test]
+    fn recover_surfaces_user_not_found_as_a_relay_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/devices/recover");
+            then.status(404).json_body(serde_json::json!({
+                "error": {"code": "user_not_found", "message": "no account matches this recovery phrase"}
+            }));
+        });
+        let (uk, dk) = fresh_keys();
+        let err = recover(&server.base_url(), &uk, &dk, "phone").unwrap_err();
+        assert!(err.to_string().contains("user_not_found"), "{err}");
     }
 }

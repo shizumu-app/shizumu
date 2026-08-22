@@ -5,9 +5,10 @@
   import Popover from "../lib/ui/Popover.svelte";
   import TriggerChip from "../lib/ui/TriggerChip.svelte";
   import Icon from "../lib/ui/Icon.svelte";
+  import { withOrdinals } from "../lib/page-ordinal.js";
 
-  /** @type {{ date: string, pageNumber: number, totalPages: number, onPrev: () => void, onNext: () => void, onDateSelect: (date: string) => void, focuses: Array<{id: string, what_matters_now: string|null, page_number: number, date: string}>, onFocusSelect: (focus: any) => void, earliestDate: string | null, onNewPage?: () => void, canNewPage?: boolean }} */
-  let { date, pageNumber, totalPages, onPrev, onNext, onDateSelect = () => {}, focuses = [], onFocusSelect = () => {}, earliestDate = null, onNewPage = () => {}, canNewPage = false, editorial = false } = $props();
+  /** @type {{ date: string, pageNumber: number, totalPages: number, onPrev: () => void, onNext: () => void, onDateSelect: (date: string) => void, focuses: Array<{id: string, what_matters_now: string|null, page_number: number, date: string}>, onFocusSelect: (focus: any) => void, earliestDate: string | null, onNewPage?: () => void, canNewPage?: boolean, currentPageId?: string | null }} */
+  let { date, pageNumber, totalPages, onPrev, onNext, onDateSelect = () => {}, focuses = [], onFocusSelect = () => {}, earliestDate = null, onNewPage = () => {}, canNewPage = false, editorial = false, currentPageId = null } = $props();
 
   let isPhone = $state(isPhoneViewport());
   $effect(() => {
@@ -202,10 +203,10 @@
 {/snippet}
 
 {#snippet focusList()}
-  {#each focuses as f}
-    <button class="focus-list-item" class:active={f.page_number === pageNumber} onclick={() => { onFocusSelect(f); showFocusList = false; }}>
+  {#each withOrdinals(focuses) as f (f.id)}
+    <button class="focus-list-item" class:active={f.id === currentPageId} onclick={() => { onFocusSelect(f); showFocusList = false; }}>
       <span class="focus-list-name">{f.what_matters_now || "untitled page"}</span>
-      <span class="focus-list-num">{f.page_number}</span>
+      <span class="focus-list-num">{f.ordinal}</span>
     </button>
   {/each}
   {#if canNewPage && isPhone}

@@ -26,6 +26,7 @@
   import Icon from "../lib/ui/Icon.svelte";
   import { isPhoneViewport, watchPhoneViewport, watchKeyboardOpen } from "../lib/responsive.js";
   import { pageAddress } from "../lib/page-address.js";
+  import { ordinalOf } from "../lib/page-ordinal.js";
   import { navPush, navClose, subscribe as navSubscribe } from "../lib/navstack.js";
   import { verticalFlick } from "../lib/gestures.js";
   import { canCreateNewPage } from "../lib/pageCapabilities.js";
@@ -111,6 +112,12 @@
   let error = $state(null);
   let trailWarning = $state(null);
   let trailWarningTimer = null;
+
+  // The rail label: position in the created_at order, not page_number
+  // (per-device, renumbered on sync collision — see page-ordinal.js).
+  // Falls back to page_number only when the current page isn't in
+  // railFocuses yet (e.g. mid-load).
+  let pageOrdinal = $derived(ordinalOf(railFocuses, page?.id) || page?.page_number || 1);
 
   function showTrailWarning(msg) {
     trailWarning = msg;
@@ -1260,7 +1267,8 @@
               <PageNav
                 editorial
                 date={viewingDate}
-                pageNumber={page.page_number}
+                pageNumber={pageOrdinal}
+                currentPageId={page?.id}
                 {totalPages}
                 onPrev={navigatePrev}
                 onNext={navigateNext}
@@ -1417,7 +1425,8 @@
         {#if !isPhone}
           <PageNav
             date={viewingDate}
-            pageNumber={page.page_number}
+            pageNumber={pageOrdinal}
+            currentPageId={page?.id}
             {totalPages}
             onPrev={navigatePrev}
             onNext={navigateNext}

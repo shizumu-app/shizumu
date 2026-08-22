@@ -1,6 +1,6 @@
 [package]
 name = "shizumu"
-version = "0.7.3"
+version = "0.7.4"
 description = "write to think. pin what matters. the rest sinks."
 authors = []
 license = "AGPL-3.0-or-later"
@@ -64,6 +64,10 @@ blake3 = "1"
 chacha20poly1305 = { version = "0.10", features = ["alloc"] }
 base64 = "0.22"
 hex = "0.4"
+# Phase 14 (snapshot bootstrap): gzip the JSON snapshot blob. Already
+# present transitively (zip's deflate backend); promoted to a direct
+# dependency because sync::snapshot::encode/decode call it directly.
+flate2 = "1"
 rand_core = { version = "0.6", features = ["getrandom"] }
 # Phase 14.5: blocking HTTP client for the wire pipeline. Enrollment +
 # op upload + blob upload are one-shot non-latency-critical calls; the

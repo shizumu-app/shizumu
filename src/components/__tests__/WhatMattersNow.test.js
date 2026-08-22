@@ -68,4 +68,30 @@ describe("WhatMattersNow", () => {
     expect(updateWhatMattersNow).toHaveBeenCalledWith("p7", "done");
     expect(onEnter).toHaveBeenCalledTimes(1);
   });
+
+  it("does not save an untouched empty field on blur", async () => {
+    // The reported bug: the field autofocuses when empty, tapping away
+    // blurs it, and blur saved "" unconditionally. On a second device that
+    // "" arrived with a newer clock than the real title and cleared it.
+    // Not a no-op assertion — the absence of the call IS the contract.
+    render(WhatMattersNow, { pageId: "p1", value: "", required: true });
+    await tick();
+    const input = document.querySelector("input.what-matters-input");
+    input.dispatchEvent(new Event("blur", { bubbles: true }));
+    await tick();
+    expect(updateWhatMattersNow).not.toHaveBeenCalled();
+  });
+
+  it("still saves a deliberate clear", async () => {
+    // The guard compares against the last synced value, not against "":
+    // a user who had a title and deleted it must be able to persist that.
+    render(WhatMattersNow, { pageId: "p2", value: "old title" });
+    await tick();
+    const input = document.querySelector("input.what-matters-input");
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("blur", { bubbles: true }));
+    await tick();
+    expect(updateWhatMattersNow).toHaveBeenCalledWith("p2", "");
+  });
 });

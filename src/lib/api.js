@@ -787,6 +787,8 @@ export function createMockInvoke() {
       case "sync_setup":
       case "sync_enroll":
       case "sync_self_enroll":
+      case "sync_init":
+      case "sync_recover":
       case "sync_set_enabled":
       case "sync_set_relay_url":
       case "sync_switch_relay":
@@ -1289,6 +1291,12 @@ export async function syncSelfEnroll(phrase, relayUrl, deviceLabel) {
 
 export async function syncInit(phrase, relayUrl, deviceLabel) {
   return call("sync_init", { phrase, relayUrl, deviceLabel });
+}
+
+/** Attach this device to the account a known recovery phrase already
+ *  belongs to, on a multi_user relay. `syncInit` creates; this finds. */
+export async function syncRecover(phrase, relayUrl, deviceLabel) {
+  return call("sync_recover", { phrase, relayUrl, deviceLabel });
 }
 
 export async function syncSetEnabled(enabled) {

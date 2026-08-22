@@ -5030,64 +5030,210 @@ pub async fn sync_self_enroll(
 
         {
             let conn = db.lock().map_err(|e| e.to_string())?;
-        // Same-phrase re-enroll (the user re-runs setup with the same
-        // recovery phrase) is NOT a new identity — the derived keys
-        // are byte-identical to whatever's already on disk. In that
-        // case the cached ciphertext is still valid and the backfill
-        // is already done; wiping them forces a slow, unnecessary
-        // re-encrypt + re-upload of every existing op. Only wipe when
-        // the user_sign_pub actually changed (different phrase =
-        // genuinely new identity, so old ciphertext is unreadable
-        // by the new content_master_key).
-        let prior_sign_pub = crate::sync::keys::load_user_keys(&conn)
-            .ok()
-            .flatten()
-            .map(|k| k.user_sign_pub_bytes());
-        let new_sign_pub = user_keys.user_sign_pub_bytes();
-        let identity_changed = prior_sign_pub
-            .map(|p| p != new_sign_pub)
-            .unwrap_or(true);
+            // Same-phrase re-enroll (the user re-runs setup with the same
+            // recovery phrase) is NOT a new identity — the derived keys
+            // are byte-identical to whatever's already on disk. In that
+            // case the cached ciphertext is still valid and the backfill
+            // is already done; wiping them forces a slow, unnecessary
+            // re-encrypt + re-upload of every existing op. Only wipe when
+            // the user_sign_pub actually changed (different phrase =
+            // genuinely new identity, so old ciphertext is unreadable
+            // by the new content_master_key).
+            let prior_sign_pub = crate::sync::keys::load_user_keys(&conn)
+                .ok()
+                .flatten()
+                .map(|k| k.user_sign_pub_bytes());
+            let new_sign_pub = user_keys.user_sign_pub_bytes();
+            let identity_changed = prior_sign_pub
+                .map(|p| p != new_sign_pub)
+                .unwrap_or(true);
 
-        crate::sync::keys::persist_user_phrase(&conn, &mnemonic)
-            .map_err(|e| e.to_string())?;
-        crate::sync::keys::persist_device_keys(&conn, &device_keys)
-            .map_err(|e| e.to_string())?;
-        crate::sync::config::set_relay_url(&conn, &relay_url)
-            .map_err(|e| e.to_string())?;
+            crate::sync::keys::persist_user_phrase(&conn, &mnemonic)
+                .map_err(|e| e.to_string())?;
+            crate::sync::keys::persist_device_keys(&conn, &device_keys)
+                .map_err(|e| e.to_string())?;
+            crate::sync::config::set_relay_url(&conn, &relay_url)
+                .map_err(|e| e.to_string())?;
 
-        if identity_changed {
-            // Different phrase = new content_master_key — old ciphertext
-            // can't be decrypted anymore. Reset state so ops re-encrypt
-            // and re-upload, and re-trigger backfill.
-            conn.execute_batch(
-                "UPDATE op_log SET ciphertext = NULL, state = 'local_only', user_seq = NULL \
-                 WHERE state IN ('committed', 'pending_upload'); \
-                 UPDATE sync_state SET last_seen_user_seq = 0;"
-            ).map_err(|e| e.to_string())?;
-            conn.execute("DELETE FROM op_log_meta WHERE key = 'backfill_complete'", [])
-                .ok();
+            if identity_changed {
+                // Different phrase = new content_master_key — old ciphertext
+                // can't be decrypted anymore. Reset state so ops re-encrypt
+                // and re-upload, and re-trigger backfill.
+                conn.execute_batch(
+                    "UPDATE op_log SET ciphertext = NULL, state = 'local_only', user_seq = NULL \
+                     WHERE state IN ('committed', 'pending_upload'); \
+                     UPDATE sync_state SET last_seen_user_seq = 0;"
+                ).map_err(|e| e.to_string())?;
+                conn.execute("DELETE FROM op_log_meta WHERE key = 'backfill_complete'", [])
+                    .ok();
+            }
         }
-    }
 
-    let resp = crate::sync::wire::enroll::self_enroll(
-        &relay_url,
-        &user_keys,
-        &device_keys,
-        &device_label,
-    )
-    .map_err(|e| e.to_string())?;
+        let resp = crate::sync::wire::enroll::self_enroll(
+            &relay_url,
+            &user_keys,
+            &device_keys,
+            &device_label,
+        )
+        .map_err(|e| e.to_string())?;
 
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::sync::config::set_enrollment(&conn, &resp.user_id, &resp.device_id, now_ms)
-            .map_err(|e| e.to_string())?;
-    }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            crate::sync::config::set_enrollment(&conn, &resp.user_id, &resp.device_id, now_ms)
+                .map_err(|e| e.to_string())?;
+        }
+
+        // Best-effort, unlike sync_recover's hard error: this path is
+        // pre-existing (self-enroll predates phrase recovery) and a
+        // fresh single_user relay simply has zero epochs yet, so 0
+        // recovered here is the common, expected case — not a failure
+        // worth surfacing to the user mid-setup. A relay that already
+        // has rotated epochs (e.g. re-claiming after a wipe) still
+        // benefits when this succeeds; it just doesn't block enrollment
+        // when it doesn't.
+        match crate::sync::rotation::recover_epoch_keys_from_phrase(
+            &db, &device_keys, &relay_url, &resp.user_id,
+        ) {
+            Ok(n) => log::info!(
+                "sync_self_enroll: unwrapped {n} epoch key(s) from the recovery phrase"
+            ),
+            Err(e) => log::warn!("sync_self_enroll: epoch key recovery failed: {e}"),
+        }
 
         // Spawn worker so sync is ready as soon as the caller flips enabled.
+        let new_handle = crate::sync::worker::spawn_if_configured(
+            db.clone(),
+            engine.clone(),
+            crate::sync::worker::DEFAULT_TICK,
+            crate::sync::worker::WorkerCallbacks::default(),
+        )?;
+        let mut slot = worker_slot.lock().map_err(|e| e.to_string())?;
+        *slot = new_handle;
+
+        Ok(SyncEnrollResultDto {
+            user_id: resp.user_id,
+            device_id: resp.device_id,
+        })
+    })
+    .await
+    .map_err(|e| format!("blocking task panicked: {e}"))?
+}
+
+/// Which bootstrap endpoint `bootstrap_hosted_account` posts to.
+#[derive(Clone, Copy)]
+enum BootstrapVerb {
+    /// `POST /v1/devices/init` — always creates a new user+device.
+    Init,
+    /// `POST /v1/devices/recover` — finds the account a phrase already
+    /// belongs to instead of creating one.
+    Recover,
+}
+
+/// Shared body for `sync_init` and `sync_recover`: parse the phrase,
+/// derive keys, persist them, reset local op_log state on an identity
+/// change, hit the relay's bootstrap endpoint, and stamp enrollment.
+/// `sync_init` and `sync_recover` are thin `#[tauri::command]` wrappers
+/// around this — the two used to be ~85 lines of copy-pasted bookkeeping
+/// with nothing enforcing that a future change (key derivation, the
+/// op_log reset, the worker respawn) landed in both places.
+///
+/// The only `match verb` points are the wire call (`enroll::init` vs
+/// `enroll::recover`) and the post-enrollment epoch-key recovery, which
+/// runs for `Recover` only: a recovered device has no device-sealed
+/// epoch-key copy yet (those are sealed to a device's kex key), so it
+/// must unwrap the phrase-recovery copies or every post-rotation op
+/// reads as "no content key for epoch" and the pull silently skips it.
+/// That's a hard `?` error here — unlike `sync_self_enroll`'s best-effort
+/// version, a freshly-recovered device silently missing history is
+/// exactly the failure mode recovery exists to prevent.
+async fn bootstrap_hosted_account(
+    db: Db,
+    engine: crate::op_log::OpLog,
+    worker_slot: SyncWorkerSlot,
+    phrase: String,
+    relay_url: String,
+    device_label: String,
+    verb: BootstrapVerb,
+) -> Result<SyncEnrollResultDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mnemonic = bip39::Mnemonic::parse_normalized(phrase.trim())
+            .map_err(|e| format!("invalid bip39 phrase: {e}"))?;
+        let user_keys = crate::sync::keys::user_keys_from_phrase(&mnemonic);
+        let device_keys = crate::sync::keys::generate_device_keys();
+
+        {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            let prior_sign_pub = crate::sync::keys::load_user_keys(&conn)
+                .ok()
+                .flatten()
+                .map(|k| k.user_sign_pub_bytes());
+            let new_sign_pub = user_keys.user_sign_pub_bytes();
+            let identity_changed = prior_sign_pub
+                .map(|p| p != new_sign_pub)
+                .unwrap_or(true);
+
+            crate::sync::keys::persist_user_phrase(&conn, &mnemonic)
+                .map_err(|e| e.to_string())?;
+            crate::sync::keys::persist_device_keys(&conn, &device_keys)
+                .map_err(|e| e.to_string())?;
+            crate::sync::config::set_relay_url(&conn, &relay_url)
+                .map_err(|e| e.to_string())?;
+
+            if identity_changed {
+                conn.execute_batch(
+                    "UPDATE op_log SET ciphertext = NULL, state = 'local_only', user_seq = NULL \
+                     WHERE state IN ('committed', 'pending_upload'); \
+                     UPDATE sync_state SET last_seen_user_seq = 0;"
+                ).map_err(|e| e.to_string())?;
+                conn.execute("DELETE FROM op_log_meta WHERE key = 'backfill_complete'", [])
+                    .ok();
+            }
+        }
+
+        let resp = match verb {
+            BootstrapVerb::Init => crate::sync::wire::enroll::init(
+                &relay_url,
+                &user_keys,
+                &device_keys,
+                &device_label,
+            ),
+            BootstrapVerb::Recover => crate::sync::wire::enroll::recover(
+                &relay_url,
+                &user_keys,
+                &device_keys,
+                &device_label,
+            ),
+        }
+        .map_err(|e| e.to_string())?;
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            crate::sync::config::set_enrollment(&conn, &resp.user_id, &resp.device_id, now_ms)
+                .map_err(|e| e.to_string())?;
+        }
+
+        if matches!(verb, BootstrapVerb::Recover) {
+            // Epochs ≥ 1 are sealed to each device's kex key AND to a
+            // phrase-derived recovery key. A recovered device has no
+            // device-sealed copy yet, so it must unwrap the recovery
+            // copies or every post-rotation op is "no content key for
+            // epoch" and the pull silently skips it.
+            let recovered = crate::sync::rotation::recover_epoch_keys_from_phrase(
+                &db, &device_keys, &relay_url, &resp.user_id,
+            )?;
+            log::info!(
+                "sync_recover: unwrapped {recovered} epoch key(s) from the recovery phrase"
+            );
+        }
+
         let new_handle = crate::sync::worker::spawn_if_configured(
             db.clone(),
             engine.clone(),
@@ -5110,7 +5256,6 @@ pub async fn sync_self_enroll(
 /// Creates a new user+device atomically on a relay running in
 /// multi_user mode. Same key setup as sync_self_enroll but calls
 /// the init endpoint instead.
-#[allow(unused_variables)]
 #[tauri::command]
 pub async fn sync_init(
     db: State<'_, Db>,
@@ -5120,78 +5265,46 @@ pub async fn sync_init(
     relay_url: String,
     device_label: String,
 ) -> Result<SyncEnrollResultDto, String> {
-    let db = db.inner().clone();
-    let engine = engine.inner().clone();
-    let worker_slot = worker_slot.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let mnemonic = bip39::Mnemonic::parse_normalized(phrase.trim())
-            .map_err(|e| format!("invalid bip39 phrase: {e}"))?;
-        let user_keys = crate::sync::keys::user_keys_from_phrase(&mnemonic);
-        let device_keys = crate::sync::keys::generate_device_keys();
-
-        {
-            let conn = db.lock().map_err(|e| e.to_string())?;
-        let prior_sign_pub = crate::sync::keys::load_user_keys(&conn)
-            .ok()
-            .flatten()
-            .map(|k| k.user_sign_pub_bytes());
-        let new_sign_pub = user_keys.user_sign_pub_bytes();
-        let identity_changed = prior_sign_pub
-            .map(|p| p != new_sign_pub)
-            .unwrap_or(true);
-
-        crate::sync::keys::persist_user_phrase(&conn, &mnemonic)
-            .map_err(|e| e.to_string())?;
-        crate::sync::keys::persist_device_keys(&conn, &device_keys)
-            .map_err(|e| e.to_string())?;
-        crate::sync::config::set_relay_url(&conn, &relay_url)
-            .map_err(|e| e.to_string())?;
-
-        if identity_changed {
-            conn.execute_batch(
-                "UPDATE op_log SET ciphertext = NULL, state = 'local_only', user_seq = NULL \
-                 WHERE state IN ('committed', 'pending_upload'); \
-                 UPDATE sync_state SET last_seen_user_seq = 0;"
-            ).map_err(|e| e.to_string())?;
-            conn.execute("DELETE FROM op_log_meta WHERE key = 'backfill_complete'", [])
-                .ok();
-        }
-    }
-
-    let resp = crate::sync::wire::enroll::init(
-        &relay_url,
-        &user_keys,
-        &device_keys,
-        &device_label,
+    bootstrap_hosted_account(
+        db.inner().clone(),
+        engine.inner().clone(),
+        worker_slot.inner().clone(),
+        phrase,
+        relay_url,
+        device_label,
+        BootstrapVerb::Init,
     )
-    .map_err(|e| e.to_string())?;
-
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::sync::config::set_enrollment(&conn, &resp.user_id, &resp.device_id, now_ms)
-            .map_err(|e| e.to_string())?;
-    }
-
-        let new_handle = crate::sync::worker::spawn_if_configured(
-            db.clone(),
-            engine.clone(),
-            crate::sync::worker::DEFAULT_TICK,
-            crate::sync::worker::WorkerCallbacks::default(),
-        )?;
-        let mut slot = worker_slot.lock().map_err(|e| e.to_string())?;
-        *slot = new_handle;
-
-        Ok(SyncEnrollResultDto {
-            user_id: resp.user_id,
-            device_id: resp.device_id,
-        })
-    })
     .await
-    .map_err(|e| format!("blocking task panicked: {e}"))?
+}
+
+/// `POST /v1/devices/recover` — attach this device to the account a
+/// known recovery phrase already belongs to, on a relay running in
+/// multi_user mode. `sync_init` creates a new account; this one finds
+/// the existing one, so a phrase the user already has doesn't collide
+/// with `user_sign_pub_already_registered`. Same key setup and local
+/// bookkeeping as `sync_init` (shared via `bootstrap_hosted_account`),
+/// but posts to `recover` instead of `init`, and then unwraps any
+/// phrase-recoverable epoch keys so a device recovered after a rotation
+/// can still read past ops.
+#[tauri::command]
+pub async fn sync_recover(
+    db: State<'_, Db>,
+    engine: State<'_, crate::op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
+    phrase: String,
+    relay_url: String,
+    device_label: String,
+) -> Result<SyncEnrollResultDto, String> {
+    bootstrap_hosted_account(
+        db.inner().clone(),
+        engine.inner().clone(),
+        worker_slot.inner().clone(),
+        phrase,
+        relay_url,
+        device_label,
+        BootstrapVerb::Recover,
+    )
+    .await
 }
 
 /// Flip the `enabled` gate. The worker is already spawned (since
@@ -5510,13 +5623,26 @@ pub async fn sync_revoke_device(
     .map_err(|e| format!("blocking task panicked: {e}"))?
 }
 
+/// Device row shown in the device list. Mirrors the relay's `DeviceInfo`
+/// plus `last_seen_ms`, which the relay does not track at all — it is
+/// derived locally from the op log (see `sync::device_view`).
+#[derive(serde::Serialize)]
+pub struct DeviceDto {
+    pub id: String,
+    pub label: Option<String>,
+    pub created_at: i64,
+    pub revoked_at: Option<i64>,
+    pub device_kex_pub: Option<String>,
+    pub device_sign_pub: String,
+    pub last_seen_ms: Option<i64>,
+}
+
 /// List the devices on this user's account. Hits `GET /v1/users/<uid>/devices`
-/// (spec §5.3) signed by this device. Returns the relay's full list; the
-/// frontend may filter `revoked_at IS NOT NULL` rows before display.
+/// (spec §5.3) signed by this device. Returns the relay's full list, each row
+/// annotated with a locally-derived last-seen time; the frontend may filter
+/// `revoked_at IS NOT NULL` rows before display.
 #[tauri::command]
-pub async fn sync_list_devices(
-    db: State<'_, Db>,
-) -> Result<Vec<crate::sync::wire::devices::DeviceInfo>, String> {
+pub async fn sync_list_devices(db: State<'_, Db>) -> Result<Vec<DeviceDto>, String> {
     let db = db.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let (relay_url, user_id, device_keys) = {
@@ -5530,8 +5656,28 @@ pub async fn sync_list_devices(
             let uid = cfg.user_id.ok_or_else(|| "not enrolled".to_string())?;
             (url, uid, dk)
         };
-        crate::sync::wire::devices::list_devices(&relay_url, &device_keys, &user_id)
-            .map_err(|e| format!("list devices failed: {e}"))
+        let items = crate::sync::wire::devices::list_devices(&relay_url, &device_keys, &user_id)
+            .map_err(|e| format!("list devices failed: {e}"))?;
+
+        // Lock once around the map rather than per-device: this is a local
+        // read against the same connection, not another network round trip.
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        Ok(items
+            .into_iter()
+            .map(|item| {
+                let last_seen_ms =
+                    crate::sync::device_view::last_seen_ms(&conn, &item.id).unwrap_or(None);
+                DeviceDto {
+                    id: item.id,
+                    label: item.label,
+                    created_at: item.created_at,
+                    revoked_at: item.revoked_at,
+                    device_kex_pub: item.device_kex_pub,
+                    device_sign_pub: item.device_sign_pub,
+                    last_seen_ms,
+                }
+            })
+            .collect())
     })
     .await
     .map_err(|e| format!("blocking task panicked: {e}"))?

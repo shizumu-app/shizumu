@@ -278,8 +278,11 @@ fn apply_attachment_payload(
 /// on re-enrollment, defeating the whole point of the flag. Checked at
 /// every boundary a setting can cross: emit (this device → relay),
 /// backfill (first-launch replay of pre-op-log state), and merge (an
-/// incoming op from a peer, defense-in-depth).
-pub const LOCAL_ONLY_SETTINGS: &[&str] = &["sync_revoked"];
+/// incoming op from a peer, defense-in-depth). `snapshot_last_seq` joined
+/// it for the same reason: it's this device's own bookkeeping (the seq a
+/// snapshot was taken at), not a fact about the account, so it is excluded
+/// from `sync::snapshot::capture` the same way it's excluded from ops.
+pub const LOCAL_ONLY_SETTINGS: &[&str] = &["sync_revoked", "snapshot_last_seq"];
 
 /// Call-site sugar for setting mutations. No-ops for keys in
 /// `LOCAL_ONLY_SETTINGS` — those never leave this device (see its doc

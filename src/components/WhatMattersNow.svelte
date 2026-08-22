@@ -49,6 +49,12 @@
   }
 
   function handleBlur() {
+    // A blur is not an edit. Saving unconditionally here broadcast "" from
+    // every device that ever autofocused an empty field, and on the other
+    // device that "" carried a newer clock than the real title. Compare
+    // against what was last synced, not against "": a deliberate clear of
+    // a title that existed still goes through.
+    if (text === lastSyncedValue) return;
     saveNow();
   }
 

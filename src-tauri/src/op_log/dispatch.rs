@@ -8,6 +8,7 @@ pub mod stream {
     pub const SETTINGS_LINEAGES_PINS: i32 = 0;
     pub const DISCRETE_PAGES: i32 = 1;
     pub const CONTINUOUS_YJS: i32 = 2;
+    pub const SNAPSHOT: i32 = 3;
 }
 
 /// One mutation-as-event. Built by the command layer, handed to

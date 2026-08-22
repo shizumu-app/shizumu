@@ -24,6 +24,7 @@
     syncQuota,
     syncRelayHealth,
     syncInit,
+    syncRecover,
     attachmentList,
     attachmentGc,
     attachmentLocalBytes,
@@ -40,6 +41,7 @@
   import Input from "../lib/ui/Input.svelte";
   import QrScanner from "./QrScanner.svelte";
   import { parsePairingInfo } from "../lib/pair-info.js";
+  import { deviceStaleness } from "../lib/device-staleness.js";
   import {
     awayCount,
     AWAY_LABEL,
@@ -451,10 +453,18 @@
       }
       console.log("connecting to relay", relayInfo);
       const mode = relayInfo?.mode;
+      const label = deviceLabel.trim() || "this device";
       if (mode === "multi_user") {
-        await syncInit(phrase, url, deviceLabel.trim() || "this device");
+        // init creates an account; a phrase the user already has must find
+        // the account it belongs to. The relay answers 404 user_not_found
+        // when no account matches, surfaced below as a plain sentence.
+        if (phraseMode === "existing") {
+          await syncRecover(phrase, url, label);
+        } else {
+          await syncInit(phrase, url, label);
+        }
       } else {
-        await syncSelfEnroll(phrase, url, deviceLabel.trim() || "this device");
+        await syncSelfEnroll(phrase, url, label);
       }
       phrase = "";
       existingPhrase = "";
@@ -464,6 +474,8 @@
       const msg = String(e);
       if (msg.includes("pubkey_mismatch")) {
         errorMsg = "a different account owns this relay. check the phrase or relay url.";
+      } else if (msg.includes("user_not_found")) {
+        errorMsg = "no account matches this phrase. check the words, or set up a new account instead.";
       } else {
         errorMsg = msg;
       }
@@ -1406,6 +1418,10 @@
                 <span class="device-label">
                   {d.label || "untitled"}
                   {#if d.id === status.device_id}<Chip variant="neutral">this device</Chip>{/if}
+                  {#if d.id !== status.device_id}
+                    {@const s = deviceStaleness({ last_seen_ms: d.last_seen_ms, created_at_ms: d.created_at, now_ms: Date.now() })}
+                    <span class="device-seen" class:stale={s.stale}>{s.label}</span>
+                  {/if}
                 </span>
                 {#snippet trailing()}
                   {#if d.id !== status.device_id}
@@ -1414,6 +1430,7 @@
                 {/snippet}
               </Row>
             {/each}
+            <p class="row-desc">reinstalling the app creates a new device. revoke the old one here, or the two-device tier fills up with devices that no longer exist.</p>
           {:catch err}
             <div class="error-callout">
               <div class="error-callout-label">couldn't load devices</div>
@@ -1971,6 +1988,25 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+  }
+  .device-seen {
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: 11px;
+    opacity: 0.55;
+  }
+  .device-seen.stale {
+    color: var(--warm-accent);
+  }
+  /* Matches Row's own `.description` styling (Inter 11px, muted) so the
+     sentence under the device list reads like every other row caption. */
+  .row-desc {
+    font-family: "Inter", sans-serif;
+    font-size: 0.6875rem;
+    color: var(--ink);
+    opacity: 0.45;
+    line-height: 1.4;
+    max-width: 22rem;
+    margin: 0.375rem 0 0;
   }
   /* Numbered instruction list at the top of the existing-device pair
      wizard — quiet DM Mono labels, no imperative-therapy phrasing. */

@@ -24,6 +24,8 @@ const api = vi.hoisted(() => {
     syncAccountEmailStatus: vi.fn(() => Promise.resolve({})),
     syncRedeemLicense: vi.fn(() => Promise.resolve(null)),
     syncSetAccountEmail: vi.fn(() => Promise.resolve(null)),
+    syncInit: vi.fn(() => Promise.resolve({ user_id: "u", device_id: "d" })),
+    syncRecover: vi.fn(() => Promise.resolve({ user_id: "u", device_id: "d" })),
   };
   // Every remaining imported name defaults to a resolved no-op so the
   // module evaluates and onMount runs without an undefined-call throw.
@@ -59,6 +61,9 @@ import {
   attachmentLocalBytes,
   syncQuota,
   syncReset,
+  syncRelayHealth,
+  syncInit,
+  syncRecover,
 } from "../../lib/api.js";
 import { ATTACHMENT_LOCALITY_NOTE, PIN_RETENTION_NOTE } from "../../lib/attachment-locality.js";
 import SyncSettings from "../SyncSettings.svelte";
@@ -178,6 +183,35 @@ describe("SyncSettings", () => {
     await settle();
     expect(syncGeneratePhrase).toHaveBeenCalledTimes(1);
     expect(target.textContent).toContain("generate new"); // phrase-step UI
+  });
+
+  // init creates a fresh account; a phrase the user already has must find
+  // the account it belongs to instead — otherwise the relay answers 409
+  // and the client has nowhere to route it.
+  it("an existing phrase on a multi-user relay recovers instead of creating", async () => {
+    syncStatus.mockResolvedValue({ configured: false });
+    syncRelayHealth.mockResolvedValueOnce({ mode: "multi_user" });
+    const { target } = render(SyncSettings, {});
+    await settle();
+
+    // "restore" jumps straight to the phrase step with "i have a phrase"
+    // pre-selected (see startRestore).
+    byText(target, "button", "restore").click();
+    await settle();
+
+    const textarea = target.querySelector("textarea.phrase-input");
+    textarea.value = Array(24).fill("abandon").join(" ");
+    textarea.dispatchEvent(new Event("input"));
+    await settle();
+
+    byText(target, "button", "next").click();
+    await settle();
+
+    byText(target, "button", "connect").click();
+    await settleMany();
+
+    expect(syncRecover).toHaveBeenCalledTimes(1);
+    expect(syncInit).not.toHaveBeenCalled();
   });
 
   // ===== pairing SAS verification gate =====

@@ -517,6 +517,54 @@ pub fn tick(
         Err(e) => log::warn!("sync tick: pending_object_fetch check failed: {e}"),
     }
 
+    // A quiet tick is the only moment the local tables equal the cursor
+    // exactly, which is what a snapshot claims. publish() gates itself on
+    // the interval and on pending uploads, so calling it every quiet tick
+    // costs one SELECT. Never lets a snapshot failure fail the tick itself
+    // — it's a best-effort background chore, not part of what the caller's
+    // backoff schedule should react to.
+    //
+    // `&& wire_failure.is_none()`: a quiet tick during a relay outage would
+    // otherwise still make a doomed PUT/POST — publish has nothing useful
+    // to do until the relay is back.
+    if !did_work && wire_failure.is_none() {
+        // Re-load config fresh rather than reuse the `cfg` loaded before
+        // `pull::run_pass` above: bootstrap (called from inside run_pass)
+        // commits sync_state.last_seen_user_seq to the snapshot's own seq
+        // in its own transaction and then continues pulling from there. On
+        // a device's first quiet tick after bootstrapping, the pre-pull
+        // `cfg` still carries the pre-bootstrap cursor (0), so publishing
+        // with it would tag the snapshot `user_seq: 0` instead of the real
+        // bootstrapped cursor — exactly the "replay everything" bug this
+        // branch exists to fix.
+        let publish_cfg = {
+            let conn = db.lock();
+            match conn {
+                Ok(conn) => config::load(&conn),
+                Err(e) => {
+                    log::warn!("sync tick: pre-publish config reload mutex: {e}");
+                    return match wire_failure {
+                        Some(ra) => TickOutcome::WireFailure {
+                            retry_after: ra,
+                            error_message: wire_error_message,
+                        },
+                        None => TickOutcome::Ok { did_work, ops_received },
+                    };
+                }
+            }
+        };
+        match publish_cfg {
+            Ok(fresh_cfg) => {
+                match crate::sync::snapshot::publish(db, &fresh_cfg, user_keys, device_keys) {
+                    Ok(true) => log::info!("sync tick: snapshot published"),
+                    Ok(false) => {}
+                    Err(e) => log::warn!("sync tick: snapshot publish failed: {e}"),
+                }
+            }
+            Err(e) => log::warn!("sync tick: pre-publish config reload failed: {e}"),
+        }
+    }
+
     match wire_failure {
         Some(ra) => TickOutcome::WireFailure {
             retry_after: ra,
@@ -1471,5 +1519,100 @@ mod tests {
         let conn = db.lock().unwrap();
         let v = crate::sync::config::get_setting_i64(&conn, "sync_revoked");
         assert_eq!(v, Some(1), "revocation must persist the sync_revoked flag");
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Whole-branch review, Finding 1: the quiet-tick publish() call must
+    // not use the `cfg` loaded before `pull::run_pass` — bootstrap moves
+    // the cursor from inside that call, so the pre-pull `cfg` is stale for
+    // exactly the tick that matters most: a device's first quiet tick
+    // after snapshot bootstrap.
+    // ──────────────────────────────────────────────────────────────
+
+    /// A fresh device bootstraps from the newest remote snapshot (seq 40),
+    /// the continuation pull fetches nothing new, and the tick is quiet —
+    /// so it reaches the snapshot-publish hook. That publish must tag the
+    /// snapshot with the bootstrapped cursor (40), not the cursor `cfg`
+    /// held before pull ran (0). Before the fix, `tick` reused the
+    /// pre-pull `cfg`, so `snapshot::publish` captured the (correctly
+    /// bootstrapped) tables but recorded `snapshot_last_seq = "0"` and
+    /// shipped a stream-3 snapshot claiming `user_seq: 0` — a later
+    /// bootstrapping device would take it and replay the whole account.
+    #[test]
+    fn first_quiet_tick_after_bootstrap_publishes_the_bootstrapped_cursor_not_zero() {
+        let server = MockServer::start();
+        let db = test_db();
+        active_db_config(&db, &server.base_url());
+        let m = generate_seed_phrase();
+        let uk = user_keys_from_phrase(&m);
+        let dk = generate_device_keys();
+
+        // Build a real snapshot blob from a seeded source db, sealed under
+        // epoch 0 — the same recipe pull.rs's bootstrap test uses.
+        let src = test_db();
+        let (ct, hash) = {
+            let c = src.lock().unwrap();
+            c.execute("INSERT INTO pages (id, date, page_number, what_matters_now, created_at, updated_at) VALUES ('from-snap','2026-08-22',1,'kept','0','0')", []).unwrap();
+            let snap = crate::sync::snapshot::capture(&c, 40).unwrap();
+            let bytes = crate::sync::snapshot::encode(&snap).unwrap();
+            let ck = crate::sync::epoch::content_master_key_for_epoch(&c, &uk, 0).unwrap().unwrap();
+            let sp = crate::sync::epoch::user_sign_priv_for_epoch(&c, &uk, 0).unwrap().unwrap();
+            let ct = crate::sync::op_auth::seal_authored(&ck, &uuid::Uuid::new_v4(), &bytes, &dk, &sp);
+            let hash = crate::sync::envelope::blob_hash_hex(&ct);
+            (ct, hash)
+        };
+
+        // Bootstrap probe: one real sealed snapshot at user_seq 40.
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("stream", "3");
+            then.status(200).json_body(json!({"ops": [
+                {"user_seq": 40, "blob_hash": hash, "blob_size": ct.len(), "doc_id_ct": "", "op_kind": "snapshot", "stream_id": 3, "device_id": "x", "created_at": 0, "epoch": 0}
+            ], "has_more": false}));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path(format!("/v1/users/u/blobs/{hash}"));
+            then.status(200).body(ct.clone());
+        });
+        // Continuation pull from the bootstrapped cursor fetches nothing new
+        // — the exact condition that leaves `did_work == false` this tick.
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("since", "40");
+            then.status(200).json_body(json!({"ops": [], "has_more": false}));
+        });
+        // The quiet-tick publish: blob PUT then op POST.
+        server.mock(|when, then| {
+            when.method(PUT).path_matches(Regex::new(r"^/v1/users/u/blobs/[0-9a-f]{64}$").unwrap());
+            then.status(200).json_body(json!({"user_seq": 999}));
+        });
+        let post = server.mock(|when, then| {
+            when.method(POST).path("/v1/users/u/ops");
+            then.status(200).json_body(json!({"need_upload": [], "ack": []}));
+        });
+
+        let outcome = tick(&db, &uk, &dk, &engine_for(&db));
+        assert!(
+            matches!(outcome, TickOutcome::Ok { did_work: false, .. }),
+            "got {outcome:?}; the bootstrap + empty continuation pull must leave this tick quiet"
+        );
+
+        // Capturing the PUT body via httpmock's request recording is
+        // awkward here, so assert the local side effect the same publish
+        // code path writes instead: `settings.snapshot_last_seq`, which
+        // `snapshot::publish` records as `cursor.to_string()`. With the
+        // stale pre-pull cfg that cursor reads "0" — that's the red this
+        // test catches.
+        assert_eq!(post.hits(), 1, "the quiet tick must actually publish a snapshot");
+        let conn = db.lock().unwrap();
+        let recorded: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key='snapshot_last_seq'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            recorded, "40",
+            "publish must tag the bootstrapped cursor (40), not the stale pre-pull cfg (0)"
+        );
     }
 }

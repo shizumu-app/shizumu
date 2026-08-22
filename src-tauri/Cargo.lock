@@ -5254,7 +5254,7 @@ dependencies = [
 
 [[package]]
 name = "shizumu"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "age",
  "base64 0.22.1",
@@ -5265,6 +5265,7 @@ dependencies = [
  "chrono",
  "clap",
  "ed25519-dalek",
+ "flate2",
  "hex",
  "hkdf",
  "hmac",

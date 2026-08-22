@@ -440,6 +440,7 @@ pub fn run() {
             commands::sync_enroll,
             commands::sync_self_enroll,
             commands::sync_init,
+            commands::sync_recover,
             commands::sync_set_enabled,
             commands::sync_force_reupload,
             commands::sync_status,

@@ -152,7 +152,10 @@ arm at all), `src/lib/header-collapse.js` (may the header collapse right now),
 `src/lib/editor/touch-reveal-dismiss.js` (may a blur put the touch toolbar
 away, and is this tap addressing an affordance rather than a block),
 `src/lib/pin-carry-forward.js` (`pinToNodes`),
-`src/lib/page-address.js` (`pageAddress` — which identifier addresses a page).
+`src/lib/page-address.js` (`pageAddress` — which identifier addresses a page),
+`src/lib/page-ordinal.js` (`ordinalOf` — which number a page shows),
+`src/lib/device-staleness.js` (`deviceStaleness` — is this device one the
+user has forgotten).
 Every one of those was extracted *because* the bug it now guards shipped.
 
 `src/lib/editor/handle-placement.js` used to head this list. It is gone: it

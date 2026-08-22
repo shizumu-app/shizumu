@@ -172,6 +172,14 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.7.4" date="2026-08-22">
+      <description>
+        <p>Recovery works on the hosted relay. Type your 24-word phrase on a fresh install and the account it belongs to comes back. Before this, a known phrase was refused as already registered, with nothing to do next.</p>
+        <p>A new device syncs in one step. Every device publishes a snapshot of the account as it goes; a device joining takes the newest one and pulls only what came after, instead of replaying every change since the account began, one request at a time. Ops for one batch are now fetched six at a time as well.</p>
+        <p>Tapping into and out of an empty focus line no longer clears the title on your other device. The rail numbers pages by their order, so the same page has the same number everywhere.</p>
+        <p>The device list shows when each device was last heard from and explains that reinstalling the app creates a new device, so the old one can be revoked before the two-device tier fills up.</p>
+      </description>
+    </release>
     <release version="0.7.3" date="2026-08-22">
       <description>
         <p>Sync correctness. A page arriving on your second device now keeps its focus line and its trail: each field carries its own timestamp, so a newer edit to one field no longer discards an older edit to a different one. That failure was not cosmetic, because a page with no focus line and no trail looked empty to the tidy-up pass and was deleted.</p>

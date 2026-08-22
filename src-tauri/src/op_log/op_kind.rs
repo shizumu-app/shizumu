@@ -18,6 +18,7 @@ impl OpKind {
     pub const PIN_OP: &'static str = "pin_op";
     pub const SETTING_OP: &'static str = "setting_op";
     pub const TOMBSTONE: &'static str = "tombstone";
+    pub const SNAPSHOT: &'static str = "snapshot";
 
     pub fn new(s: impl Into<String>) -> Result<Self, OpKindError> {
         let s = s.into();
@@ -44,6 +45,9 @@ impl OpKind {
     }
     pub fn tombstone() -> Self {
         Self(Self::TOMBSTONE.to_string())
+    }
+    pub fn snapshot() -> Self {
+        Self(Self::SNAPSHOT.to_string())
     }
 
     pub fn as_str(&self) -> &str {
@@ -102,6 +106,7 @@ mod tests {
             OpKind::PIN_OP,
             OpKind::SETTING_OP,
             OpKind::TOMBSTONE,
+            OpKind::SNAPSHOT,
         ] {
             let parsed = OpKind::new(s).expect("known kind must parse");
             assert_eq!(parsed.as_str(), s);
