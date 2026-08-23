@@ -172,6 +172,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.7.5" date="2026-08-23">
+      <description>
+        <p>Fixes the snapshot upload that 0.7.4 introduced. Devices were preparing a snapshot of the account and the relay was refusing it, so a device joining had nothing to start from and fell back to replaying the whole history one change at a time. The upload now follows the order the relay expects, and the one-step first sync works as described.</p>
+      </description>
+    </release>
     <release version="0.7.4" date="2026-08-22">
       <description>
         <p>Recovery works on the hosted relay. Type your 24-word phrase on a fresh install and the account it belongs to comes back. Before this, a known phrase was refused as already registered, with nothing to do next.</p>

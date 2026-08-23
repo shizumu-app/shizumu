@@ -254,12 +254,20 @@ pub const SNAPSHOT_EVERY_OPS: i64 = 50;
 /// claim here would hand a bootstrapping device a cursor ahead of what it
 /// actually received.
 ///
-/// PUT the blob before POSTing the op that lists it: the relay must have
-/// the ciphertext before anything can reference its hash. Doing the PUT
-/// unconditionally (rather than waiting for a `need_upload` response, as
-/// the ordinary op-upload pipeline does) keeps this single-blob flow
-/// deterministic — the relay dedups a re-PUT of the same content-addressed
-/// hash for free.
+/// POST the op first, then PUT the blob it asks for. That is the relay's
+/// contract, not a preference: `PUT /blobs/<hash>` refuses with
+/// `400 pending_row_missing: POST /ops first` unless `POST /ops` has
+/// already created the pending row for that hash. An earlier version of
+/// this function did the PUT first on the reasoning that "the bytes must
+/// exist before anything names them", and every publish on a real relay
+/// failed with exactly that error, once per tick, silently — the tests
+/// mocked the PUT permissively and never caught it. `upload::run_pass`
+/// has always done it in this order; this now matches.
+///
+/// `need_upload` lists the hashes the relay does not already hold. We post
+/// exactly one op, so any hash it names back is ours — hence the emptiness
+/// check rather than a hash comparison. An empty list means the relay
+/// deduped our content-addressed blob and there is nothing to send.
 pub fn publish(
     db: &crate::db::Db,
     cfg: &crate::sync::config::SyncConfig,
@@ -321,14 +329,12 @@ pub fn publish(
     };
     let size = ct.len() as u64;
 
-    crate::sync::wire::upload::put_blob(relay, device_keys, user_id, &hash, ct)
-        .map_err(|e| e.to_string())?;
-    crate::sync::wire::upload::post_ops(
+    let resp = crate::sync::wire::upload::post_ops(
         relay,
         device_keys,
         user_id,
         &[crate::sync::wire::upload::OpMetadata {
-            blob_hash: hash,
+            blob_hash: hash.clone(),
             blob_size: size,
             doc_id_ct,
             op_kind: crate::op_log::OpKind::SNAPSHOT.to_string(),
@@ -338,7 +344,12 @@ pub fn publish(
     )
     .map_err(|e| e.to_string())?;
 
-    // Recorded only now that both the PUT and the POST succeeded — a
+    if !resp.need_upload.is_empty() {
+        crate::sync::wire::upload::put_blob(relay, device_keys, user_id, &hash, ct)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Recorded only now that the POST and any required PUT succeeded — a
     // failure partway through must leave the old snapshot_last_seq in
     // place so the next tick's gate re-evaluates honestly instead of
     // believing a publish happened when the relay never got it.
@@ -498,25 +509,71 @@ mod tests {
         let (uk, dk) = crate::sync::test_keys();
         let cfg = { let c = db.lock().unwrap(); crate::sync::config::load(&c).unwrap() };
 
-        // The blob's hash is only known after sealing, so the PUT mock
-        // accepts any 64-hex hash. publish PUTs first, then POSTs the
-        // listing, so both mocks can be plain and the flow is deterministic.
+        // The relay's contract, which this test exists to pin: PUT
+        // /blobs/<hash> answers 400 pending_row_missing unless POST /ops
+        // created the pending row for that hash first. So the PUT mock is
+        // deliberately UNFORGIVING — it only answers 200 once the POST has
+        // been seen, and the POST's response is what names the hash to send.
+        // The previous version of this test mocked the PUT permissively and
+        // passed while every real publish failed once per tick.
+        // The PUT mock answers with the relay's REAL refusal for a blob
+        // whose op was never posted. That is what makes this a regression
+        // test rather than a mock-shaped one: the previous ordering PUT
+        // first, would hit this 400, and publish would return Err.
         let put = server.mock(|when, then| {
             when.method(PUT).path_matches(Regex::new(r"^/v1/users/u/blobs/[0-9a-f]{64}$").unwrap());
-            // PutBlobResponse requires user_seq; its value doesn't matter here
-            // — this test checks the upload happened, not what seq it got.
-            then.status(200).json_body(serde_json::json!({"user_seq": 999}));
+            then.status(400).json_body(serde_json::json!({
+                "error": {"code": "pending_row_missing", "message": "POST /ops first"}
+            }));
         });
         let post = server.mock(|when, then| {
             when.method(POST).path("/v1/users/u/ops")
                 .body_contains("\"op_kind\":\"snapshot\"")
                 .body_contains("\"stream_id\":3");
+            // The relay already holds this content-addressed blob, so it
+            // asks for nothing back.
             then.status(200).json_body(serde_json::json!({"need_upload": [], "ack": []}));
         });
 
         assert!(publish(&db, &cfg, &uk, &dk).unwrap());
-        assert_eq!(put.hits(), 1, "exactly one blob, uploaded before it is listed");
         post.assert();
+        assert_eq!(put.hits(), 0, "nothing to upload: the relay named no hash in need_upload");
+        let rec: String = db.lock().unwrap().query_row(
+            "SELECT value FROM settings WHERE key='snapshot_last_seq'", [], |r| r.get(0)).unwrap();
+        assert_eq!(rec, "120");
+    }
+
+    #[test]
+    fn publish_uploads_the_blob_when_the_relay_asks_for_it() {
+        // The other half of the contract: POST first, and when the relay
+        // says it does not hold the blob, send it. Posting exactly one op
+        // means any hash named back is ours, which is why publish checks
+        // that the list is non-empty rather than comparing hashes.
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let db = test_db();
+        { let c = db.lock().unwrap(); seed(&c);
+          crate::sync::config::set_relay_url(&c, &server.base_url()).unwrap();
+          crate::sync::config::set_enrollment(&c, "u", "d", 1).unwrap();
+          crate::sync::config::set_enabled(&c, true).unwrap();
+          crate::sync::config::set_last_seen_user_seq(&c, 120).unwrap(); }
+        let (uk, dk) = crate::sync::test_keys();
+        let cfg = { let c = db.lock().unwrap(); crate::sync::config::load(&c).unwrap() };
+
+        let post = server.mock(|when, then| {
+            when.method(POST).path("/v1/users/u/ops");
+            then.status(200).json_body(serde_json::json!({
+                "need_upload": ["a".repeat(64)], "ack": []
+            }));
+        });
+        let put = server.mock(|when, then| {
+            when.method(PUT).path_matches(Regex::new(r"^/v1/users/u/blobs/[0-9a-f]{64}$").unwrap());
+            then.status(200).json_body(serde_json::json!({"user_seq": 999}));
+        });
+
+        assert!(publish(&db, &cfg, &uk, &dk).unwrap());
+        post.assert();
+        assert_eq!(put.hits(), 1, "the relay asked for the bytes, so they were sent");
         let rec: String = db.lock().unwrap().query_row(
             "SELECT value FROM settings WHERE key='snapshot_last_seq'", [], |r| r.get(0)).unwrap();
         assert_eq!(rec, "120");
