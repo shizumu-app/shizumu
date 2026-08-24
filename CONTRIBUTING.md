@@ -114,6 +114,7 @@ flow (as a standalone noun), future-tense promises, and imperative therapy
 
 ## Licence
 
-shizumu is AGPL-3.0-or-later. By contributing you agree your work ships under
-that licence. Patches applied from issues are committed by the maintainer, with
-attribution to you in the commit message.
+shizumu (this repository, the client) is Apache-2.0. By contributing you agree
+your work ships under that licence. Patches applied from issues are committed
+by the maintainer, with attribution to you in the commit message. The sync
+relay is a separate repository and stays AGPL-3.0-or-later.

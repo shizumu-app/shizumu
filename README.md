@@ -44,4 +44,5 @@ sudo dnf install webkit2gtk4.1-devel libsoup3-devel javascriptcoregtk4.1-devel g
 
 ## license
 
-agpl-3.0-or-later. see [LICENSE](./LICENSE).
+apache-2.0. see [LICENSE](./LICENSE). the sync relay is a separate
+repository and stays agpl-3.0-or-later: [shizumu-relay](https://github.com/shizumu-app/shizumu-relay).

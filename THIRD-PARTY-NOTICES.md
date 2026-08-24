@@ -1,6 +1,6 @@
 # third-party notices
 
-shizumu is licensed under AGPL-3.0-or-later. It redistributes the following
+shizumu is licensed under Apache-2.0. It redistributes the following
 third-party assets, which carry their own licences.
 
 ## Fonts
