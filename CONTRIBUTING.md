@@ -18,8 +18,11 @@ Two consequences:
 
 So: **open an issue, don't open an MR.** For anything beyond a typo, describe
 the problem before writing code. If a patch is the clearest way to explain
-yourself, paste a diff into the issue — it will be applied by hand, with credit
-in the commit message.
+yourself, paste a diff into the issue, with a `Signed-off-by` line certifying
+the [Developer Certificate of Origin](https://developercertificate.org/) —
+that you wrote it or otherwise have the right to submit it under this
+project's licence. A diff without one won't be applied; ask and one will be
+added for you. It will be applied by hand, with credit in the commit message.
 
 Issues: <https://github.com/shizumu-app/shizumu/issues>
 
