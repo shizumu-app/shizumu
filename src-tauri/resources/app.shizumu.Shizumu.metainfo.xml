@@ -176,6 +176,14 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.7.6" date="2026-08-26">
+      <description>
+        <p>New shapes for a page. A decision block records what you considered, what you chose, and why. Any block can now turn into another from the chip on its edge: a list becomes an outline, an outline becomes question and answer, any of them become plain paragraphs. The text survives, the shape changes. A convert refuses rather than guesses, so a block holding a diagram or a table will not flatten it away.</p>
+        <p>Tables ask for their size when you make them instead of always arriving three by three, and the chart builder draws while you type instead of after you save. Tables and charts are ordinary blocks now: they carry a title, and their chip opens the same actions every other block has. Before this, tapping the chip on an empty chart or table did nothing at all.</p>
+        <p>A pinned image shows the picture rather than a file row, and an image line offers pin and copy on hover, having been read as a blank line until now. An empty block is no longer pinnable. Search finds block titles. No blank line is parked above the first block on a page, and a new block lands on its own line instead of swallowing the sentence you had just written.</p>
+        <p>The client is now licensed Apache-2.0. The sync relay remains AGPL-3.0.</p>
+      </description>
+    </release>
     <release version="0.7.5" date="2026-08-23">
       <description>
         <p>Fixes the snapshot upload that 0.7.4 introduced. Devices were preparing a snapshot of the account and the relay was refusing it, so a device joining had nothing to start from and fell back to replaying the whole history one change at a time. The upload now follows the order the relay expects, and the one-step first sync works as described.</p>
