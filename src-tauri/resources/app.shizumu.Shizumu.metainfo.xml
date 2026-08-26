@@ -2,8 +2,12 @@
 <component type="desktop-application">
   <id>app.shizumu.Shizumu</id>
   <name>Shizumu</name>
-  <summary>write · pin · trail · sink. a private thinking space.</summary>
-  <summary xml:lang="fr">écrire · épingler · suivre · déposer. espace d'écriture privé.</summary>
+  <!-- Sentence case, no terminal stop, no middots, no app name: Flathub's
+       listing-quality checker enforces all four on <summary>, and it is the
+       one field where the store rules outrank the brand's lowercase voice.
+       Nothing else in this file is sentence-cased for it. -->
+  <summary>Write to think, keep what matters</summary>
+  <summary xml:lang="fr">Écrire, penser, garder l'essentiel</summary>
 
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>Apache-2.0</project_license>
@@ -138,13 +142,13 @@
 
   <screenshots>
     <screenshot type="default">
-      <caption>the writing page. where every session begins</caption>
-      <caption xml:lang="fr">la page d'écriture. où chaque session commence</caption>
+      <caption>the writing page. what matters now, and what is still open</caption>
+      <caption xml:lang="fr">la page d'écriture. ce qui compte maintenant, et ce qui reste ouvert</caption>
       <image>https://shizumu.app/screenshots/page_with_tasks.png</image>
     </screenshot>
     <screenshot>
-      <caption>tools that read like prose. chart, recipe, code</caption>
-      <caption xml:lang="fr">des outils qui se lisent comme la prose. graphique, recette, code</caption>
+      <caption>chart, recipe, code, decision. one document, no embeds</caption>
+      <caption xml:lang="fr">graphique, recette, code, décision. un seul document, sans intégrations</caption>
       <image>https://shizumu.app/screenshots/page_with_tools.png</image>
     </screenshot>
     <screenshot>
@@ -153,18 +157,18 @@
       <image>https://shizumu.app/screenshots/trail_map.png</image>
     </screenshot>
     <screenshot>
-      <caption>memory. pins. boards and notes lifted out of the daily stream</caption>
-      <caption xml:lang="fr">mémoire. épingles. tableaux et notes sortis du flux quotidien</caption>
+      <caption>memory. pins. what you kept, and the trail you kept it on</caption>
+      <caption xml:lang="fr">mémoire. épingles. ce que vous avez gardé, et la piste où vous l'avez gardé</caption>
       <image>https://shizumu.app/screenshots/pin_panel.png</image>
     </screenshot>
     <screenshot>
-      <caption>@ to attach. a trail, a pinned reference, or an image</caption>
-      <caption xml:lang="fr">@ pour attacher. une piste, une référence épinglée, ou une image</caption>
+      <caption>@ to reference. a page, a pin, or a new trail</caption>
+      <caption xml:lang="fr">@ pour référencer. une page, une épingle, ou une nouvelle piste</caption>
       <image>https://shizumu.app/screenshots/mention.png</image>
     </screenshot>
     <screenshot>
-      <caption>fonts, themes, encryption. all yours, locally</caption>
-      <caption xml:lang="fr">polices, thèmes, chiffrement. à vous, en local</caption>
+      <caption>tone, type, scale. encryption and sync alongside</caption>
+      <caption xml:lang="fr">ton, typographie, échelle. chiffrement et synchro à côté</caption>
       <image>https://shizumu.app/screenshots/settings.png</image>
     </screenshot>
   </screenshots>

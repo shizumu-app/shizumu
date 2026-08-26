@@ -41,31 +41,51 @@
   opacity: 0.92;
 }
 
-/* Headings — size in em so they scale with the editor font. */
+/* Headings — size in em so they scale with the editor font.
+
+   LINE-HEIGHT FLOOR: 1.3, and never lower. Lora's own metrics need 1.27
+   (measured: ink height / font size is 1.269 at h1's 26px, 1.273 at h2's
+   22px, 1.263 at h3's 19px — the font's ascent + descent, not a rounding).
+   A line-height below that makes the line box SHORTER than the glyphs it
+   holds, so ascenders and descenders paint outside it and get cut top and
+   bottom wherever anything clips. 1.4 leaves a few px of slack at every
+   heading size; there is a test in __tests__/heading-line-height.test.js
+   that fails if these drop under the floor.
+
+   1.45 rather than a rounder number, because it is the first value that
+   clears the glyphs by more than a pixel at the top: measured slack above
+   the ink is 1px at both 1.35 and 1.4, 2px at 1.45, 3px at 1.5. Top
+   clipping is the symptom that was reported, so the top is the edge worth
+   buying slack on.
+
+   These carried 1.7 — a BODY line-height, applied to display type. At
+   h1's 26px that is a 44px line box around 33px of glyphs, plus 24px
+   above and 14px below, so one line of heading occupied 82px. Headings
+   want their own leading, tighter than running text, not more. */
 .prose h1 {
   font-size: 1.625em;
   font-weight: 700;
-  line-height: 1.7;
-  margin: 1.5rem 0 0.625rem;
-  padding-bottom: 0.25rem;
+  line-height: 1.45;
+  margin: 1rem 0 0.5rem;
+  padding-bottom: 0.125rem;
   position: relative;
 }
 
 .prose h2 {
   font-size: 1.375em;
   font-weight: 600;
-  line-height: 1.7;
-  margin: 1.25rem 0 0.5rem;
-  padding-bottom: 0.1875rem;
+  line-height: 1.45;
+  margin: 0.875rem 0 0.375rem;
+  padding-bottom: 0.125rem;
   position: relative;
 }
 
 .prose h3 {
   font-size: 1.1875em;
   font-weight: 500;
-  line-height: 1.7;
-  margin: 0.875rem 0 0.25rem;
-  padding-bottom: 0.125rem;
+  line-height: 1.45;
+  margin: 0.75rem 0 0.25rem;
+  padding-bottom: 0;
   position: relative;
   opacity: 0.92;
 }
@@ -157,11 +177,15 @@
   margin: 0;
 }
 
-/* ── recipe block — typeset given / do / result three-slot structure ──
+/* ── recipe / decision blocks — typeset multi-slot structures (recipe:
+   given / do / result; decision: considered / chose / because) ──
    Each slot carries a warm-accent label chip in the top-left and a
    hairline divider above it (except the first slot). Empty slots
-   show a soft placeholder hint via ::after. */
-.prose .recipe-block {
+   show a soft placeholder hint via ::after. Chrome is shared across both
+   block types via the grouped selectors below; per-type rules carry only
+   the label/placeholder text and the block-shell frame reset. */
+.prose .recipe-block,
+.prose .decision-block {
   position: relative;
   margin: 1rem 0;
   padding: 0.625rem 1rem 0.625rem 1rem;
@@ -171,25 +195,29 @@
 /* When wrapped inside the shared board frame the outer wrapper already
    supplies bg + border + padding; strip the inner duplicate so chips
    and dividers don't fight the frame. */
-.prose .block-shell[data-board="recipeBlock"] > .recipe-block {
+.prose .block-shell[data-board="recipeBlock"] > .recipe-block,
+.prose .block-shell[data-board="decisionBlock"] > .decision-block {
   background: transparent;
   border: none;
   padding: 0.25rem 0 0 0;
   margin: 0;
   border-radius: 0;
 }
-.prose .recipe-block > * {
+.prose .recipe-block > *,
+.prose .decision-block > * {
   position: relative;
   margin: 0;
   padding: 1.25rem 0 0.375rem 0;
 }
-.prose .recipe-block > * + * {
+.prose .recipe-block > * + *,
+.prose .decision-block > * + * {
   border-top: 1px dashed color-mix(in srgb, var(--ink) 6%, transparent);
   margin-top: 0.375rem;
 }
 /* Slot label chip — sits at the top-left of each slot. Matches the
    trail-chip pill used in ThreadCard / PinRow. */
-.prose .recipe-block > *::before {
+.prose .recipe-block > *::before,
+.prose .decision-block > *::before {
   position: absolute;
   left: 0;
   top: 0;
@@ -210,10 +238,15 @@
 .prose .recipe-block > *:nth-child(1)::before { content: "given"; }
 .prose .recipe-block > *:nth-child(2)::before { content: "do"; }
 .prose .recipe-block > *:nth-child(3)::before { content: "result"; }
+.prose .decision-block > *:nth-child(1)::before { content: "considered"; }
+.prose .decision-block > *:nth-child(2)::before { content: "chose"; }
+.prose .decision-block > *:nth-child(3)::before { content: "because"; }
 
 /* Placeholder hints for empty slots. ::after sits at the start of the
    slot's content; the :empty selector matches a paragraph with no inline
-   children (TipTap's default empty paragraph). */
+   children (TipTap's default empty paragraph). Neither block's list slot
+   (recipe's "do", decision's "considered") gets a placeholder — a list
+   always renders its own empty item instead. */
 .prose .recipe-block > *:nth-child(1):empty::after,
 .prose .recipe-block > *:nth-child(1) > p:empty:only-child::after {
   content: "given…";
@@ -222,10 +255,22 @@
 .prose .recipe-block > *:nth-child(3) > p:empty:only-child::after {
   content: "produce…";
 }
+.prose .decision-block > *:nth-child(2):empty::after,
+.prose .decision-block > *:nth-child(2) > p:empty:only-child::after {
+  content: "chose…";
+}
+.prose .decision-block > *:nth-child(3):empty::after,
+.prose .decision-block > *:nth-child(3) > p:empty:only-child::after {
+  content: "because…";
+}
 .prose .recipe-block > *:nth-child(1):empty::after,
 .prose .recipe-block > *:nth-child(1) > p:empty:only-child::after,
 .prose .recipe-block > *:nth-child(3):empty::after,
-.prose .recipe-block > *:nth-child(3) > p:empty:only-child::after {
+.prose .recipe-block > *:nth-child(3) > p:empty:only-child::after,
+.prose .decision-block > *:nth-child(2):empty::after,
+.prose .decision-block > *:nth-child(2) > p:empty:only-child::after,
+.prose .decision-block > *:nth-child(3):empty::after,
+.prose .decision-block > *:nth-child(3) > p:empty:only-child::after {
   font-family: "Lora", Georgia, serif;
   font-style: italic;
   color: var(--ink);
@@ -695,6 +740,31 @@
   margin: 0 0 0.375rem;
   transform: translateY(0);
 }
+/* Fix round 2 (task-1-report.md): Plan 1c gave chart a real NodeView-owned
+   `.board-title-slot` input (chart.js's createBlockShell adoption) that
+   shows the same title this `::before` does — inside any actual Editor
+   mount (live-editable canvas, or a read-only NodeView mount: past
+   discrete-trail pages, ThreadPageView, pin previews), both were rendering
+   at once. `.ProseMirror` is the class ProseMirror's EditorView stamps on
+   its own root, present for EVERY real Editor instance regardless of
+   editability — so scoping on it (not `.chart-editable`, which read-only
+   mounts don't carry) suppresses the legacy pseudo-element everywhere a
+   NodeView (and its real input) exists.
+   The static path (generateHTML for Memory cards — see shared-extensions.js's
+   READONLY_EXTENSIONS comment for the mounted-vs-static split) never runs a
+   NodeView and never gets a `.ProseMirror` element in its output, so this
+   rule can't reach it there — the `::before` above is that path's ONLY way
+   to show a chart's title, and stays intact.
+   One rule suffices for the base AND the :hover variant above: `content:
+   none` stops the pseudo-element from generating at all (CSS spec), so the
+   hover rule's own (higher-specificity, but content-silent) max-height/
+   opacity/margin/transform never gets anything to apply to. Equal
+   specificity to the base rule above ties on `content` — placed after it
+   in source order so it wins; do not move this above the rules it
+   neutralizes. */
+.ProseMirror .chart-block[data-block-title]::before {
+  content: none;
+}
 .prose .chart-block.chart-editable {
   cursor: pointer;
   border-radius: 0.375rem;
@@ -766,8 +836,12 @@
    Cap it at 70% so it reads as a quieter inline reference. Flowchart and
    mindmap keep full column width (they fill it with denser content).
    Drag-to-resize via the corner handle bypasses these caps via the
-   chart-sized-w class below. */
-.prose .chart-block[data-kind="timeline"]:not(.chart-sized-w) .chart-render {
+   chart-sized-w class below.
+   The second selector is the builder's live preview (ChartBuilder.svelte),
+   which has no `.chart-block` ancestor — without it the preview showed a
+   full-width timeline that narrowed the moment the chart was saved. */
+.prose .chart-block[data-kind="timeline"]:not(.chart-sized-w) .chart-render,
+.builder-preview[data-kind="timeline"] .prose .chart-render {
   max-width: 70%;
 }
 /* Once the user drags the resize handle, the chart-block carries explicit
@@ -932,10 +1006,13 @@
   }
 }
 
-/* Hover targets: every structured wrapper that hosts a chip. */
+/* Hover targets: every structured wrapper that hosts a chip.
+   `.chart-block` used to be listed here too; since Plan 1c the chart's
+   wrapper carries `.block-shell` as well, so that entry matched nothing the
+   first selector didn't already match. `.tableWrapper` stays: it is the
+   read-only render path's wrapper; left in place, out of this fix's scope. */
 .prose .block-shell:hover .block-type-chip,
 .prose .code-block-wrap:hover .block-type-chip,
-.prose .chart-block:hover .block-type-chip,
 .prose .tableWrapper:hover .block-type-chip,
 .prose .block-type-chip-anchor:hover .block-type-chip {
   opacity: 0.8;

@@ -37,8 +37,11 @@ describe("createBlockShell", () => {
     const recipe = mk("recipeBlock");
     expect(recipe.dataset.type).toBe("recipe-block");
     expect(recipe.classList.contains("recipe-block")).toBe(true);
+    const decision = mk("decisionBlock");
+    expect(decision.dataset.type).toBe("decision-block");
+    expect(decision.classList.contains("decision-block")).toBe(true);
     expect(mk("paragraph").tagName).toBe("DIV");
-    [mk("list"), mk("blockquote"), mk("qaBlock"), mk("recipeBlock"), mk("paragraph")]
+    [mk("list"), mk("blockquote"), mk("qaBlock"), mk("recipeBlock"), mk("decisionBlock"), mk("paragraph")]
       .forEach((el) => expect(el.classList.contains("board-content")).toBe(true));
   });
 

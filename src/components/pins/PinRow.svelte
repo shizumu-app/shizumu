@@ -13,9 +13,10 @@
 <script>
   import Card from "../../lib/ui/Card.svelte";
   import PinRowActions from "./PinRowActions.svelte";
-  import { pinKind, pinFamily, pinDisplayTitle, pinSnippet, isFilePin, attachmentMetaOf } from "../../lib/pin-display.js";
-  import { pinFileLocality, fileRowDetail } from "../../lib/attachment-locality.js";
+  import { pinKind, pinFamily, pinDisplayTitle, pinSnippet, isFilePin, isImagePin, attachmentMetaOf, imageMetaOf } from "../../lib/pin-display.js";
+  import { pinFileLocality, blobLocality, fileRowDetail } from "../../lib/attachment-locality.js";
   import { attachmentOpen } from "../../lib/api.js";
+  import { blobImageSrc } from "../../lib/render/blob-image-hydrate.js";
 
   function formatBytes(n) {
     if (!n || n < 0) return "0 B";
@@ -93,15 +94,43 @@
   let kindLabel = $derived(rawKind === "board" ? "blocks" : rawKind);
   let family = $derived(pinFamily(eff));
   let isFile = $derived(isFilePin(eff));
+  // A pinned image is an attachment like a file, but the row's job is
+  // different: a file row hands the blob to the OS, an image row shows the
+  // picture. Before this it did neither — every attachment pin was stamped
+  // object_type "file" at creation, so an image rendered as a 📎 row with a
+  // filename and a byte count and no way to see what had been kept.
+  let isImage = $derived(isImagePin(eff));
+  let imageMeta = $derived(isImage ? imageMetaOf(eff?.content) : null);
+  let imageLocality = $derived(isImage ? blobLocality(imageMeta?.blob_hash, localBlobs) : null);
   let fileMeta = $derived(isFile ? attachmentMetaOf(eff?.content) : null);
-  let displayTitle = $derived(isFile ? (eff?.title?.trim() || fileMeta?.filename || "file") : pinDisplayTitle(eff));
+  let displayTitle = $derived(
+    isFile ? (eff?.title?.trim() || fileMeta?.filename || "file")
+    : isImage ? (eff?.title?.trim() || imageMeta?.filename || "image")
+    : pinDisplayTitle(eff),
+  );
+
+  // Resolve the blob to a viewable src. Same per-hash memo shape as
+  // blob-image-hydrate.js uses for statically-rendered docs; a pin panel
+  // can list the same image on several rows, and each would otherwise pay
+  // its own round-trip to the Rust side.
+  let imageSrc = $state(null);
+  $effect(() => {
+    const hash = imageMeta?.blob_hash;
+    imageSrc = null;
+    if (!hash) return;
+    let live = true;
+    blobImageSrc(hash).then((src) => { if (live) imageSrc = src; });
+    return () => { live = false; };
+  });
   // A pinned file whose blob this device no longer holds still renders (the
   // pin caches its content), but opening it can't work. Say so on the size
   // line, in the same muted register — the decision lives in
   // attachment-locality.js, this component only renders what it returns.
   let fileLocality = $derived(isFile ? pinFileLocality(eff, localBlobs) : null);
   let snippet = $derived(
-    isFile ? fileRowDetail(formatBytes(fileMeta?.size_bytes || 0), fileLocality) : pinSnippet(eff),
+    isFile ? fileRowDetail(formatBytes(fileMeta?.size_bytes || 0), fileLocality)
+    : isImage ? fileRowDetail(formatBytes(imageMeta?.size_bytes || 0), imageLocality)
+    : pinSnippet(eff),
   );
   let hasRealTitle = $derived(!!(eff?.title && eff.title.trim() && displayTitle === eff.title.trim()));
   // Full chain so all-trails view reads the hierarchy ("a › b › c").
@@ -150,6 +179,9 @@
   // modal — opening the modal for a file pin would just show the bare
   // attachment node, which the modal can't render usefully.
   function handleRowClick() {
+    // An image row opens the artifact modal (which renders the picture at
+    // size) rather than handing the blob to the OS the way a file does —
+    // the point of keeping an image is looking at it in place.
     if (isFile && fileMeta?.blob_hash) {
       attachmentOpen(fileMeta.blob_hash, fileMeta.filename).catch((err) => console.error(err));
       return;
@@ -178,6 +210,13 @@
   <Card focused={focused} onClick={handleRowClick} variant="boxed">
     <div class="row-grid">
       <span class="kind-chip" data-family={family ?? "none"}>{isFile ? "📎 file" : kindLabel}</span>
+      {#if isImage}
+        <div class="row-thumb" class:away={imageLocality === "away"}>
+          {#if imageSrc}
+            <img src={imageSrc} alt={imageMeta?.filename || "pinned image"} />
+          {/if}
+        </div>
+      {/if}
       <div class="row-text">
         {#if isRenaming}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -246,9 +285,39 @@
 
   .row-grid {
     display: grid;
-    grid-template-columns: auto 1fr auto;
+    /* chip · [thumb] · text · actions. The thumb column is only emitted
+       for an image pin, and `auto` collapses to nothing on every other
+       row, so no row pays for a column it doesn't fill. */
+    grid-template-columns: auto auto 1fr auto;
     column-gap: 0.625rem;
     align-items: start;
+  }
+
+  /* Pinned-image thumbnail. Fixed box so a column of image pins keeps one
+     left edge regardless of aspect ratio; `contain` rather than `cover` so
+     a tall or wide picture is shown whole rather than cropped to a square
+     that hides what was kept. */
+  .row-thumb {
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: var(--radius-sm, 0.25rem);
+    border: 1px solid var(--card-border);
+    background: color-mix(in srgb, var(--ink) 4%, transparent);
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .row-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+  /* Bytes gone from this device (gc sweep, or never synced here). The row
+     still renders — the pin caches its content — but there is no picture
+     to show, and the snippet line already says so in words. */
+  .row-thumb.away {
+    border-style: dashed;
+    opacity: 0.5;
   }
   .row-text {
     min-width: 0;

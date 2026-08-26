@@ -252,6 +252,18 @@ export function parseBody(text) {
       continue;
     }
 
+    // Decision block — three H3s in fixed order. We detect on
+    // `### Considered` and consume until the matching `### Because` block
+    // has been read.
+    if (line === "### Considered") {
+      const [node, next] = parseDecision(lines, i);
+      attachPending(node, pending);
+      pending = { pinId: null, blockTitle: null, chartSource: null };
+      blocks.push(node);
+      i = next;
+      continue;
+    }
+
     // qaBlock — sequence of `**Q:** ...` / `**A:** ...` paragraph pairs.
     if (/^\*\*Q:\*\* /.test(line)) {
       const [node, next] = parseQA(lines, i);
@@ -491,6 +503,35 @@ function parseRecipe(lines, start) {
   return [
     {
       type: "recipeBlock",
+      content: slots.map((s) => s || { type: "paragraph" }),
+    },
+    i,
+  ];
+}
+
+function parseDecision(lines, start) {
+  let i = start;
+  const slots = [null, null, null];
+  for (let slot = 0; slot < 3; slot++) {
+    const headerExpected = ["### Considered", "### Chose", "### Because"][slot];
+    if (lines[i] !== headerExpected) break;
+    i++;
+    while (i < lines.length && lines[i] === "") i++;
+    const nextHeader = slot < 2 ? ["### Chose", "### Because"][slot] : null;
+    const buf = [];
+    while (i < lines.length && lines[i] !== nextHeader) {
+      buf.push(lines[i]);
+      i++;
+    }
+    while (buf.length > 0 && buf[buf.length - 1] === "") buf.pop();
+    const innerDoc = parseBody(buf.join("\n"));
+    slots[slot] = innerDoc.content[0] || { type: "paragraph" };
+  }
+  // Skip trailing blank.
+  while (i < lines.length && lines[i] === "") i++;
+  return [
+    {
+      type: "decisionBlock",
       content: slots.map((s) => s || { type: "paragraph" }),
     },
     i,

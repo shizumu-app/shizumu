@@ -62,7 +62,14 @@ describe("vr fixtures", () => {
 
   it("FIXTURES exposes all named scenes", () => {
     expect(Object.keys(FIXTURES).sort()).toEqual(
-      ["continuousTrail", "deadImageRef", "emptyPage", "memoryWithPages", "pageWithBoardContent", "pageWithContent", "pageWithShortBoard", "pinsRich"].sort()
+      [
+        "continuousTrail", "deadImageRef", "emptyPage", "memoryWithPages",
+        "pageWithBoardContent", "pageWithChartContent", "pageWithContent",
+        "pageWithDecisionContent", "pageWithEmptyChart", "pageWithEmptyTable",
+        "pageWithFileContent", "pageWithImageContent", "pageWithQaContent",
+        "pageWithRecipeContent", "pageWithShortBoard", "pageWithTableContent",
+        "pinsRich",
+      ].sort()
     );
   });
 

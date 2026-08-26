@@ -158,6 +158,7 @@ function serializeBlock(node, ctx) {
     case "codeBlock":     body = renderCodeBlock(node, ctx); break;
     case "chart":         body = renderChart(node, ctx); break;
     case "recipeBlock":   body = renderRecipe(node, ctx); break;
+    case "decisionBlock": body = renderDecision(node, ctx); break;
     case "qaBlock":       body = renderQABlock(node, ctx); break;
     case "qaPair":        body = renderQAPair(node, ctx); break;
     case "dayMarker":     body = renderDayMarker(node, ctx); break;
@@ -312,6 +313,26 @@ function renderRecipe(node, ctx) {
   }
   out.push("");
   out.push("### Result");
+  if (children[2]) {
+    out.push(serializeBlock(children[2], ctx));
+  }
+  return out.filter((l) => l !== undefined).join("\n").trimEnd();
+}
+
+function renderDecision(node, ctx) {
+  const children = node.content || [];
+  const out = [];
+  out.push("### Considered");
+  if (children[0]) {
+    out.push(serializeBlock(children[0], ctx));
+  }
+  out.push("");
+  out.push("### Chose");
+  if (children[1]) {
+    out.push(serializeBlock(children[1], ctx));
+  }
+  out.push("");
+  out.push("### Because");
   if (children[2]) {
     out.push(serializeBlock(children[2], ctx));
   }

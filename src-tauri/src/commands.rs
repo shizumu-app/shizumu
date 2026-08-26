@@ -1107,12 +1107,22 @@ pub fn get_thread(
 pub fn search_pages(db: State<'_, Db>, query: String) -> Result<Vec<PageSummary>, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
 
+    // The user's keystrokes are words, not FTS5 syntax. Passing them raw
+    // meant an apostrophe, a hyphen or a stray quote raised an FTS5 syntax
+    // error that surfaced as Err and was swallowed by Memory.svelte's bare
+    // `catch {}` — the search box just stopped answering. See search.rs.
+    let Some(match_expr) = crate::search::fts_match_query(&query) else {
+        // Nothing but punctuation. No results is the honest answer; a
+        // match-everything would be a worse lie than an empty list.
+        return Ok(Vec::new());
+    };
+
     let mut stmt = conn
         .prepare("SELECT page_id FROM pages_fts WHERE pages_fts MATCH ? ORDER BY rank LIMIT 50")
         .map_err(|e| e.to_string())?;
 
     let matches: Vec<String> = stmt
-        .query_map(params![&query], |row| row.get::<_, String>(0))
+        .query_map(params![&match_expr], |row| row.get::<_, String>(0))
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -2899,7 +2909,7 @@ pub fn save_page_content_inner(
     // Extract plain text for FTS
     let text_content: String = serde_json::from_str::<serde_json::Value>(content_json)
         .ok()
-        .and_then(|v| extract_text_from_tiptap(&v))
+        .and_then(|v| crate::search::extract_search_text(&v))
         .unwrap_or_default();
 
     // Update FTS index
@@ -3260,7 +3270,7 @@ pub fn save_trail_content_inner(
     // Update FTS index
     let text_content: String = serde_json::from_str::<serde_json::Value>(content_json)
         .ok()
-        .and_then(|v| extract_text_from_tiptap(&v))
+        .and_then(|v| crate::search::extract_search_text(&v))
         .unwrap_or_default();
 
     let _ = conn.execute("DELETE FROM pages_fts WHERE page_id = ?", params![page_id]);
@@ -3283,6 +3293,14 @@ pub fn save_trail_content_inner(
     Ok(())
 }
 
+/// Plain text from a TipTap doc, for the EMPTINESS question only.
+///
+/// The FTS indexers used to share this walk and no longer do: search needs
+/// the strings that live in node attributes (a block's `blockTitle`, an
+/// attachment's `filename`) and emptiness deliberately does not — widening
+/// what counts as content here changes which pages `cleanup_orphan_pages`
+/// deletes, which is a separate decision with a delete on the end of it.
+/// See `crate::search::extract_search_text` for the indexing companion.
 fn extract_text_from_tiptap(value: &serde_json::Value) -> Option<String> {
     let mut texts = Vec::new();
     extract_text_recursive(value, &mut texts);
@@ -4651,7 +4669,7 @@ pub fn append_page_to_canonical(
     // Rebuild FTS for the canonical.
     let text_content: String = serde_json::from_str::<serde_json::Value>(&new_canonical_json)
         .ok()
-        .and_then(|v| extract_text_from_tiptap(&v))
+        .and_then(|v| crate::search::extract_search_text(&v))
         .unwrap_or_default();
     let _ = tx.execute(
         "DELETE FROM pages_fts WHERE page_id = ?",

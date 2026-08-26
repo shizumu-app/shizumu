@@ -1,5 +1,5 @@
 // Unit tests for BlockEscExit. Esc walks up to the nearest frame
-// (list, blockquote, codeBlock, recipeBlock, qaBlock) and moves
+// (list, blockquote, codeBlock, recipeBlock, decisionBlock, qaBlock) and moves
 // the cursor to a sibling-after paragraph. If no sibling exists,
 // the command inserts an empty paragraph after the frame. Inside
 // a top-level paragraph or heading the command returns false.

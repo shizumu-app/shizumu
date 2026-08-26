@@ -27,6 +27,7 @@
   import Button from "../lib/ui/Button.svelte";
   import { isPhoneViewport, watchPhoneViewport } from "../lib/responsive.js";
   import MemoryFiltersPanel from "./memory/MemoryFiltersPanel.svelte";
+  import { pinSearchText, pinModalKind } from "../lib/pin-display.js";
   import PinRow from "./pins/PinRow.svelte";
   import PinArtifactModal from "./pins/PinArtifactModal.svelte";
   import PinNoteModal from "./pins/PinNoteModal.svelte";
@@ -401,31 +402,17 @@
   // Mirrors SharedObjectsPanel's classifier so the modal fork agrees.
   const isPinBoard = (p) => ["artifact", "board", "table"].includes(p?.object_type);
 
-  function pinPlainText(pin) {
-    // Notes carry plain string content; boards carry a TipTap doc JSON
-    // blob, so for search we fall back to the raw content string and let
-    // substring matching see whatever text is in there.
-    if (!pin) return "";
-    if (!isPinBoard(pin)) return typeof pin.content === "string" ? pin.content : "";
-    try {
-      const parsed = JSON.parse(pin.content || "null");
-      if (parsed && parsed.type === "doc" && Array.isArray(parsed.content)) {
-        function walk(node) {
-          if (node?.text) return node.text;
-          if (Array.isArray(node?.content)) return node.content.map(walk).join(" ");
-          return "";
-        }
-        return parsed.content.map(walk).join(" ");
-      }
-    } catch {}
-    return typeof pin.content === "string" ? pin.content : "";
-  }
-
+  // Search haystack comes from pin-display's pinSearchText. The local walk
+  // this replaced had two holes, both of which made the pins tab's search
+  // box answer wrongly rather than not at all: it never saw a block's
+  // title (a node ATTRIBUTE, `attrs.blockTitle`, not a text node — the
+  // same gap the FTS indexer had, see search.rs), and for any pin it did
+  // not classify as a board it returned the RAW JSON string, so searching
+  // "paragraph" matched schema keys the user never wrote.
   function pinMatches(pin, q) {
     const needle = q.trim().toLowerCase();
     if (!needle) return true;
-    const hay = (pinPlainText(pin) + " " + (pin?.title || "")).toLowerCase();
-    return hay.includes(needle);
+    return pinSearchText(pin).toLowerCase().includes(needle);
   }
 
   // Pins surface obeys the same sidebar trail filter + search box + date
@@ -469,11 +456,14 @@
     return pins.find((p) => p.id === id) || null;
   }
 
+  // Which modal, decided by the CONTENT's shape, in pin-display so both
+  // pin surfaces cannot drift apart again. isPinBoard below is a different
+  // question (row styling) and keeps its own list; it was standing in for
+  // this one, and its list excluded "file" — so an image pin opened the
+  // plain-text note modal and rendered its own attachment attrs as a wall
+  // of raw JSON in a textarea.
   function openPin(pin) {
-    pinModalState = {
-      type: isPinBoard(pin) ? "artifact" : "note",
-      pinId: pin.id,
-    };
+    pinModalState = { type: pinModalKind(pin), pinId: pin.id };
   }
 
   // Local patch to mirror SharedObjectsPanel's optimistic flow without

@@ -25,6 +25,8 @@
   import { stripPinIdsFromJSON } from "../lib/extensions/pin-id.js";
   import { isBoardType } from "../lib/extensions/block-title.js";
   import { resolveHoveredMouseBlock, hoverClassTarget, isTrustedMouseHover } from "../lib/extensions/block-hover-guard.js";
+  import { hoverPlan, HOVER_HIDE_DELAY_MS } from "../lib/editor/hover-reveal.js";
+  import { caretScrollDelta, isDegenerateCaretRect } from "../lib/editor/caret-scroll.js";
   import { deleteBlockAt, resolveBlockPos } from "../lib/extensions/block-delete.js";
   import { writeClipboard } from "../lib/clipboard-write.js";
   import { sanitizePastedHtml } from "../lib/paste-sanitize.js";
@@ -37,6 +39,8 @@
   import { isYjsEnabled } from "../lib/yjs/feature-flag.js";
   import { isCoarsePointer } from "../lib/responsive.js";
   import { blockActionsFor, BLOCK_ACTION_LABELS } from "../lib/editor/block-actions.js";
+  import { mayPinBlock, isAttachmentBlockNode, soleAttachmentNode } from "../lib/editor/block-pin-guard.js";
+  import { CONVERTIBLE_TYPES, convertTargetsFor, convertBlockNode } from "../lib/editor/block-convert.js";
   import { showsGutterCard } from "../lib/editor/touch-block-handle.js";
   import { shouldDismissOnBlur, isAffordanceTarget } from "../lib/editor/touch-reveal-dismiss.js";
   import { getViewportHeight, keyboardOpen } from "../lib/keyboard-state.js";
@@ -463,6 +467,51 @@
         updateTableToolbar();
       },
       editorProps: {
+        /**
+         * Keep the caret in view when ProseMirror's own scroll declines to.
+         *
+         * Returning false hands the scroll back to PM, which is what we
+         * want for every normal case. We only take over for the one PM
+         * gives up on: the caret in a freshly-created EMPTY paragraph,
+         * where `coordsAtPos` reports an all-zero rect and
+         * `scrollRectIntoView` returns immediately on its
+         * `if (!nonZero(rect) && rect.left == 0)` guard. That is why
+         * pressing Enter on the last line added a line you could not see
+         * until you pressed ↓ — see editor/caret-scroll.js for the full
+         * measurement.
+         *
+         * PM's rect is the test; the caret's BLOCK ELEMENT is what we
+         * measure instead, because a block always has a box even when the
+         * caret inside it does not.
+         */
+        handleScrollToSelection(view) {
+          let caretRect = null;
+          try { caretRect = view.coordsAtPos(view.state.selection.head); } catch { caretRect = null; }
+          if (!isDegenerateCaretRect(caretRect)) return false; // PM's job.
+
+          const scroller = wrapperEl;
+          if (!scroller) return false;
+          let blockEl = null;
+          try {
+            const at = view.domAtPos(view.state.selection.head);
+            let node = at.node;
+            if (node && node.nodeType === Node.TEXT_NODE) node = node.parentNode;
+            // Walk up to the element that actually has a layout box.
+            while (node && node !== scroller && !(node instanceof Element)) node = node.parentNode;
+            blockEl = node instanceof Element && node !== scroller ? node : null;
+          } catch { blockEl = null; }
+          if (!blockEl) return false;
+
+          const delta = caretScrollDelta(
+            blockEl.getBoundingClientRect(),
+            scroller.getBoundingClientRect(),
+          );
+          if (delta !== 0) scroller.scrollTop += delta;
+          // Handled either way: PM's fallback cannot do better with the
+          // rect it has, and letting it run would only re-confirm the
+          // no-op it already decided on.
+          return true;
+        },
         handlePaste(view, event) {
           const data = event.clipboardData;
           if (!data) return false;
@@ -721,7 +770,7 @@
       editor.destroy();
     }
     if (saveTimer) clearTimeout(saveTimer);
-    if (handleShowTimer) clearTimeout(handleShowTimer);
+    cancelPendingHover();
     clearTouchHandleHide();
     clearLongPress();
     if (dragActive) endDrag();
@@ -810,15 +859,21 @@
 
   // Block handle: detect hovered block on mousemove
   let handleLeaveTimer = null;
-  let handleShowTimer = null;
-  let pendingHoverEl = null;
-  // The initial hidden->visible reveal is debounced so a fast mouse pass
-  // over several blocks doesn't flicker the handle column open and shut
-  // for each one. Once a reveal is already showing, moving to an
-  // adjacent block updates immediately (no re-delay) so a deliberate
-  // scan across blocks doesn't feel laggy.
-  const HANDLE_SHOW_DELAY = 200;
-  const HANDLE_HIDE_DELAY = 200;
+  // ONE timer now governs every hover transition — reveal, block-to-block
+  // switch, and clear — with `pendingHoverTarget` naming what it will
+  // apply (a block, or null for "hide"). `undefined` means no timer is
+  // running, which is deliberately distinct from `null`: conflating them
+  // would make a pending clear un-cancellable. All the timings, and the
+  // reasons they differ from each other, live in editor/hover-reveal.js.
+  //
+  // What this replaced: the handle column debounced only its first reveal
+  // and switched blocks instantly, while the title reveal
+  // (hoveredMouseBlock) had no delay at ALL — assigned on every single
+  // mousemove — so chrome flickered on and off behind a cursor merely
+  // crossing the page. The user-visible symptom was "the block title and
+  // toolbar appear and disappear fast when just moving the mouse around".
+  let hoverTimer = null;
+  let pendingHoverTarget = undefined;
 
   // ── Block-title hover reveal (desktop mouse) ──────────────────────────
   // Used to be a CSS-only rule gated behind `@media (hover: hover)` (the
@@ -911,85 +966,123 @@
       }
     }
 
-    if (found) {
-      const tag = found.tagName?.toLowerCase();
-      const wrapperRect = wrapperEl.getBoundingClientRect();
-      const blockRect = found.getBoundingClientRect();
-      const top = blockRect.top - wrapperRect.top + wrapperEl.scrollTop;
-      const canInsert = tag === "p" || tag === "h1" || tag === "h2" || tag === "h3";
-      const isBoard = found.classList?.contains("block-shell") || found.classList?.contains("code-block-wrap");
-      const hasContent = !!(found.textContent?.trim());
-      const alreadyPinned = existingPinContents.has(found.textContent?.trim());
+    // One decision for all three transitions — reveal, block-to-block
+    // switch, clear — and one timer to carry it out. hover-reveal.js owns
+    // the timings and the reasons they differ; this only performs them.
+    const plan = hoverPlan({ revealed: hoveredBlock, found, pendingTarget: pendingHoverTarget });
+    if (plan.action === "none" && found && found === hoveredBlock && handleVisible) {
+      // Steady state, but keep the column's vertical offset live. It used
+      // to be recomputed on every mousemove because the reveal itself was;
+      // now that the reveal is debounced, a block ABOVE this one growing
+      // (someone typing into it while the cursor rests here) would leave
+      // the column parked at a stale offset until the next hover switch.
+      // Deliberately not describeHoverBlock(): that also walks textContent
+      // for the has-content / already-pinned flags, and this runs on every
+      // mousemove over the hovered block. Only the offset can go stale.
+      handleTop = hoverBlockTop(found);
+    } else if (plan.action === "cancel") {
+      cancelPendingHover();
+    } else if (plan.action === "arm") {
+      cancelPendingHover();
+      pendingHoverTarget = plan.target;
+      // Measure at ARM time, not at fire time: the block's geometry is
+      // what the cursor is over right now, and re-reading it after the
+      // delay would cost a forced layout on a timer that usually fires
+      // while the user is still moving.
+      const snapshot = plan.target ? describeHoverBlock(plan.target) : null;
+      hoverTimer = setTimeout(() => {
+        hoverTimer = null;
+        pendingHoverTarget = undefined;
+        applyHoverState(plan.target, snapshot);
+      }, plan.delayMs);
+    }
+  }
 
-      const applyReveal = () => {
-        handleShowTimer = null;
-        // Android synthesises a compat mousemove after every touch tap, and
-        // this reveal path was the one place that never checked for it: the
-        // long-press redesign removed the deliberate touch entries into the
-        // floating pill, but a tap still arrived here as a "mouse hover" and
-        // painted the pill over the block's own text. hoveredMouseBlock (the
-        // title reveal) has been guarded by this exact predicate since D-6;
-        // handleVisible simply never was. A real mouse — including a hybrid
-        // laptop's, once the guard window since the last real touch has
-        // elapsed — still reveals normally.
-        if (!isTrustedMouseHover(lastTouchAt, Date.now())) return;
-        handleTop = top;
-        handleVisible = true;
-        hoveredBlock = found;
-        handleShowPlus = canInsert;
-        handleIsBoard = isBoard;
-        handleHasContent = hasContent;
-        blockAlreadyPinned = alreadyPinned;
-      };
+  /** A block's offset inside the scroller — where its handle column sits. */
+  function hoverBlockTop(el) {
+    const wrapperRect = wrapperEl.getBoundingClientRect();
+    return el.getBoundingClientRect().top - wrapperRect.top + wrapperEl.scrollTop;
+  }
 
-      if (handleVisible) {
-        // Already mid-hover — move to the new block immediately, no delay.
-        if (handleShowTimer) { clearTimeout(handleShowTimer); handleShowTimer = null; }
-        pendingHoverEl = found;
-        applyReveal();
-      } else if (pendingHoverEl !== found) {
-        // Fresh hover onto a block from a hidden state — debounce so a
-        // fast pass-through doesn't flash the handle column open.
-        if (handleShowTimer) clearTimeout(handleShowTimer);
-        pendingHoverEl = found;
-        handleShowTimer = setTimeout(applyReveal, HANDLE_SHOW_DELAY);
-      }
-    } else {
-      if (handleShowTimer) { clearTimeout(handleShowTimer); handleShowTimer = null; }
-      pendingHoverEl = null;
+  /** Geometry + affordances for a block, read once when a hover is armed. */
+  function describeHoverBlock(el) {
+    const tag = el.tagName?.toLowerCase();
+    const text = el.textContent?.trim();
+    return {
+      top: hoverBlockTop(el),
+      canInsert: tag === "p" || tag === "h1" || tag === "h2" || tag === "h3",
+      isBoard: el.classList?.contains("block-shell") || el.classList?.contains("code-block-wrap"),
+      // Not `!!text`: the shell's chip is real text, so an empty board read
+      // as full and the gutter offered a pin handle handlePinBlock then
+      // refused to act on. Same call, same answer, every site.
+      hasContent: blockMayBePinned(el),
+      alreadyPinned: existingPinContents.has(text),
+    };
+  }
+
+  /**
+   * Commit a hover transition. `el === null` hides everything.
+   *
+   * Both the handle column AND the title reveal are set here, together:
+   * they are one thing to the user, and the title's reveal used to be
+   * assigned inline on every mousemove with no delay while the column had
+   * one, which is most of why the two looked like they were fighting.
+   */
+  function applyHoverState(el, snapshot) {
+    if (!el) {
       handleVisible = false;
       hoveredBlock = null;
       handleIsBoard = false;
       blockAlreadyPinned = false;
+      hoveredMouseBlock = null;
+      return;
     }
+    // Android synthesises a compat mousemove after every touch tap, and
+    // this reveal path was the one place that never checked for it: the
+    // long-press redesign removed the deliberate touch entries into the
+    // floating pill, but a tap still arrived here as a "mouse hover" and
+    // painted the pill over the block's own text. hoveredMouseBlock (the
+    // title reveal) has been guarded by this exact predicate since D-6;
+    // handleVisible simply never was. A real mouse — including a hybrid
+    // laptop's, once the guard window since the last real touch has
+    // elapsed — still reveals normally.
+    if (!isTrustedMouseHover(lastTouchAt, Date.now())) return;
+    handleTop = snapshot.top;
+    handleVisible = true;
+    hoveredBlock = el;
+    handleShowPlus = snapshot.canInsert;
+    handleIsBoard = snapshot.isBoard;
+    handleHasContent = snapshot.hasContent;
+    blockAlreadyPinned = snapshot.alreadyPinned;
     // Clearing is always the safe default; only revealing a block is
-    // guarded. resolveHoveredMouseBlock() returns `found` itself iff found
+    // guarded. resolveHoveredMouseBlock() returns `el` itself iff el
     // exists AND the hover is trusted, and `null` in every other case —
-    // so a touch anywhere in the editor (or the cursor moving off a block,
-    // or moving from block A to block B within the guard window) always
-    // clears the previous reveal, it just doesn't necessarily grant a new
-    // one. See block-hover-guard.js for the full rationale (code-review
-    // finding post-7af09e1: gating the clear path alongside the reveal
-    // path let a revealed title get stuck open across an intervening
-    // touch, or stuck on a stale block when the cursor moved on).
-    hoveredMouseBlock = resolveHoveredMouseBlock(found, lastTouchAt, Date.now());
+    // so a touch anywhere in the editor always clears the previous reveal,
+    // it just doesn't necessarily grant a new one. See block-hover-guard.js
+    // for the full rationale (code-review finding post-7af09e1: gating the
+    // clear path alongside the reveal path let a revealed title get stuck
+    // open across an intervening touch, or stuck on a stale block when the
+    // cursor moved on).
+    hoveredMouseBlock = resolveHoveredMouseBlock(el, lastTouchAt, Date.now());
+  }
+
+  function cancelPendingHover() {
+    if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+    pendingHoverTarget = undefined;
   }
 
   function handleEditorMouseLeave() {
     // A pending reveal (mid show-delay) should never fire after the mouse
     // has already left — otherwise a fast in-and-out pass could still flash
     // the handle column open just as the cursor exits.
-    if (handleShowTimer) { clearTimeout(handleShowTimer); handleShowTimer = null; }
-    pendingHoverEl = null;
+    cancelPendingHover();
     // Delay hiding so user can click the handle. Tracked timer so a quick
     // re-entry (via mousemove) cancels the pending hide.
     if (handleLeaveTimer) clearTimeout(handleLeaveTimer);
     handleLeaveTimer = setTimeout(() => {
-      handleVisible = false;
-      hoveredBlock = null;
-      hoveredMouseBlock = null;
+      applyHoverState(null, null);
       handleLeaveTimer = null;
-    }, HANDLE_HIDE_DELAY);
+    }, HOVER_HIDE_DELAY_MS);
   }
 
   // Shared by the desktop `+` handle (hoveredBlock, mouse hover) and the
@@ -1387,6 +1480,12 @@
   let blockActionSheetOpen = $state(false);
   let blockActionSheetBlock = $state(null);
   let blockActionSheetActions = $state(/** @type {string[]} */ ([]));
+  // "root" — the pin/copy/title/convert/insert-below/delete list.
+  // "convert" — the convert-to… submenu, swapped in in place (see the
+  // <BottomSheet> markup below; its own navPush is per-instance and
+  // nothing else in the codebase stacks two, so this is a second in-sheet
+  // mode rather than a second sheet).
+  let blockActionSheetMode = $state("root");
 
   // Presentation only (which glyph next to which label) — the DECISION of
   // which actions apply lives in block-actions.js's blockActionsFor.
@@ -1394,8 +1493,21 @@
     pin: "↗",
     copy: "⎘",
     title: "T",
+    convert: "⇄",
     "insert-below": "+",
     delete: "×",
+  };
+
+  // Labels for the convert submenu's target rows (block-convert.js's
+  // CONVERT_TARGETS ids are internal/type-shaped, not user-facing prose).
+  const CONVERT_TARGET_LABELS = {
+    bullet: "bullet list",
+    ordered: "numbered list",
+    task: "task list",
+    blockquote: "outline",
+    qaBlock: "q&a",
+    codeBlock: "code block",
+    paragraphs: "plain paragraphs",
   };
 
   function openBlockActionSheet(block) {
@@ -1404,40 +1516,76 @@
     // reused here so blockActionsFor sees exactly what the old inline
     // gates saw — the decision moved, not the underlying facts.
     const isBoard = block.classList?.contains("block-shell") || block.classList?.contains("code-block-wrap");
-    const hasContent = !!(block.textContent?.trim());
+    // Pinnability is block-pin-guard.js's call, not `block.textContent` —
+    // the shell's chip is real text inside it, so the sheet used to offer
+    // pin/copy on an empty board that handlePinBlock then refused to pin:
+    // a row that does nothing. isEmpty rides the same fact so the sheet's
+    // insert-below and the desktop "+" agree about what "empty" means (it
+    // is gated on canInsert, so only paragraphs/headings ever see it).
+    const canPin = blockMayBePinned(block);
     const tag = block.tagName?.toLowerCase();
     const canInsert = tag === "p" || tag === "h1" || tag === "h2" || tag === "h3";
     const hasTitle = !!block.querySelector?.(".board-title-slot");
+    // dataset.board is set by createBlockShell (block-shell.js) and, since
+    // Task 1, by the table view too — reliable for every board type.
+    const canConvert = isBoard && !readonly && CONVERTIBLE_TYPES.includes(block.dataset?.board);
     let actions = blockActionsFor({
       isBoard,
       hasTitle,
-      canPin: hasContent,
-      isEmpty: canInsert && !hasContent,
+      canPin,
+      isEmpty: canInsert && !canPin,
+      canConvert,
     });
     // Mirrors the old pill's per-button `!readonly` gates exactly: insert/
     // copy/delete were readonly-gated there, pin and the title reveal were
     // not (a past page's block can still be pinned, and tapping to read
-    // its title was never blocked either) — same split here.
+    // its title was never blocked either) — same split here. convert joins
+    // the readonly-gated side (it's already excluded above via canConvert,
+    // this is belt-and-suspenders against a stale isBoard/dataset read).
     if (readonly) {
-      actions = actions.filter((id) => id !== "copy" && id !== "insert-below" && id !== "delete");
+      actions = actions.filter((id) => id !== "copy" && id !== "insert-below" && id !== "delete" && id !== "convert");
     }
     blockActionSheetActions = actions;
     if (blockActionSheetActions.length === 0) return;
     // hoveredBlock is what handlePinBlock/handleCopyBlock/handleDeleteBlock/
-    // handleBlockHandleClick all act on — setting it here lets the sheet's
-    // action handlers below reuse those functions unchanged rather than
-    // re-implementing pin/copy/delete/insert against a second target
-    // variable.
+    // handleBlockHandleClick/runBlockConvert all act on — setting it here
+    // lets the sheet's action handlers below reuse those functions
+    // unchanged rather than re-implementing pin/copy/delete/insert/convert
+    // against a second target variable.
     hoveredBlock = block;
     blockActionSheetBlock = block;
+    // Always open at the root level. Only closeBlockActionSheet reset this,
+    // so on desktop (where handleBlockActionsEvent has no coarse-pointer
+    // gate) clicking block B's chip while block A's sheet showed the convert
+    // submenu re-opened still in "convert" mode — for a chart or table, a
+    // sheet containing nothing but "← back".
+    blockActionSheetMode = "root";
     blockActionSheetOpen = true;
   }
 
   function closeBlockActionSheet() {
     blockActionSheetOpen = false;
+    blockActionSheetMode = "root";
+  }
+
+  // The sheet's onClose — Escape, hardware-back, backdrop tap. The convert
+  // submenu's "← back" row implies a level above it, so a dismiss gesture
+  // has to honour that level too rather than throwing the whole sheet away.
+  // Not folded into closeBlockActionSheet: runBlockAction and
+  // runBlockConvert call that one meaning "close, for real".
+  function dismissBlockActionSheet() {
+    if (blockActionSheetMode === "convert") {
+      blockActionSheetMode = "root";
+      return;
+    }
+    closeBlockActionSheet();
   }
 
   async function runBlockAction(id) {
+    if (id === "convert") {
+      blockActionSheetMode = "convert";
+      return;
+    }
     const block = blockActionSheetBlock;
     closeBlockActionSheet();
     if (!block) return;
@@ -1452,6 +1600,37 @@
     } else if (id === "delete") {
       handleDeleteBlock();
     }
+  }
+
+  // Convert the hovered board block to `target` in place, keeping its text
+  // (block-convert.js does the actual shape transform over node JSON).
+  // ONE transaction — replaceWith + setSelection + one dispatch — never
+  // `lift`/`toggleX` on these structured shapes (see qa-block.js's
+  // unwrapSoleQABlock, D-8: lift silently no-ops on them).
+  function runBlockConvert(target) {
+    closeBlockActionSheet();
+    if (!editor || !hoveredBlock) return;
+    let pos;
+    try {
+      pos = resolveBlockPos(editor.view, hoveredBlock);
+    } catch {
+      return;
+    }
+    const node = editor.state.doc.nodeAt(pos);
+    if (!node) return;
+    const converted = convertBlockNode(node.toJSON(), target, editor.schema);
+    if (!converted) return;
+    const replacement = Array.isArray(converted)
+      ? converted.map((json) => editor.schema.nodeFromJSON(json))
+      : editor.schema.nodeFromJSON(converted);
+    let tr = editor.state.tr.replaceWith(pos, pos + node.nodeSize, replacement);
+    try {
+      tr = tr.setSelection(TextSelection.near(tr.doc.resolve(pos + 1)));
+    } catch {
+      // Fall through with whatever selection replaceWith itself produced.
+    }
+    editor.view.dispatch(tr);
+    editor.commands.focus();
   }
 
   // Table toolbar: show add row/column when cursor is in a table
@@ -1503,7 +1682,7 @@
   // nodeFromJSON (see the coordinator branch-review note there).
   const COPYABLE_BLOCK_TYPES = new Set([
     "paragraph", "heading", "table", "list", "blockquote",
-    "recipeBlock", "qaBlock", "chart", "dayMarker", "localImage",
+    "recipeBlock", "decisionBlock", "qaBlock", "chart", "dayMarker", "localImage",
     "codeBlock", "attachment", "horizontalRule", "listItem",
   ]);
 
@@ -1633,7 +1812,7 @@
     // "Boards" are list nodes with a blockTitle attr (no separate schema node
     // for the wrapper). DOM class .block-shell is rendered by the list's
     // NodeView, not by a distinct doc-level node.
-    const FRAME_TYPES = new Set(["recipeBlock", "qaBlock", "chart", "codeBlock", "dayMarker"]);
+    const FRAME_TYPES = new Set(["recipeBlock", "decisionBlock", "qaBlock", "chart", "codeBlock", "dayMarker"]);
     const isTitledList = node.type.name === "list" && node.attrs?.blockTitle != null;
     const isFrame = FRAME_TYPES.has(node.type.name) || isTitledList;
     // Keyboard path (no sourceEl): teach the new shortcut by showing
@@ -1858,7 +2037,12 @@
     const tag = node.tagName?.toLowerCase();
     handleShowPlus = tag === "p" || tag === "h1" || tag === "h2" || tag === "h3";
     handleIsBoard = node.classList?.contains("block-shell") || node.classList?.contains("code-block-wrap");
-    handleHasContent = !!(node.textContent?.trim());
+    // Same call the hover path and the sheet make: `node` here is the DOM
+    // block, and its shell's chip is real text — reading emptiness off it
+    // put a pin button on an empty board that handlePinBlock then refused
+    // to act on. (This is the touch entry: a tap reveals the card for EVERY
+    // top-level block, boards included — see handleEditorPointerDown.)
+    handleHasContent = blockMayBePinned(node);
     // An empty chip-less block on touch already carries a "+" — the widget
     // decoration in touch-block-handle.js, anchored into this same gutter.
     // Revealing the card there stacks a second, much larger "+" a few pixels
@@ -2005,15 +2189,69 @@
     enterBlockTitleEdit(resolveHandleBlock());
   }
 
+  // The facts the pin decision needs about a top-level DOM block, gathered
+  // ONCE for every place that asks "may this be pinned?" — the desktop
+  // gutter (describeHoverBlock), its touch/selection twin
+  // (revealBlockHandlesForNode), the touch sheet (openBlockActionSheet) and
+  // the pin itself (handlePinBlock). All but the last used to answer from
+  // `el.textContent`, the exact chrome-contaminated string
+  // block-pin-guard.js exists to stop trusting: they offered pin/copy on a
+  // block handlePinBlock then refused to pin, so the control did nothing.
+  function blockPinFacts(el) {
+    let node = null;
+    let pos = -1;
+    // el is always a direct child of .ProseMirror (block-shell.js and
+    // table-shell-view.js dispatch their NodeView root; hover resolves the
+    // same), so this index map is unambiguous.
+    const proseMirror = editorEl?.querySelector(".ProseMirror");
+    const childIndex = el && proseMirror ? Array.from(proseMirror.children).indexOf(el) : -1;
+    if (childIndex >= 0 && editor) {
+      editor.state.doc.forEach((n, offset, index) => {
+        if (index === childIndex) {
+          node = n;
+          pos = offset;
+        }
+      });
+    }
+    const dataType = el?.getAttribute?.("data-type");
+    // Attachment comes from the NODE, never the rendered DOM. This used to
+    // sniff `.attachment-block`, a class only AttachmentBlock.svelte's FILE
+    // branch has — so `/image` was never seen as an attachment and, having
+    // no node text (it is an inline atom), was classified an EMPTY LINE.
+    // block-pin-guard.js carries the full account. Chart keeps reading
+    // data-type: chart.js's NodeView is hand-written and sets it on its own
+    // wrapper, unlike the Svelte one an attachment gets.
+    const isAttachment = dataType === "attachment" || isAttachmentBlockNode(node);
+    return { node, pos, isAttachment, isChart: dataType === "chart" };
+  }
+
+  /** May this block be pinned at all? block-pin-guard.js makes the call —
+   *  including WHY attachments and charts are exempt (both are atoms whose
+   *  content never lives in text) and why a divider still isn't. This only
+   *  hands it the facts, and is the one answer every site uses. */
+  function blockMayBePinned(el, facts = blockPinFacts(el)) {
+    if (!el) return false;
+    return mayPinBlock({
+      nodeText: facts.node?.textContent,
+      elementText: el.textContent,
+      hasNonTextContent: facts.isAttachment || facts.isChart,
+    });
+  }
+
   async function handlePinBlock() {
     if (!editor) return;
     const block = resolveHandleBlock();
     if (!block) return;
     hoveredBlock = block;
 
-    // Don't pin empty blocks
+    // blockText is the DOM text, still used below to DERIVE a default title
+    // for an untitled board. The emptiness DECISION no longer uses it —
+    // `hoveredBlock` is the block shell and its NodeView chrome (the
+    // `.block-type-chip` span, a code block's copy button) is real text
+    // inside it, so an untouched `/bullet` read as "list" and got pinned.
+    // That guard moved below, once the ProseMirror node is resolved:
+    // blockMayBePinned / block-pin-guard.js's mayPinBlock.
     const blockText = hoveredBlock.textContent?.trim() || "";
-    if (!blockText) return;
 
     const tag = hoveredBlock.tagName?.toLowerCase();
 
@@ -2032,42 +2270,29 @@
     const isQABlock = dataType === "qaBlock" || dataType === "qa-block";
     const isBlockquote = dataType === "blockquote" || tag === "blockquote";
     const isRecipeBlock = dataType === "recipe-block" || dataType === "recipeBlock";
-    const isChart = dataType === "chart";
+    const isDecisionBlock = dataType === "decision-block" || dataType === "decisionBlock";
     const isCodeBlock = dataType === "code-block" || dataType === "codeBlock";
-    // A Svelte NodeView's live DOM is the data-node-view-wrapper div, which
-    // carries no data-type — so detect the attachment by its inner class
-    // instead (data-type only exists in the serialized/parse HTML).
-    const isAttachment = dataType === "attachment"
-      || hoveredBlock?.classList?.contains?.("attachment-block")
-      || !!hoveredBlock?.querySelector?.(".attachment-block");
-    const isBoard = hasTable || isList || isQABlock || isBlockquote || isRecipeBlock || isChart || isCodeBlock;
+    // The block's ProseMirror node and the two "content isn't text" cases,
+    // from the one helper the gutter and the sheet also use.
+    const pinFacts = blockPinFacts(hoveredBlock);
+    const { isAttachment, isChart } = pinFacts;
+    const isBoard = hasTable || isList || isQABlock || isBlockquote || isRecipeBlock || isDecisionBlock || isChart || isCodeBlock;
     pinCategory = isAttachment ? "file" : (isBoard ? "board" : "note");
     pinNodePositions = [];
 
-    // Find the top-level doc child position for this hovered DOM block.
-    // hoveredBlock is always a direct child of .ProseMirror (see
-    // handleEditorMouseMove), so this map is unambiguous.
-    const proseMirror = editorEl?.querySelector(".ProseMirror");
-    const childIndex = proseMirror ? Array.from(proseMirror.children).indexOf(hoveredBlock) : -1;
-    let topLevelNode = null;
-    let topLevelPos = -1;
-    if (childIndex >= 0) {
-      editor.state.doc.forEach((node, offset, index) => {
-        if (index === childIndex) {
-          topLevelNode = node;
-          topLevelPos = offset;
-        }
-      });
-    }
+    // The top-level doc child for this hovered DOM block, resolved above.
+    let topLevelNode = pinFacts.node;
+    const topLevelPos = pinFacts.pos;
+
+    // Don't pin an entirely empty block — the same call the gutter and the
+    // sheet make before they offer the control at all.
+    if (!blockMayBePinned(hoveredBlock, pinFacts)) return;
 
     // A line that is ONLY a file pins as a file. A line mixing text with an
     // inline file pins as a note (the whole line) — the file rides along in
     // the note's JSON and the modal shows text + file together. Both cases
     // capture JSON (below) so the inline file is never flattened to text.
-    const isSoleAttachment = isAttachment && (
-      topLevelNode?.type?.name === "attachment"
-      || (topLevelNode?.childCount === 1 && topLevelNode?.firstChild?.type?.name === "attachment")
-    );
+    const isSoleAttachment = isAttachment && !!soleAttachmentNode(topLevelNode);
     if (isAttachment) pinCategory = isSoleAttachment ? "file" : (isBoard ? "board" : "note");
 
     // Detect any pre-existing title BEFORE we serialize. Sources of truth in
@@ -2317,11 +2542,7 @@
       // A file is schema-inline now, so it lives inside a paragraph. Treat a
       // paragraph whose sole child is an attachment (or a bare attachment) as
       // a file pin.
-      const attachmentNode = blockNode.type.name === "attachment"
-        ? blockNode
-        : (blockNode.childCount === 1 && blockNode.firstChild?.type.name === "attachment"
-            ? blockNode.firstChild
-            : null);
+      const attachmentNode = soleAttachmentNode(blockNode);
       const isAttachment = !!attachmentNode;
       const isBoardNode = isBoardType(blockNode.type.name);
       const existingTitle = (blockNode.attrs?.blockTitle || "").trim();
@@ -2818,19 +3039,32 @@
   <!-- Touch block-actions sheet — replaces .block-handles on touch. Opened
        by tapping the block's chip/synthetic handle (see
        handleBlockActionsEvent / openBlockActionSheet), not a long-press. -->
-  <BottomSheet open={blockActionSheetOpen} onClose={closeBlockActionSheet} title="block">
+  <BottomSheet open={blockActionSheetOpen} onClose={dismissBlockActionSheet} title="block">
     <div class="block-action-sheet">
-      {#each blockActionSheetActions as id (id)}
-        <button
-          type="button"
-          class="block-action-row"
-          class:danger={id === "delete"}
-          onclick={() => runBlockAction(id)}
-        >
-          <span class="block-action-glyph" aria-hidden="true">{BLOCK_ACTION_GLYPHS[id]}</span>
-          <span class="block-action-label">{BLOCK_ACTION_LABELS[id]}</span>
+      {#if blockActionSheetMode === "convert"}
+        <button type="button" class="block-action-row" onclick={() => (blockActionSheetMode = "root")}>
+          <span class="block-action-glyph" aria-hidden="true">←</span>
+          <span class="block-action-label">back</span>
         </button>
-      {/each}
+        {#each convertTargetsFor(hoveredBlock?.dataset?.board, { marker: hoveredBlock?.querySelector?.("li")?.dataset?.marker }) as target (target)}
+          <button type="button" class="block-action-row" onclick={() => runBlockConvert(target)}>
+            <span class="block-action-glyph" aria-hidden="true"></span>
+            <span class="block-action-label">{CONVERT_TARGET_LABELS[target]}</span>
+          </button>
+        {/each}
+      {:else}
+        {#each blockActionSheetActions as id (id)}
+          <button
+            type="button"
+            class="block-action-row"
+            class:danger={id === "delete"}
+            onclick={() => runBlockAction(id)}
+          >
+            <span class="block-action-glyph" aria-hidden="true">{BLOCK_ACTION_GLYPHS[id]}</span>
+            <span class="block-action-label">{BLOCK_ACTION_LABELS[id]}</span>
+          </button>
+        {/each}
+      {/if}
     </div>
   </BottomSheet>
 
@@ -3541,7 +3775,23 @@
      under the `.prose` class. */
   .tiptap-editor :global(.ProseMirror) {
     min-height: 200px;
-    padding: 0;
+    /* Trailing room below the last block, inside the scroller.
+       Two jobs, both of which the old `padding: 0` denied:
+
+       1. It is what the caret's bottom margin scrolls INTO. Without it the
+          scroller has nothing left to give at the end of the doc, so the
+          line you are writing ends up flush against the bottom edge —
+          technically in view, and still like writing into the window
+          frame. (See editor/caret-scroll.js for the scroll itself.)
+       2. It is a click target. ProseMirror places the caret at the end of
+          the doc when you click inside its own padding, so the empty space
+          under the last line becomes "click here to keep writing" instead
+          of dead canvas.
+
+       Not a viewport fraction: on a phone a `vh`-based value eats the
+       whole screen below a short page, and the writing surface is meant to
+       start at the top. */
+    padding: 0 0 6rem;
   }
 
   /* Block gap baseline for paragraph-shaped content. 8px between

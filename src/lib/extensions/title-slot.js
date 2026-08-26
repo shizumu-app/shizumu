@@ -15,6 +15,7 @@
 //   // and titleApi.destroy() from destroy()
 
 import { TextSelection } from "@tiptap/pm/state";
+import { moveBlockAtPos } from "./block-movement.js";
 
 /**
  * bindTitleSlot(opts) — attach title-editing behavior to a <input> title slot.
@@ -137,7 +138,24 @@ export function bindTitleSlot({
     const pos = getPos();
     if (typeof pos !== "number") return;
     try {
-      if (pos <= 0) { view.focus(); return; }
+      if (pos <= 0) {
+        // This block IS the first node in the document, so there is
+        // nothing above to move into — make somewhere. This is the whole
+        // reason the slash commands no longer park an empty paragraph
+        // above every board they create: that line existed only so the
+        // top of the page stayed reachable, and it showed up as a stray
+        // blank line above the first block on every new page. Creating it
+        // here means it appears when the user actually asks to go up, and
+        // never otherwise. See editor/slash-insert-target.js's
+        // needsLeadingParagraph for which block types rely on this.
+        const para = view.state.schema.nodes.paragraph;
+        if (!para) { view.focus(); return; }
+        let tr = view.state.tr.insert(0, para.create());
+        tr = tr.setSelection(TextSelection.near(tr.doc.resolve(1), 1));
+        view.dispatch(tr);
+        view.focus();
+        return;
+      }
       const $before = view.state.doc.resolve(pos);
       const tr = view.state.tr.setSelection(TextSelection.near($before, -1));
       view.dispatch(tr);
@@ -213,7 +231,62 @@ export function bindTitleSlot({
     }, 120);
   };
 
+  // ---------------------------------------------------------------------------
+  // moveBlockFromTitle — Alt+Arrow reorders the whole block, from the title.
+  //
+  // Alt+Arrow moves a block from anywhere inside it, via BlockMovement's
+  // keymap. It did nothing from the title, and could not: the title is an
+  // <input> this NodeView renders as chrome outside the contenteditable,
+  // and stopEvent() below keeps ProseMirror away from it deliberately — so
+  // PM's keymap never sees these keys. The title is also where reordering
+  // is most natural to reach for, because the title is how the user
+  // identifies the block they want to move.
+  //
+  // Addressed by position rather than by selection: with focus in the
+  // input, the PM selection is wherever it was last left, so moveUnit()
+  // would move some other block. See block-movement.js.
+  //
+  // The move destroys and rebuilds this NodeView, taking the focused input
+  // with it, so focus is restored onto the REPLACEMENT slot at the block's
+  // new position — otherwise one press would drop the user out of the
+  // title and the second press would go nowhere.
+  // ---------------------------------------------------------------------------
+  const moveBlockFromTitle = (direction) => {
+    if (typeof getPos !== "function") return;
+    const pos = getPos();
+    if (typeof pos !== "number") return;
+    // Commit any in-flight title text first: the move re-serializes the
+    // node, and an uncommitted debounce would be lost with the old NodeView.
+    if (commitTimer) { clearTimeout(commitTimer); commitTimer = null; }
+    dispatchTitle(titleSlot.value || "");
+    let newPos = null;
+    try {
+      newPos = moveBlockAtPos(view.state, view.dispatch, getPos(), direction);
+    } catch { newPos = null; }
+    if (newPos === null) return; // already at that end — keep focus, do nothing.
+    const caret = titleSlot.selectionStart;
+    requestAnimationFrame(() => {
+      try {
+        const dom = view.nodeDOM(newPos);
+        const slot = dom && dom.querySelector
+          ? dom.querySelector(":scope > .board-title-slot")
+          : null;
+        const target = slot || titleSlot;
+        target.focus();
+        const at = typeof caret === "number" ? caret : (target.value || "").length;
+        target.setSelectionRange(at, at);
+      } catch {}
+    });
+  };
+
   const onKeydown = (e) => {
+    // Checked before the plain-arrow branches below, which would otherwise
+    // swallow Alt+Arrow as a navigate-out-of-the-title.
+    if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      moveBlockFromTitle(e.key === "ArrowUp" ? "up" : "down");
+      return;
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       if (commitTimer) { clearTimeout(commitTimer); commitTimer = null; }

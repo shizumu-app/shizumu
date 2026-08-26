@@ -24,6 +24,7 @@ const FRAME_TYPES = new Set([
   "list",
   "codeBlock",
   "recipeBlock",
+  "decisionBlock",
   "qaBlock",
 ]);
 

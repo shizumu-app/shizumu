@@ -4,14 +4,16 @@
   Owns: the modal frame, kind tabs, working copy of (kind, source), and
   save/cancel routing. The per-kind form components own their own
   fields and emit `onChange(nextSource)` to update the working copy.
-  Mermaid is rendered inline in the editor on save — no live preview
-  inside the builder.
+  A debounced preview pane below the form renders the same Mermaid
+  syntax the NodeView will render on save, via the shared
+  renderMermaidInto() (chart-render.js) — the two paths can't drift.
 -->
 <script>
   import Modal from "../lib/ui/Modal.svelte";
   import Button from "../lib/ui/Button.svelte";
   import SegmentedControl from "../lib/ui/SegmentedControl.svelte";
   import { emptySource } from "../lib/extensions/chart.js";
+  import { renderMermaidInto } from "../lib/extensions/chart-render.js";
   import ChartFormFlowchart from "./chart/ChartFormFlowchart.svelte";
   import ChartFormMindmap from "./chart/ChartFormMindmap.svelte";
   import ChartFormTimeline from "./chart/ChartFormTimeline.svelte";
@@ -26,6 +28,67 @@
   let kind = $state("flowchart");
   let source = $state(emptySource("flowchart"));
   let blockTitle = $state("");
+  let previewEl = $state(null);
+
+  // Debounced live preview — re-renders ~150ms after the last edit to
+  // (kind, source). Same module-local setTimeout pattern as
+  // CommandPalette.svelte's debounceTimer (no shared debounce utility
+  // exists in src/lib/utils.js).
+  let previewSyntaxKey = $derived(JSON.stringify({ kind, source }));
+  let previewDebounceTimer = null;
+
+  // The debounce alone does not order the renders. renderMermaidInto writes
+  // `el.innerHTML` AFTER an await, so two renders in flight at once can
+  // resolve out of order and leave the preview showing the PREVIOUS diagram
+  // until the next keystroke — a slow render is still running when the next
+  // debounce window closes. Serialise them with the same two-flag pair the
+  // NodeView uses (chart.js's isRendering/queuedRender): one render at a
+  // time, and a single coalesced re-run afterwards using the LATEST
+  // kind/source rather than the ones captured when the queued call was made.
+  // Chosen over threading an `isStale()` token through renderMermaidInto
+  // because that would change the signature the NodeView also calls — one
+  // proven idiom in two places beats a new mechanism in the shared renderer.
+  let previewRendering = false;
+  let previewQueued = false;
+  let previewKind = null;
+  let previewSource = null;
+
+  async function renderPreview(el) {
+    if (previewRendering) {
+      previewQueued = true;
+      return;
+    }
+    previewRendering = true;
+    try {
+      await renderMermaidInto(el, { kind: previewKind, source: previewSource, idPrefix: "chart-preview" });
+    } finally {
+      previewRendering = false;
+      if (previewQueued) {
+        previewQueued = false;
+        renderPreview(el);
+      }
+    }
+  }
+
+  $effect(() => {
+    previewSyntaxKey;
+    if (!builderState || !previewEl) return;
+    const el = previewEl;
+    const nextKind = kind;
+    const nextSource = source;
+    if (previewDebounceTimer) clearTimeout(previewDebounceTimer);
+    previewDebounceTimer = setTimeout(() => {
+      previewKind = nextKind;
+      previewSource = nextSource;
+      renderPreview(el);
+    }, 150);
+    return () => {
+      if (previewDebounceTimer) {
+        clearTimeout(previewDebounceTimer);
+        previewDebounceTimer = null;
+      }
+    };
+  });
 
   // Re-seed on each open.
   $effect(() => {
@@ -103,6 +166,16 @@
           <ChartFormTimeline source={source} onChange={handleChange} />
         {/if}
       </div>
+
+      <!-- data-kind mirrors the editor's `.chart-block[data-kind]` so the
+           per-kind sizing rules in prose.css (the timeline width cap) reach
+           the preview too — otherwise the preview renders a timeline wider
+           than the chart the user is about to save. -->
+      <div class="builder-preview" data-kind={kind}>
+        <div class="prose">
+          <div class="chart-render" bind:this={previewEl}></div>
+        </div>
+      </div>
     </div>
 
     {#snippet actions()}
@@ -150,6 +223,13 @@
   .builder-body {
     overflow: visible;
     padding-right: 0.25rem;
+  }
+  .builder-preview {
+    max-height: 14rem;
+    overflow: auto;
+    border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+    border-radius: 0.375rem;
+    padding: 0.5rem;
   }
   .title-input {
     appearance: none;

@@ -12,6 +12,7 @@ const BOARD_TYPES = [
   "blockquote",
   "qaBlock",
   "recipeBlock",
+  "decisionBlock",
   "table",
   "chart",
   "codeBlock",
@@ -27,6 +28,7 @@ const NODEVIEW_TYPES = [
   "blockquote",
   "qaBlock",
   "recipeBlock",
+  "decisionBlock",
 ];
 
 // Types that get the title-navigation keyboard contract (ArrowUp at start
@@ -34,8 +36,21 @@ const NODEVIEW_TYPES = [
 // title slot, Backspace at start of empty first item → focus title slot).
 // Includes NODEVIEW_TYPES plus any block type that has its own NodeView
 // with a `.board-title-slot` direct child exposing `__enterEdit()`.
-// codeBlock (CodeBlockShizumu) qualifies.
-const TITLE_NAV_TYPES = [...NODEVIEW_TYPES, "codeBlock"];
+// codeBlock (CodeBlockShizumu) qualifies, and so does table (ShellTableView,
+// Plan 1c) — table stays OUT of NODEVIEW_TYPES (its DOM contract still
+// fights createBoardNodeView's wrapping), but it wires its own real
+// `.board-title-slot` input by hand and needs the same ArrowUp/ArrowDown/
+// Backspace entry points as every other board. `chart` satisfies the same
+// rule (its NodeView renders a real title slot exposing `__enterEdit()`);
+// without it, ArrowDown from the paragraph above reached a table's title but
+// not a chart's. Chart is an ATOM, so the board-resolution loop below can
+// never match it from inside — only the ArrowDown-from-above branch applies.
+//
+// Membership here is NOT membership in the Enter/Backspace body-editing
+// branches further down: those were written for NodeView boards whose
+// `$from.depth - 1` is a body item, and `table` is explicitly excluded from
+// both (see their comments — Enter used to delete a filled table cell).
+const TITLE_NAV_TYPES = [...NODEVIEW_TYPES, "codeBlock", "table", "chart"];
 
 const NODEVIEW_PLUGIN_KEY = new PluginKey("blockTitleNodeView");
 
@@ -271,12 +286,21 @@ export const BlockTitle = Extension.create({
             // Lists and q&a own their Enter behavior. Blockquote still needs
             // this generic exit logic. The board is always preserved; only
             // explicit user action (selection + Delete) removes a board.
+            //
+            // `table` is in TITLE_NAV_TYPES for the title-ENTRY half of the
+            // contract only. This branch was written for NodeView boards
+            // whose `$from.depth - 1` is a body item; inside a table that
+            // depth is the tableCell, so the delete below would wipe a filled
+            // cell (the Fitter re-materialises an empty one, so nothing
+            // complained). Tables keep PM's own splitBlock. See
+            // board-detection.test.js "Enter inside a table never deletes a cell".
             if (
               event.key === "Enter" &&
               atBoardEnd &&
               $from.parent.content.size === 0 &&
               board.type.name !== "list" &&
-              board.type.name !== "qaBlock"
+              board.type.name !== "qaBlock" &&
+              board.type.name !== "table"
             ) {
               // Replace the trailing empty textblock with a fresh paragraph
               // immediately after the board. Board persists regardless of
@@ -318,7 +342,13 @@ export const BlockTitle = Extension.create({
                 && $from.parent.content.size === 0
                 && $from.parent.isTextblock
                 && board.type.name !== "list"
-                && board.type.name !== "qaBlock") {
+                && board.type.name !== "qaBlock"
+                // Same reason as the Enter branch above: this deletes a body
+                // textblock resolved through a NodeView board's depths. It is
+                // not destructive for a table today (it removes only the empty
+                // paragraph), but it is one schema change from being so, and a
+                // table's cells are not this branch's "body".
+                && board.type.name !== "table") {
               const removeFrom = $from.before($from.depth);
               const removeTo = $from.after($from.depth);
               let tr = view.state.tr.delete(removeFrom, removeTo);
@@ -397,6 +427,10 @@ function createBoardContentDOM(typeName) {
     el = document.createElement("div");
     el.dataset.type = "recipe-block";
     el.classList.add("recipe-block");
+  } else if (typeName === "decisionBlock") {
+    el = document.createElement("div");
+    el.dataset.type = "decision-block";
+    el.classList.add("decision-block");
   } else {
     el = document.createElement("div");
   }

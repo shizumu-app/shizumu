@@ -9,12 +9,67 @@
 // to take. Throwing is correct if the state can't be reached: a capture
 // named for a state the app never entered is worse than a missing one.
 import { STATES } from "../../src/lib/vr/scenes.js";
+import { BLOCK_ACTION_LABELS } from "../../src/lib/editor/block-actions.js";
+import { CONVERTIBLE_TYPES } from "../../src/lib/editor/block-convert.js";
+
+// Whether a board type offers "convert to…" is DERIVED from
+// CONVERTIBLE_TYPES, never listed separately. A hand-maintained negation of
+// that list ("chart", "table") reopened the vacuous-pass hole the boardType
+// throw below was added to close: a board type in neither list would skip
+// both assertion blocks in silence. One list, two branches — a new board
+// type lands in exactly one of them, always.
 
 /** A short height on the same width — what an open soft keyboard leaves. */
 const KEYBOARD_VIEWPORT_HEIGHT = 360;
 
 async function settle(page, ms = 450) {
   await page.waitForTimeout(ms);
+}
+
+/**
+ * Tap the top-level line that holds an attachment and photograph the gutter
+ * card it reveals. Shared by the image and file drivers below, because the
+ * whole diagnostic value is that the two lines get the SAME assertions —
+ * the defect was one branch quietly answering differently from the other.
+ *
+ * `innerSelector` picks the branch: AttachmentBlock.svelte renders
+ * `.attachment-image` for an image and `.attachment-block` for a file, and
+ * they share no class — which was the bug's hiding place.
+ */
+async function attachmentGutter(page, innerSelector, label) {
+  const wrapper = page.locator(".tiptap-wrapper").first();
+  await wrapper.waitFor({ state: "visible" });
+
+  // The top-level block, found through the attachment it holds rather than
+  // by index: the fixtures put a plain line before and after the
+  // attachment, so `> p` first would tap prose and photograph nothing about
+  // an attachment at all.
+  const block = page
+    .locator(`.tiptap-wrapper .ProseMirror > p:has(${innerSelector})`)
+    .first();
+  await block.waitFor({ state: "visible" });
+
+  // Real touch tap, same gesture BLOCK_HANDLES_TOUCH uses and for the same
+  // reason — a bare click would take the desktop-hover path instead.
+  await block.tap();
+  await settle(page, 200);
+
+  const handles = page.locator(".block-handles");
+  await handles.waitFor({ state: "visible" });
+  for (const name of ["pin", "copy", "delete"]) {
+    if ((await handles.locator(`[data-label="${name}"]`).count()) === 0) {
+      throw new Error(
+        `${label}: the "${name}" control is missing — an attachment line is not an empty line`,
+      );
+    }
+  }
+  // The other half of the defect, and the part that named it: `isEmpty` is
+  // `canInsert && !canPin`, so an attachment line offering the insert "+"
+  // means the app has classified it as a blank line to write under. That is
+  // literally what was shipping — `["insert"]` and nothing else.
+  if ((await handles.locator('[data-label="insert"]').count()) !== 0) {
+    throw new Error(`${label}: the insert "+" rendered — the line is being read as empty`);
+  }
 }
 
 export const STATE_DRIVERS = {
@@ -171,6 +226,27 @@ export const STATE_DRIVERS = {
       }
     }
   },
+
+  // ── the attachment gutter, image and file ───────────────────────────
+  // The `/image` defect: hovering an image line offered ONLY the "+"
+  // insert handle, while the identical file line offered pin/copy/delete.
+  // blockPinFacts decided "is this an attachment" from `.attachment-block`,
+  // a class only AttachmentBlock.svelte's FILE branch renders; the image
+  // branch renders `.local-image-wrap .attachment-image`. So an image was
+  // never exempt, and an attachment is an inline atom with no node text —
+  // not exempt + no text = an EMPTY LINE, which is what `["insert"]` meant.
+  //
+  // page-image-content and page-file-content were both load-time-only
+  // scenes, so the whole suite stayed green through it. These two drivers
+  // are the missing half: the control only exists once you touch the line.
+  //
+  // Written as a pair on purpose — the file line is the control sample. On
+  // its own "an image offers no pin" reads like a design decision; beside a
+  // file line that offers all three, it reads as the bug it was.
+  [STATES.IMAGE_BLOCK_HANDLES_TOUCH]: async (page) =>
+    attachmentGutter(page, ".attachment-image", "image-block-handles"),
+  [STATES.FILE_BLOCK_HANDLES_TOUCH]: async (page) =>
+    attachmentGutter(page, ".attachment-block", "file-block-handles"),
 
   // The touch pin flow, end to end. Every prior mobile block-action fix in
   // this app's history was reasoned about ONE seam — the reveal, or the
@@ -484,6 +560,186 @@ export const STATE_DRIVERS = {
     }
   },
 
+  // The touch action sheet a board's own `.block-type-chip` opens
+  // (block-shell.js / table-shell-view.js dispatch shizumu-block-actions on
+  // tap). This is the exact repro route of Task 1's bug: tapping the chip
+  // on an EMPTY chart or table used to open no sheet at all. Real input
+  // throughout — a tap on the chip, no hook that sets blockActionSheetOpen
+  // directly.
+  [STATES.BLOCK_ACTIONS_SHEET_TOUCH]: async (page) => {
+    const chip = page.locator(".block-type-chip").first();
+    await chip.waitFor({ state: "visible" });
+    // dataset.board is read off the DOM before the tap (createBlockShell /
+    // ShellTableView both stamp it) so the assertions below adapt to
+    // whichever board type the scene's fixture actually put first, rather
+    // than hard-coding per-scene expectations here.
+    const boardType = await chip.evaluate((el) => el.closest("[data-board]")?.dataset.board || null);
+    // Every scene this state is applied to is a board fixture — a null
+    // boardType means the chip's own dataset.board lookup failed (wrong
+    // selector, a DOM shape change), which would otherwise silently skip
+    // BOTH assertion blocks below and let a real regression through
+    // vacuously. page-empty-table / page-empty-chart exist specifically to
+    // photograph Task 1's fix (title still offered on an EMPTY board) — a
+    // vacuous pass here would defeat their whole purpose.
+    if (!boardType) {
+      throw new Error(
+        "block-actions-sheet: could not read dataset.board off the tapped chip's closest [data-board] — " +
+        "every scene using this state is a board fixture, so this should never be null",
+      );
+    }
+
+    await chip.tap();
+    await settle(page, 250);
+
+    const sheet = page.locator(".block-action-sheet");
+    await sheet.waitFor({ state: "visible" });
+    const rowLabels = await sheet.locator(".block-action-row .block-action-label").allTextContents();
+
+    // The sheet must always offer delete for a board — this is the
+    // "opened nothing at all" half of Task 1's bug.
+    if (!rowLabels.includes(BLOCK_ACTION_LABELS.delete)) {
+      throw new Error(
+        `block-actions-sheet: expected a "${BLOCK_ACTION_LABELS.delete}" row, got ${JSON.stringify(rowLabels)}`,
+      );
+    }
+
+    // Is there anything here a pin could carry? Measured off the block
+    // itself with the NodeView chrome excluded — the same distinction
+    // block-pin-guard.js draws between the SHELL's text (which contains the
+    // chip, so an EMPTY board reads as full) and the document node's text.
+    // A chart is exempt by construction: chart.js is `atom: true` with its
+    // whole dataset in attrs, so a chart full of data has no more text than
+    // a blank one.
+    const pinnable = await chip.evaluate((el) => {
+      const block = el.closest("[data-board]");
+      if (block.getAttribute("data-type") === "chart") return true;
+      const clone = block.cloneNode(true);
+      clone.querySelectorAll(".block-type-chip, .board-title-slot").forEach((n) => n.remove());
+      return clone.textContent.trim() !== "";
+    });
+
+    // pin and copy are offered together, and only where there is something
+    // to pin. An EMPTY board used to offer both: openBlockActionSheet read
+    // "has content" off the shell's own textContent, chip included, so the
+    // rows appeared and then did nothing when tapped — handlePinBlock's own
+    // guard (block-pin-guard.js) refuses an empty block. A control that
+    // does nothing reads as broken, which is exactly how it was reported.
+    for (const id of ["pin", "copy"]) {
+      if (rowLabels.includes(BLOCK_ACTION_LABELS[id]) !== pinnable) {
+        throw new Error(
+          `block-actions-sheet: "${boardType}" board ${pinnable
+            ? `has content but is missing its "${BLOCK_ACTION_LABELS[id]}" row`
+            : `is empty but still offers "${BLOCK_ACTION_LABELS[id]}"`}, got ${JSON.stringify(rowLabels)}`,
+        );
+      }
+    }
+
+    const isConvertible = CONVERTIBLE_TYPES.includes(boardType);
+
+    // The non-convertible boards are exactly chart and table, and both
+    // always render a `.board-title-slot` regardless of content, so "title"
+    // is offered even when the block is empty — the other half of Task 1's
+    // regression photograph (page-empty-table / page-empty-chart tap this
+    // same driver and would fail here if the fix regressed). They must also
+    // not offer "convert to…" (Task 5 excludes them: neither has a
+    // flatten-to-paragraphs story).
+    if (!isConvertible) {
+      if (!rowLabels.includes(BLOCK_ACTION_LABELS.title)) {
+        throw new Error(
+          `block-actions-sheet: "${boardType}" board is missing its "${BLOCK_ACTION_LABELS.title}" row, got ${JSON.stringify(rowLabels)}`,
+        );
+      }
+      if (rowLabels.includes(BLOCK_ACTION_LABELS.convert)) {
+        throw new Error(
+          `block-actions-sheet: "${boardType}" board must not offer "${BLOCK_ACTION_LABELS.convert}", got ${JSON.stringify(rowLabels)}`,
+        );
+      }
+    }
+
+    // Convertible board types (Task 5) must offer the convert row.
+    if (isConvertible) {
+      if (!rowLabels.includes(BLOCK_ACTION_LABELS.convert)) {
+        throw new Error(
+          `block-actions-sheet: convertible board "${boardType}" is missing its "${BLOCK_ACTION_LABELS.convert}" row, got ${JSON.stringify(rowLabels)}`,
+        );
+      }
+    }
+  },
+
+  // PARKED (Task 6, fix round 1) — not applied to any scene right now.
+  // Kept here, working as far as its own assertions go, so whoever lifts
+  // the block below has a starting point instead of a blank page.
+  //
+  // The sheet swaps in place to a "← back" row plus the target list
+  // (Task 5) when "convert to…" is tapped. Opening the sheet appears to
+  // fire a genuine `mouseleave` on `.tiptap-wrapper` — the dialog's
+  // top-layer promotion covers the previously-hovered chip — which arms
+  // handleEditorMouseLeave's HOVER_HIDE_DELAY_MS (320ms) hide timer
+  // (hover-reveal.js, wired up in TipTapEditor.svelte). That timer is a
+  // desktop-hover mechanism never gated on touch, so it fires here too and,
+  // once it lands, wipes hoveredBlock out from under this exact submenu:
+  // the target rows render correctly for roughly the first ~150ms after
+  // the convert tap, then collapse back to just "back" with no further
+  // action from the user.
+  //
+  // First attempt asserted `rowCount >= 2` right after the tap and
+  // returned — passed (the assertion ran inside the live window) while
+  // `toHaveScreenshot`'s own re-shoot-until-stable loop kept sampling AFTER
+  // the driver returned, past the 320ms mark, and committed the COLLAPSED
+  // frame as the baseline. Second attempt held the pointer on a target row
+  // (`.hover()`) on the theory that a resting hover, not a mouseleave,
+  // would keep the timer from arming — asserted twice, once right after
+  // the tap and again after the hold, both passing reliably. It still did
+  // not work: re-running the SAME driver against Docker twice produced one
+  // scene open (page-qa-content) and the other collapsed (page-board-
+  // content) in the same run, with neither assertion ever failing — proof
+  // the collapse happens strictly between this driver returning and
+  // `toHaveScreenshot`'s own capture landing, a window this driver cannot
+  // reach into no matter what it asserts beforehand. Whatever the timer is
+  // actually reacting to, it is not simulateable from outside without
+  // editing `handleEditorMouseLeave` itself (gate it on
+  // `!isCoarsePointer()`, matching how the rest of the touch-reveal path
+  // already treats this class of desktop-only mechanism) — and that file
+  // is frozen for this task. See task-6-report.md's "Concerns" section.
+  //
+  // Until that lands, this state cannot honestly produce a stable
+  // screenshot and must not be applied to a scene (scenes.js) or have a
+  // baseline committed for it.
+  [STATES.BLOCK_CONVERT_SHEET_TOUCH]: async (page) => {
+    const chip = page.locator(".block-type-chip").first();
+    await chip.waitFor({ state: "visible" });
+    await chip.tap();
+
+    const sheet = page.locator(".block-action-sheet");
+    await sheet.waitFor({ state: "visible" });
+    const convertRow = sheet.locator(".block-action-row", { hasText: BLOCK_ACTION_LABELS.convert });
+    await convertRow.waitFor({ state: "visible" });
+    await convertRow.tap();
+
+    const backRow = sheet.locator(".block-action-row").filter({ hasText: "back" });
+    await backRow.waitFor({ state: "visible" });
+    const rows = sheet.locator(".block-action-row");
+    const openCount = await rows.count();
+    // back row + at least one target row.
+    if (openCount < 2) {
+      throw new Error(
+        `block-convert-sheet: expected the back row plus at least one target row, got ${openCount} row(s)`,
+      );
+    }
+
+    // Real-input hold, kept for whoever picks this up next — does not fix
+    // the race (see the comment above) but is still the honest thing to
+    // do while this driver is being exercised at all.
+    await rows.nth(1).hover();
+
+    const heldCount = await rows.count();
+    if (heldCount < 2) {
+      throw new Error(
+        `block-convert-sheet: the sheet collapsed back to "${heldCount} row(s)" while holding the pointer on a target row — the hover hold did not prevent the hide timer`,
+      );
+    }
+  },
+
   // The header collapses to a pill and the shell resizes when the keyboard
   // is up. Shrinking the viewport is enough to trigger it: isKeyboardOpen()
   // reads a drop in innerHeight below the tallest seen, precisely so the
@@ -606,6 +862,48 @@ export const STATE_DRIVERS = {
     await page.locator(".builder .title-input").click();
     await page.setViewportSize({ width: size.width, height: KEYBOARD_VIEWPORT_HEIGHT });
     await settle(page, 700);
+  },
+
+  // The shortcuts panel, opened the only way there is: click its own `?`.
+  // Desktop project only (see the state's comment in scenes.js) — the
+  // panel is display:none under (pointer: coarse), so this driver clicking
+  // nothing is the correct failure on a phone, not a state to capture.
+  [STATES.SHORTCUT_PANEL]: async (page) => {
+    const toggle = page.getByRole("button", { name: "keyboard shortcuts" });
+    await toggle.waitFor({ state: "visible" });
+    await toggle.click();
+
+    const panel = page.locator(".help-panel");
+    await panel.waitFor({ state: "visible" });
+    await settle(page, 350);
+
+    // The container runs a Linux engine, so modifier-label.js must answer
+    // "ctrl". Asserting ⌘ is ABSENT is the regression photograph: every
+    // mod chord on this panel used to print ⌘ regardless of platform, and
+    // no capture could see it because no capture ever opened the panel.
+    const keys = await panel.locator(".key").allTextContents();
+    if (!keys.includes("ctrl")) {
+      throw new Error(
+        `shortcut-panel: expected a "ctrl" chip on a Linux engine, got ${JSON.stringify(keys)}`,
+      );
+    }
+    if (keys.includes("⌘")) {
+      throw new Error("shortcut-panel: ⌘ printed on a Linux engine — modifier-label.js regressed");
+    }
+
+    // Every row's keys start at the same x. Measured rather than left to
+    // the pixel diff: the column drifting a few px back to ragged is well
+    // inside the 0.2% ratio gate, and the straight column is the entire
+    // point of the subgrid that replaced justify-content: space-between.
+    const lefts = await panel
+      .locator(".help-keys")
+      .evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().left)));
+    if (lefts.length === 0) throw new Error("shortcut-panel: no rows rendered");
+    if (new Set(lefts).size !== 1) {
+      throw new Error(
+        `shortcut-panel: key column is ragged — left edges ${JSON.stringify([...new Set(lefts)].sort())}`,
+      );
+    }
   },
 };
 

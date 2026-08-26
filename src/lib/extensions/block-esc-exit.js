@@ -1,9 +1,9 @@
 // BlockEscExit — Esc walks up to the nearest "frame" depth and
 // moves the cursor to a sibling-after paragraph (creating one if
 // needed). Frame node types: list, blockquote, codeBlock,
-// recipeBlock, qaBlock. A top-level paragraph or heading is NOT a
-// frame; Esc there returns false so other Esc handlers (slash menu
-// close, bubble menu close, etc.) can run.
+// recipeBlock, decisionBlock, qaBlock. A top-level paragraph or
+// heading is NOT a frame; Esc there returns false so other Esc
+// handlers (slash menu close, bubble menu close, etc.) can run.
 import { Extension } from "@tiptap/core";
 import { TextSelection } from "@tiptap/pm/state";
 
@@ -12,6 +12,7 @@ const FRAME_TYPES = new Set([
   "blockquote",
   "codeBlock",
   "recipeBlock",
+  "decisionBlock",
   "qaBlock",
 ]);
 

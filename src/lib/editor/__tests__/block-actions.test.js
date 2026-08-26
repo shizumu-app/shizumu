@@ -41,6 +41,32 @@ describe("blockActionsFor — a board type with no title-slot element (e.g. tabl
   });
 });
 
+describe("blockActionsFor — a convertible board (list/blockquote/qaBlock/recipeBlock/decisionBlock/codeBlock)", () => {
+  it("includes convert, right after title", () => {
+    expect(blockActionsFor({ isBoard: true, hasTitle: true, canPin: true, isEmpty: false, canConvert: true }))
+      .toEqual(["pin", "copy", "title", "convert", "delete"]);
+  });
+});
+
+describe("blockActionsFor — a board with canConvert: false (e.g. chart/table)", () => {
+  it("excludes convert even though isBoard is true — chart/table are refused by block-convert.js", () => {
+    expect(blockActionsFor({ isBoard: true, hasTitle: true, canPin: true, isEmpty: false, canConvert: false }))
+      .toEqual(["pin", "copy", "title", "delete"]);
+  });
+});
+
+describe("blockActionsFor — a paragraph (canConvert never applies)", () => {
+  it("excludes convert even when canConvert is (incorrectly) true — not a board, no chip to convert", () => {
+    // Real callers never set canConvert true for a paragraph (it's gated on
+    // isBoard in TipTapEditor.svelte), but blockActionsFor itself doesn't
+    // gate convert on isBoard — this pins the current, simpler behavior
+    // (convert is offered whenever canConvert is true, board or not) rather
+    // than leaving it undocumented which module is responsible for that.
+    expect(blockActionsFor({ isBoard: false, hasTitle: false, canPin: true, isEmpty: false, canConvert: true }))
+      .toEqual(["pin", "copy", "convert", "delete"]);
+  });
+});
+
 describe("blockActionsFor — no arguments", () => {
   it("offers nothing — every gate defaults closed", () => {
     // Same "nothing happens" shape as the empty-paragraph case above, for
@@ -53,12 +79,12 @@ describe("blockActionsFor — no arguments", () => {
 });
 
 describe("blockActionsFor — action order is fixed regardless of input order", () => {
-  it("always returns pin, copy, title, insert-below, delete in that relative order", () => {
-    // isEmpty+canPin+hasTitle+isBoard all true is not a real block shape
-    // (an insertable empty block is never also a board with content) but
-    // exercising every gate at once locks the ORDER contract explicitly,
-    // independent of which real block shapes exist today.
-    expect(blockActionsFor({ isBoard: true, hasTitle: true, canPin: true, isEmpty: true }))
-      .toEqual(["pin", "copy", "title", "insert-below", "delete"]);
+  it("always returns pin, copy, title, convert, insert-below, delete in that relative order", () => {
+    // isEmpty+canPin+hasTitle+isBoard+canConvert all true is not a real
+    // block shape (an insertable empty block is never also a board with
+    // content) but exercising every gate at once locks the ORDER contract
+    // explicitly, independent of which real block shapes exist today.
+    expect(blockActionsFor({ isBoard: true, hasTitle: true, canPin: true, isEmpty: true, canConvert: true }))
+      .toEqual(["pin", "copy", "title", "convert", "insert-below", "delete"]);
   });
 });

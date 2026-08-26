@@ -18,6 +18,7 @@ import { TableHeader } from "@tiptap/extension-table-header";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { UnifiedListExtensions } from "../../lib/extensions/unified-list.js";
 import { RecipeBlock } from "../../lib/extensions/recipe-block.js";
+import { DecisionBlock } from "../../lib/extensions/decision-block.js";
 import { QABlock } from "../../lib/extensions/qa-block.js";
 import { QAPair } from "../../lib/extensions/qa-pair.js";
 import { BlockTitle } from "../../lib/extensions/block-title.js";
@@ -33,6 +34,7 @@ function makeEditor(content) {
       StarterKit.configure({ bulletList: false, orderedList: false, listItem: false }),
       ...UnifiedListExtensions,
       RecipeBlock,
+      DecisionBlock,
       QABlock,
       QAPair,
       BlockTitle,
@@ -97,6 +99,23 @@ function recipeDoc() {
   };
 }
 
+function decisionDoc() {
+  return {
+    type: "doc",
+    content: [
+      {
+        type: "decisionBlock",
+        content: [
+          { type: "list", content: [{ type: "listItem", attrs: { marker: "bullet" }, content: [para("option A")] }] },
+          para("chose A"),
+          para("because it's simpler"),
+        ],
+      },
+      para("after"),
+    ],
+  };
+}
+
 function qaDoc() {
   return {
     type: "doc",
@@ -151,6 +170,24 @@ describe("deleteBlockAt (× block-handle)", () => {
     const types = [];
     editor.state.doc.forEach((n) => types.push(n.type.name));
     expect(types).not.toContain("recipeBlock");
+    expect(editor.state.doc.textContent).toBe("after");
+  });
+
+  it("removes the WHOLE decisionBlock", () => {
+    env = makeEditor(decisionDoc());
+    const { editor } = env;
+    const decisionEl = topLevelChild(editor, 0);
+    expect(decisionEl.getAttribute("data-type")).toBe("decisionBlock");
+
+    const before = editor.state.doc.textContent;
+    expect(before).toContain("option A");
+
+    const ok = deleteBlockAt(editor, decisionEl);
+    expect(ok).toBe(true);
+
+    const types = [];
+    editor.state.doc.forEach((n) => types.push(n.type.name));
+    expect(types).not.toContain("decisionBlock");
     expect(editor.state.doc.textContent).toBe("after");
   });
 

@@ -64,11 +64,31 @@ export function shouldDismissOnBlur({ pointerDownOnToolbar, coarsePointer }) {
  *
  * Shared by both handlers so they cannot drift apart again.
  *
+ * `.block-action-sheet` joined this list for the same reason `.block-handles`
+ * did: it is the touch action sheet a board's chip opens (block-shell.js /
+ * table-shell-view.js), a `<dialog>` whose own buttons (pin/copy/title/
+ * convert/insert-below/delete, plus the convert submenu's targets) live
+ * INSIDE `.tiptap-wrapper`'s DOM subtree. Before this, tapping any of them
+ * bubbled a pointerdown the wrapper's own handler couldn't tell apart from
+ * "the user tapped some other block": pointerDownOnToolbar came back false,
+ * the dialog taking focus then blurred the editor, and
+ * shouldDismissOnBlur() — seeing an untrusted blur on a coarse pointer —
+ * cleared the touch reveal (hoveredBlock/touchRevealedBlock) out from under
+ * the sheet's own click handler, which runs AFTER blur in the touch event
+ * order this file documents above. pin/title had their own independent
+ * recovery paths (resolveHandleBlock's fallback chain; title-taking a
+ * stable snapshot instead of the live reveal) and so read as working; copy,
+ * delete, insert-below and the convert submenu's live target list had none,
+ * and silently no-op'd — indistinguishable from a dead button, the same
+ * failure family the rest of this file's history is made of. Found via
+ * Task 6's BLOCK_CONVERT_SHEET_TOUCH VR state, a real tap into the open
+ * sheet exactly like this comment describes.
+ *
  * @param {EventTarget|null} target
  * @returns {boolean}
  */
 export function isAffordanceTarget(target) {
   if (!target || typeof (/** @type {any} */ (target).closest) !== "function") return false;
   const el = /** @type {Element} */ (target);
-  return !!el.closest(".block-handles, .block-type-chip, .touch-block-handle, .board-title-slot");
+  return !!el.closest(".block-handles, .block-type-chip, .touch-block-handle, .board-title-slot, .block-action-sheet");
 }

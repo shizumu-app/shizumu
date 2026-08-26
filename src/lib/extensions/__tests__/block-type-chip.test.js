@@ -30,9 +30,13 @@ function makeEditor(doc) {
 }
 
 describe("BlockTypeChip", () => {
-  it("emits one widget decoration for a chart node only", () => {
-    // attachment is intentionally NOT targeted — it renders its own compact
-    // inline chip (AttachmentBlock.svelte), so only the chart gets a widget.
+  // Plan 1c (task-1-brief.md): chart adopted createBlockShell, which
+  // builds its own chip with its own click handler — the same shape every
+  // other board's chip already had. CHIP_TARGET_TYPES is now empty: every
+  // board owns its own chip, so this plugin has nothing left to target.
+  // See block-type-chip.js's header comment for why the (now-empty)
+  // extension stays registered rather than being deleted outright.
+  it("emits no widget decorations — every board type now owns its own chip", () => {
     const { editor, cleanup } = makeEditor({
       type: "doc",
       content: [
@@ -45,7 +49,7 @@ describe("BlockTypeChip", () => {
     try {
       const set = BlockTypeChipPluginKey.getState(editor.state);
       const decos = set.find();
-      expect(decos.length).toBe(1);
+      expect(decos.length).toBe(0);
     } finally {
       cleanup();
     }

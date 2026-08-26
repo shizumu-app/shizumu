@@ -363,6 +363,53 @@ describe("round-trip — recipeBlock", () => {
       ],
     };
     const { md1, md2 } = roundTrip(doc);
+    // md2 === md1 alone is stable-but-blind: if export dropped the whole
+    // block, both sides would be the same empty string and the test would
+    // still pass. Assert the slot headers renderRecipe emits are actually
+    // in the export before comparing the two passes.
+    expect(md1).toContain("### Given");
+    expect(md1).toContain("### Steps");
+    expect(md1).toContain("### Result");
+    expect(md1).toContain("step one");
+    expect(md2).toBe(md1);
+  });
+});
+
+describe("round-trip — decisionBlock", () => {
+  it("preserves the three slots", () => {
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "decisionBlock",
+          content: [
+            {
+              type: "list",
+              content: [
+                {
+                  type: "listItem",
+                  attrs: { marker: "bullet" },
+                  content: [{ type: "paragraph", content: [{ type: "text", text: "option one" }] }],
+                },
+                {
+                  type: "listItem",
+                  attrs: { marker: "bullet" },
+                  content: [{ type: "paragraph", content: [{ type: "text", text: "option two" }] }],
+                },
+              ],
+            },
+            { type: "paragraph", content: [{ type: "text", text: "option two" }] },
+            { type: "paragraph", content: [{ type: "text", text: "it scales better" }] },
+          ],
+        },
+      ],
+    };
+    const { md1, md2 } = roundTrip(doc);
+    // Same blindness as the recipe case above — see its comment.
+    expect(md1).toContain("### Considered");
+    expect(md1).toContain("### Chose");
+    expect(md1).toContain("### Because");
+    expect(md1).toContain("it scales better");
     expect(md2).toBe(md1);
   });
 });

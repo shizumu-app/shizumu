@@ -17,6 +17,24 @@ export function clearBlobSrcCache() {
   srcCache.clear();
 }
 
+/**
+ * Resolve one blob hash to a viewable src, memoized per hash.
+ *
+ * Exported because the pin panel needs the same answer for a pinned image
+ * as the static doc renderer needs for an inline one — and needs it for a
+ * single hash rather than for a DOM subtree, so hydrateBlobImages below is
+ * the wrong shape. Sharing the resolver shares the memo with it too, which
+ * is the point: a panel listing the same image on several rows, next to a
+ * memory card rendering it inline, resolves it once.
+ *
+ * @param {string} blobHash
+ * @returns {Promise<string|null>} null when the blob isn't on this device
+ */
+export function blobImageSrc(blobHash) {
+  if (!blobHash) return Promise.resolve(null);
+  return resolveBlobSrc(blobHash);
+}
+
 function resolveBlobSrc(blobHash) {
   let pending = srcCache.get(blobHash);
   if (!pending) {

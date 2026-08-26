@@ -7,9 +7,9 @@
 //
 // Why this exists: `view.posAtDOM(hoveredBlock, 0)` resolves to a position
 // INSIDE hoveredBlock's first DOM child, not to hoveredBlock's own boundary.
-// For a table, that first child is the `.table-title-caption` div inserted
+// For a table, that first child is the `.board-title-slot` input inserted
 // before the <table> (table-shell-view.js); for a board (recipe/qa/list/
-// blockquote), it's the title `<input>` inserted before the content
+// blockquote), it's the same title `<input>` inserted before the content
 // (block-shell.js). `doc.nodeAt(inside)` at that position therefore returns
 // the WRONG node — a tableRow instead of the table, or a paragraph deep
 // inside the board instead of the board itself — and deleting around it

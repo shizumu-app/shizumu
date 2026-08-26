@@ -12,7 +12,7 @@ describe("needsTouchHandle", () => {
     // each of these types owns a real chip (block-shell.js, table-shell-view.js,
     // or the BlockTypeChip widget plugin), so a synthetic handle on top would
     // be a second, redundant tap target landing at the same corner.
-    for (const t of ["list", "blockquote", "qaBlock", "recipeBlock", "codeBlock", "table", "chart"]) {
+    for (const t of ["list", "blockquote", "qaBlock", "recipeBlock", "decisionBlock", "codeBlock", "table", "chart"]) {
       expect(needsTouchHandle(t)).toBe(false);
     }
   });

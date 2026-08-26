@@ -1,5 +1,8 @@
 import { Node, mergeAttributes } from "@tiptap/core";
 import { TextSelection } from "@tiptap/pm/state";
+import { createBlockShell } from "./block-shell.js";
+import { bindTitleSlot } from "./title-slot.js";
+import { renderMermaidInto, reinitMermaidTheme } from "./chart-render.js";
 
 /**
  * `chart` — visual diagram node backed by Mermaid.
@@ -178,31 +181,13 @@ export async function loadMermaid() {
   return mermaidPromise;
 }
 
-// Re-init mermaid with refreshed theme tokens. Called when the canvas
-// tone changes (data-tone mutates on documentElement).
-async function reinitMermaidTheme() {
-  if (!mermaidPromise) return;
-  const mermaid = await mermaidPromise;
-  const { buildMermaidTheme, buildMermaidThemeCSS } = await import("../render/mermaid-theme.js");
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: "strict",
-    theme: "base",
-    themeVariables: buildMermaidTheme(),
-    themeCSS: buildMermaidThemeCSS(),
-    flowchart: {
-      useMaxWidth: true,
-      htmlLabels: false,
-      curve: "basis",
-      padding: 16,
-    },
-    mindmap: { useMaxWidth: true, padding: 12 },
-  });
+// Exposes the in-flight/resolved load promise without starting a load —
+// lets reinitMermaidTheme() (chart-render.js) skip re-initializing a
+// Mermaid instance that was never loaded in the first place, same as
+// the guard this function replaces.
+export function peekMermaidPromise() {
+  return mermaidPromise;
 }
-
-// Monotonic counter so each NodeView gets a unique Mermaid render id
-// (Mermaid requires unique ids per render call within a page lifetime).
-let chartIdCounter = 0;
 
 export const Chart = Node.create({
   name: "chart",
@@ -360,14 +345,43 @@ export const Chart = Node.create({
   },
 
   addNodeView() {
-    return ({ node, editor, getPos }) => {
-      const wrap = document.createElement("div");
-      wrap.className = "chart-block";
+    return ({ node, editor, getPos, extension }) => {
+      // ── Shared chrome via BlockShell (same factory list/blockquote/qaBlock/
+      // recipeBlock/codeBlock already use) ──. Chart is atom: true (no
+      // ProseMirror content), so the shell's generic contentDOM is
+      // discarded — mirrors code-block.js's exact precedent, which also
+      // supplies its own content host in place of the shell's contentDOM.
+      const shell = createBlockShell({ node, view: editor.view, getPos, ext: extension });
+      const wrap = shell.dom;
+      // Kept as an additional class (not a replacement) so every existing
+      // `.chart-block` CSS/JS selector keeps working unchanged.
+      wrap.classList.add("chart-block");
       wrap.setAttribute("data-type", "chart");
       wrap.setAttribute("data-kind", node.attrs.kind || "flowchart");
       wrap.setAttribute("contenteditable", "false");
       const initialTitle = (node.attrs.blockTitle || "").trim();
       if (initialTitle) wrap.setAttribute("data-block-title", initialTitle);
+
+      const titleSlot = shell.titleSlot;
+      const chip = shell.chip;
+      shell.contentDOM.remove();
+
+      // ── Title editing via shared bindTitleSlot ──
+      // resolveContentPos is a no-op: chart is atom — there's no textblock
+      // inside it for ArrowDown/Enter to land in, so the title's exit-
+      // downward paths just fall back to view.focus() (see title-slot.js's
+      // moveCursorToContent / commitTitleAndEnterBoard, both of which no-op
+      // gracefully on a negative contentPos).
+      if (!editor.isEditable) titleSlot.disabled = true;
+      const titleApi = bindTitleSlot({
+        titleSlot,
+        view: editor.view,
+        getPos,
+        ext: extension,
+        resolveContentPos: () => -1,
+        onTitleRender: (t) => shell.setTitle(t),
+      });
+      titleApi.refresh(node);
 
       // Migrate legacy size attr (s/m/l) to a numeric pixel width once
       // on mount. Existing charts saved before the resize-handle redesign
@@ -398,7 +412,10 @@ export const Chart = Node.create({
 
       const renderHost = document.createElement("div");
       renderHost.className = "chart-render";
-      wrap.appendChild(renderHost);
+      // Inserted before the chip (not appended) — final DOM order is
+      // titleSlot, renderHost, resizeHandle, chip, matching code-block.js's
+      // titleSlot/header/pre/chip ordering.
+      wrap.insertBefore(renderHost, chip);
 
       // Resize handle — bottom-right corner. Drag horizontally to change
       // width, vertically to change height; both persist on `pointerup`.
@@ -409,7 +426,7 @@ export const Chart = Node.create({
       resizeHandle.setAttribute("contenteditable", "false");
       resizeHandle.setAttribute("aria-label", "resize chart");
       resizeHandle.setAttribute("title", "drag to resize");
-      wrap.appendChild(resizeHandle);
+      wrap.insertBefore(resizeHandle, chip);
 
       let dragState = null;
       function onResizeStart(e) {
@@ -486,22 +503,7 @@ export const Chart = Node.create({
         }
         isRendering = true;
         try {
-          const mermaid = await loadMermaid();
-          if (cancelled) return;
-          const syntax = assembleMermaid({ kind: currentKind, source: currentSource });
-          if (!syntax.trim()) {
-            renderHost.innerHTML = `<div class="chart-loading"><span class="chart-placeholder-glyph">◇</span><span class="chart-placeholder-label">empty chart</span></div>`;
-            return;
-          }
-          const id = `chart-${++chartIdCounter}`;
-          try {
-            const { svg } = await mermaid.render(id, syntax);
-            if (cancelled) return;
-            renderHost.innerHTML = svg;
-          } catch (err) {
-            if (cancelled) return;
-            renderHost.innerHTML = `<div class="chart-error"><span class="chart-placeholder-glyph">◇</span><span class="chart-placeholder-label">chart needs more detail</span></div>`;
-          }
+          await renderMermaidInto(renderHost, { kind: currentKind, source: currentSource });
         } finally {
           isRendering = false;
           if (queuedRender) {
@@ -514,13 +516,32 @@ export const Chart = Node.create({
       render();
 
       // Re-render when canvas tone flips (data-tone on documentElement).
-      const themeObserver = new MutationObserver(async () => {
+      //
+      // A MutationObserver fires on every setAttribute call, even one that
+      // rewrites the SAME value — the VR boot path does exactly that
+      // (bootstrap.js sets data-tone once, then App.svelte's onMount calls
+      // applyTone(tone) again with the same value on the VR path), and so
+      // does a production re-save of the current theme or reopening the
+      // theme menu without changing it. Every one of those used to re-run
+      // reinitMermaidTheme() + a full Mermaid re-render for nothing —
+      // wasted work always, and on VR specifically a race: the screenshot
+      // sometimes landed between the first render and this redundant
+      // second one, catching the chart mid-rebuild (Task 6:
+      // page-chart-content / page-empty-chart's load-time baselines).
+      // Compare each record's oldValue against the CURRENT attribute value
+      // (not against each other) and skip entirely when nothing changed.
+      const themeObserver = new MutationObserver(async (records) => {
+        const changed = records.some(
+          (r) => r.oldValue !== document.documentElement.getAttribute(r.attributeName),
+        );
+        if (!changed) return;
         await reinitMermaidTheme();
         if (!cancelled) render();
       });
       themeObserver.observe(document.documentElement, {
         attributes: true,
         attributeFilter: ["data-tone", "class"],
+        attributeOldValue: true,
       });
 
       // Click → reopen builder in edit mode. Skip in read-only editors
@@ -528,6 +549,15 @@ export const Chart = Node.create({
       // "edit nowness" rule applies to charts too.
       function handleClick(e) {
         if (!editor.isEditable) return;
+        // The title <input> is a descendant of `wrap`, so a click landing on
+        // it would otherwise bubble here and reopen the builder mid-typing.
+        // This guard is UNREACHABLE today: bindTitleSlot calls
+        // stopPropagation on the slot's own mousedown/click in the target
+        // phase, so such a click never reaches this listener at all. It is
+        // kept deliberately, as the local defence for this NodeView if
+        // title-slot's propagation contract ever changes (or a new descendant
+        // control is wired without one) — not because it fires now.
+        if (e.target instanceof Element && e.target.closest(".board-title-slot")) return;
         e.preventDefault();
         e.stopPropagation();
         if (typeof getPos !== "function") return;
@@ -577,11 +607,13 @@ export const Chart = Node.create({
             wrap.classList.toggle("chart-sized-w", !!newWidth);
             wrap.classList.toggle("chart-sized-h", !!newHeight);
           }
-          // Sync block title → data-block-title attr so the CSS pseudo
-          // element picks up edits made through the builder.
-          const newTitle = (updatedNode.attrs.blockTitle || "").trim();
-          if (newTitle) wrap.setAttribute("data-block-title", newTitle);
-          else wrap.removeAttribute("data-block-title");
+          // Title sync via shared helper — also covers the data-block-title
+          // attr the CSS pseudo-element / static render reads, same as the
+          // manual sync this replaces (see titleApi's onTitleRender above).
+          titleApi.refresh(updatedNode);
+          if (titleSlot.disabled !== !editor.isEditable) {
+            titleSlot.disabled = !editor.isEditable;
+          }
           applyEditableClass();
           return true;
         },
@@ -592,11 +624,16 @@ export const Chart = Node.create({
           resizeHandle.removeEventListener("pointerdown", onResizeStart);
           document.removeEventListener("pointermove", onResizeMove);
           document.removeEventListener("pointerup", onResizeEnd);
+          titleApi.destroy();
         },
         // Mermaid SVGs include text — let ProseMirror know not to attempt
-        // to put selections inside this atom.
+        // to put selections inside this atom (but not the title slot,
+        // handled by stopEvent below — the title text is real editable
+        // input, not part of the atom's rendered content).
         ignoreMutation() { return true; },
-        stopEvent() { return false; },
+        stopEvent(event) {
+          return event.target === titleSlot;
+        },
       };
     };
   },

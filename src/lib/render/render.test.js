@@ -104,6 +104,49 @@ describe("renderDocHTML — node fixtures", () => {
     expect(out).toContain("ISO-8601 timestamp");
   });
 
+  it("renders a decisionBlock with three slots (list · paragraph · paragraph)", () => {
+    clearRenderCache();
+    const out = renderDocHTML(
+      doc({
+        type: "decisionBlock",
+        content: [
+          {
+            type: "list",
+            content: [
+              {
+                type: "listItem",
+                attrs: { marker: "bullet" },
+                content: [
+                  { type: "paragraph", content: [{ type: "text", text: "keep the old API" }] },
+                ],
+              },
+              {
+                type: "listItem",
+                attrs: { marker: "bullet" },
+                content: [
+                  { type: "paragraph", content: [{ type: "text", text: "migrate to v2" }] },
+                ],
+              },
+            ],
+          },
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "migrate to v2" }],
+          },
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "the old API is deprecated upstream" }],
+          },
+        ],
+      }),
+    );
+    // Wrapper class for the CSS labels (`considered` / `chose` / `because`
+    // via ::before).
+    expect(out).toContain('class="decision-block"');
+    expect(out).toContain("keep the old API");
+    expect(out).toContain("the old API is deprecated upstream");
+  });
+
   it("renders a code block as <pre><code>", () => {
     clearRenderCache();
     const out = renderDocHTML(

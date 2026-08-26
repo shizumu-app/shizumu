@@ -66,6 +66,61 @@ function swapWithSibling(state, dispatch, unit, direction) {
   return true;
 }
 
+/**
+ * Move the block AT A GIVEN POSITION one slot up or down among its
+ * siblings, without consulting — or disturbing — the selection.
+ *
+ * `moveUnit` cannot serve this case. It finds what to move by walking up
+ * from `state.selection.$from`, which assumes the caret is inside the thing
+ * being moved. A board's title is an `<input>` the NodeView renders as
+ * chrome OUTSIDE the contenteditable (and its `stopEvent` deliberately
+ * keeps ProseMirror away from it), so while the user is typing a title the
+ * PM selection is wherever it was last left — in some other block, or
+ * nowhere. Alt+Arrow from the title therefore either did nothing or would
+ * have moved the wrong block. The title handler says which block by
+ * position instead; see `title-slot.js`.
+ *
+ * The selection is deliberately left untouched for the same reason: moving
+ * the caret into the moved block would pull focus out of the title input
+ * the user is typing in.
+ *
+ * @param {import("@tiptap/pm/state").EditorState} state
+ * @param {Function|null} dispatch
+ * @param {number} pos - document position of the block to move.
+ * @param {"up"|"down"} direction
+ * @returns {number|null} the block's new position, or null if it could not
+ *   move (already at that end, or no node at `pos`). Null rather than -1 or
+ *   a boolean because 0 is a valid position and the caller needs to tell
+ *   "moved to the front" from "did not move".
+ */
+export function moveBlockAtPos(state, dispatch, pos, direction) {
+  if (typeof pos !== "number" || pos < 0 || pos > state.doc.content.size) return null;
+  const node = state.doc.nodeAt(pos);
+  if (!node) return null;
+  let $pos;
+  try { $pos = state.doc.resolve(pos); } catch { return null; }
+  const parent = $pos.parent;
+  const idx = $pos.index();
+  if (direction === "up" && idx <= 0) return null;
+  if (direction === "down" && idx >= parent.childCount - 1) return null;
+  const sibling = direction === "up" ? parent.child(idx - 1) : parent.child(idx + 1);
+
+  let tr = state.tr;
+  let newPos;
+  if (direction === "up") {
+    newPos = pos - sibling.nodeSize;
+    tr = tr.delete(pos, pos + node.nodeSize);
+    tr = tr.insert(newPos, node);
+  } else {
+    const targetEnd = pos + node.nodeSize + sibling.nodeSize;
+    tr = tr.insert(targetEnd, node);
+    tr = tr.delete(pos, pos + node.nodeSize);
+    newPos = targetEnd - node.nodeSize;
+  }
+  if (dispatch) dispatch(tr);
+  return newPos;
+}
+
 export const BlockMovement = Extension.create({
   name: "blockMovement",
 
@@ -75,6 +130,8 @@ export const BlockMovement = Extension.create({
         const unit = findMovableUnit(state.selection.$from);
         return swapWithSibling(state, dispatch, unit, direction);
       },
+      moveBlockAt: (pos, direction) => ({ state, dispatch }) =>
+        moveBlockAtPos(state, dispatch, pos, direction) !== null,
       moveParentUnit: (direction) => ({ state, dispatch }) => {
         const child = findMovableUnit(state.selection.$from);
         if (!child) return false;

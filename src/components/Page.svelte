@@ -1534,23 +1534,29 @@
        inherited value, so only untargeted text picks it up — which is
        fine because such text is body/canvas-context anyway. */
     font-size: var(--editor-font-size, 16px);
-    /* Width scales with the canvas font (65ch = ~65 readable characters
-       at the current font size), but never collapses below 820px on
-       desktop — at small font sizes a strict 65ch column would shrink to
-       ~720px on a wide screen, which feels like a sliver instead of a
-       writing surface. Max stays at 1100px so a fullscreen big-font
+    /* Width scales with the canvas font (72ch = ~72 readable characters
+       at the current font size), but never collapses below 900px on
+       desktop — at small font sizes a strict 72ch column would shrink to
+       ~800px on a wide screen, which feels like a sliver instead of a
+       writing surface. Max stays at 1200px so a fullscreen big-font
        session doesn't sprawl. On tablet/phone (≤ 768px) the lower
-       floor is removed entirely so 65ch can collapse to the viewport. */
-    max-width: clamp(820px, calc(65ch + 104px), 1100px);
+       floor is removed entirely so 72ch can collapse to the viewport.
+
+       Widened from 65ch/820—1100px with 52px canvas padding: the column
+       read narrower than the window could afford, and the padding was
+       spending margin the editor wanted for text. The gutter the block
+       controls live in is separate (.tiptap-wrapper's padding-left, see
+       TipTapEditor.svelte) and is untouched by this. */
+    max-width: clamp(900px, calc(72ch + 72px), 1200px);
     align-self: stretch;
     /* Top padding tightened (was 32px) so the focus pill / WMN sit higher
        and feel less stranded on a short or empty page. Right/left padding
        honors the iPhone safe-area-inset on the canvas-edge sides. */
     padding:
       16px
-      max(var(--safe-right), 52px)
+      max(var(--safe-right), 36px)
       0
-      max(var(--safe-left), 52px);
+      max(var(--safe-left), 36px);
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
@@ -1596,7 +1602,7 @@
     opacity: 0;
   }
 
-  /* Tablet + phone: drop the 820px lower floor so the 65ch column can
+  /* Tablet + phone: drop the 900px lower floor so the 72ch column can
      collapse to viewport width, and shrink the canvas-edge padding so
      the writing surface gets enough room. Honors safe-area-inset on the
      left/right edges (notch / curved corners). */

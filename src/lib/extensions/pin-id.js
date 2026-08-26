@@ -11,6 +11,7 @@ const PINNABLE_TYPES = [
   "table",
   "codeBlock",
   "recipeBlock",
+  "decisionBlock",
   "chart",
   "attachment",
 ];

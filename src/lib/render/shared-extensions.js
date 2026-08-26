@@ -28,6 +28,7 @@ import { UnifiedListExtensions } from "../extensions/unified-list.js";
 import { PageRef } from "../extensions/page-ref.js";
 import { PinRef } from "../extensions/pin-ref.js";
 import { RecipeBlock } from "../extensions/recipe-block.js";
+import { DecisionBlock } from "../extensions/decision-block.js";
 import { Chart } from "../extensions/chart.js";
 import { FindReplace } from "../extensions/find-replace.js";
 import { DateSeparator } from "../extensions/date-separator.js";
@@ -75,6 +76,7 @@ export const READONLY_EXTENSIONS = [
   PageRef,
   PinRef,
   RecipeBlock,
+  DecisionBlock,
   Chart,
   DateSeparator,
   DayMarker,
@@ -151,6 +153,7 @@ export function buildEditingExtensions({
       onNavigate: onPinRefNavigate,
     }),
     RecipeBlock,
+    DecisionBlock,
     DateSeparator,
     DayMarker,
     QABlock,

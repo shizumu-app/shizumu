@@ -42,6 +42,24 @@ describe("isAffordanceTarget", () => {
     expect(isAffordanceTarget(el('<input class="board-title-slot" />'))).toBe(true);
   });
 
+  it("recognises the touch action sheet's own rows, not just the chip that opens it", () => {
+    // Task 6 finding: a tap on a row INSIDE the already-open sheet (pin,
+    // copy, delete, title, convert to..., or a convert-submenu target) is
+    // still the user addressing an affordance, not a block. Before this,
+    // isAffordanceTarget only recognised the chip that OPENS the sheet —
+    // once open, its own rows read as "somewhere else entirely", so the
+    // blur they cause on touch (the dialog taking focus) dismissed the
+    // reveal (hoveredBlock/touchRevealedBlock) out from under the row's own
+    // click handler. pin and title happened to have independent recovery
+    // paths; copy, delete, insert-below and the convert submenu's live
+    // target list did not, and silently did nothing.
+    const sheet = el(
+      '<div class="block-action-sheet"><button class="block-action-row"><span class="block-action-label">convert to…</span></button></div>',
+    );
+    expect(isAffordanceTarget(sheet.querySelector("button"))).toBe(true);
+    expect(isAffordanceTarget(sheet.querySelector(".block-action-label"))).toBe(true);
+  });
+
   it("does not claim an ordinary block, so tapping text still addresses it", () => {
     // The reveal must keep working: a tap on the block's own body is
     // precisely what opens the toolbar in the first place.

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Editor } from "@tiptap/core";
 import { TextSelection } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
-import { BlockMovement } from "../block-movement.js";
+import { BlockMovement, moveBlockAtPos } from "../block-movement.js";
 import { BlockTitle } from "../block-title.js";
 import { UnifiedListExtensions } from "../unified-list.js";
 import { QABlock } from "../qa-block.js";
@@ -278,3 +278,113 @@ describe("BlockMovement.moveParentUnit no parent", () => {
 // contenteditable DOM contract). Test moveUnit("up") on a tableRow in a
 // real browser or Playwright e2e suite instead.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// moveBlockAtPos — moving a block WITHOUT relying on the selection.
+//
+// Why this exists: a board's title is an <input> the NodeView renders as
+// chrome, OUTSIDE the contenteditable, and the NodeView's stopEvent()
+// returns true for it. So keys pressed in the title never reach
+// ProseMirror's keymap at all, and Alt+Arrow — which moves the block from
+// anywhere else — did nothing there. The user's report: "when we are in
+// the title it should move the whole block up/down, similar to bullets".
+//
+// The title handler cannot use moveUnit(): with focus in the input the PM
+// selection is wherever it was last left, which is some other block (or
+// nothing). It has to say WHICH block to move, by position.
+// ---------------------------------------------------------------------------
+
+function posOfTitle(editor, title) {
+  let found = -1;
+  editor.state.doc.descendants((node, pos) => {
+    if (found === -1 && node.attrs?.blockTitle === title) { found = pos; return false; }
+  });
+  if (found < 0) throw new Error(`No node with blockTitle="${title}"`);
+  return found;
+}
+
+describe("moveBlockAtPos", () => {
+  let env;
+  beforeEach(() => { env = makeEditor(threeBlockquotes); });
+  afterEach(() => env?.cleanup());
+
+  it("moves the addressed block up regardless of where the selection is", () => {
+    // Selection parked on A; the move addresses B. moveUnit() would have
+    // moved A — which is exactly the bug when focus sits in B's title.
+    setCursorByTitle(env.editor, "A");
+    const pos = posOfTitle(env.editor, "B");
+    const { view } = env.editor;
+    expect(moveBlockAtPos(view.state, view.dispatch, pos, "up")).not.toBe(null);
+    expect(boardTitles(env.editor)).toEqual(["B", "A", "C"]);
+  });
+
+  it("moves the addressed block down", () => {
+    setCursorByTitle(env.editor, "A");
+    const pos = posOfTitle(env.editor, "B");
+    const { view } = env.editor;
+    expect(moveBlockAtPos(view.state, view.dispatch, pos, "down")).not.toBe(null);
+    expect(boardTitles(env.editor)).toEqual(["A", "C", "B"]);
+  });
+
+  it("returns the block's new position so the caller can refocus its title", () => {
+    // The NodeView is destroyed and rebuilt by the move, taking the focused
+    // <input> with it. The caller needs the new position to find the
+    // replacement slot and put focus back, or every Alt+Arrow would drop
+    // the user out of the title after one step.
+    const posB = posOfTitle(env.editor, "B");
+    const { view } = env.editor;
+    const newPos = moveBlockAtPos(view.state, view.dispatch, posB, "up");
+    expect(newPos).toBe(posOfTitle(env.editor, "B"));
+    expect(newPos).not.toBe(posB);
+  });
+
+  it("returns null at the first sibling, so the caller knows nothing moved", () => {
+    // Not 0 and not a thrown error: 0 is a valid document position, and the
+    // caller distinguishes "moved to 0" from "could not move".
+    const pos = posOfTitle(env.editor, "A");
+    const { view } = env.editor;
+    expect(moveBlockAtPos(view.state, view.dispatch, pos, "up")).toBe(null);
+    expect(boardTitles(env.editor)).toEqual(["A", "B", "C"]);
+  });
+
+  it("returns null at the last sibling", () => {
+    const pos = posOfTitle(env.editor, "C");
+    const { view } = env.editor;
+    expect(moveBlockAtPos(view.state, view.dispatch, pos, "down")).toBe(null);
+    expect(boardTitles(env.editor)).toEqual(["A", "B", "C"]);
+  });
+
+  it("leaves the selection alone — focus belongs to the title input", () => {
+    // Moving the selection into the moved block would yank focus out of the
+    // title the user is typing in, which is the whole surface this serves.
+    setCursorByTitle(env.editor, "A");
+    const before = env.editor.state.selection.from;
+    const pos = posOfTitle(env.editor, "C");
+    const { view } = env.editor;
+    moveBlockAtPos(view.state, view.dispatch, pos, "up");
+    // A did not move, so its text is still at the same offset.
+    expect(env.editor.state.selection.from).toBe(before);
+  });
+
+  it("returns null for a position that holds no node", () => {
+    const { view } = env.editor;
+    expect(moveBlockAtPos(view.state, view.dispatch, 99999, "up")).toBe(null);
+  });
+
+  it("moves a list the same way it moves a blockquote", () => {
+    // "verify all blocks behavior": the title contract must not be
+    // blockquote-only. A list is the type most users meet it on.
+    env.cleanup();
+    env = makeEditor({
+      type: "doc",
+      content: [
+        listWithThreeItems.content[0],
+        { type: "blockquote", attrs: { blockTitle: "Q" }, content: [{ type: "paragraph", content: [{ type: "text", text: "q" }] }] },
+      ],
+    });
+    const pos = posOfTitle(env.editor, "L");
+    const { view } = env.editor;
+    expect(moveBlockAtPos(view.state, view.dispatch, pos, "down")).not.toBe(null);
+    expect(boardTitles(env.editor)).toEqual(["Q", "L"]);
+  });
+});

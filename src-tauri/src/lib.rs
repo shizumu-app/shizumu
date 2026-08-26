@@ -17,6 +17,7 @@ mod managed_config;
 mod models;
 #[allow(dead_code)]
 pub mod op_log;
+pub mod search;
 pub mod sync;
 #[cfg(desktop)]
 mod tray;
@@ -224,6 +225,26 @@ pub fn run() {
                 database.clone(),
                 op_log_engine.clone(),
             );
+
+            // FTS reindex: `pages_fts` is a plain FTS5 table, so every row
+            // keeps whatever text it was written with. Pages written before
+            // block titles and attachment filenames were indexed stay
+            // unsearchable by those forever until something rewrites them,
+            // and a SQL-only migration cannot — the strings live inside a
+            // JSON blob only Rust parses. One JSON parse per page, no file
+            // I/O, guarded by a settings key so it is a no-op on every
+            // launch after the first. Runs inline rather than on a thread:
+            // it is fast enough not to need one, and a search that returns
+            // half a library while a background sweep catches up would be
+            // worse than a moment's wait at startup.
+            {
+                let conn = database.lock().expect("db mutex poisoned");
+                match search::reindex_once(&conn) {
+                    Ok(Some(n)) => log::info!("fts reindex: rewrote {n} page(s)"),
+                    Ok(None) => {}
+                    Err(e) => log::warn!("fts reindex failed: {e}"),
+                }
+            }
 
             let op_log_engine_for_worker = op_log_engine.clone();
             app.manage::<op_log::OpLog>(op_log_engine);

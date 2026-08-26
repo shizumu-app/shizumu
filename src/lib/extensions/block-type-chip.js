@@ -1,29 +1,28 @@
 // BlockTypeChip — emits widget decorations on nodes whose type is in
 // CHIP_TARGET_TYPES, rendering a `.block-type-chip` span at the end
-// of the block. Used for chart, table, attachment — node types whose
-// NodeView is outside block-title.js / code-block.js but still benefit
-// from the per-block type chip. Lists, blockquote, qaBlock, recipeBlock,
-// codeBlock already get the chip from their own NodeView and are NOT
-// targeted here.
+// of the block.
 //
 // The widget wraps the chip in a zero-size relative anchor span so the
 // absolutely-positioned chip lands at the trailing edge of the block,
 // not at the editor's positioned ancestor.
+//
+// Plan 1c (task-1-brief.md): chart used to be the last board type without
+// its own chip-owning NodeView, so it was targeted here as a widget
+// decoration. It now adopts createBlockShell (chart.js) the same way
+// list/blockquote/qaBlock/recipeBlock/codeBlock/table already do, and
+// createBlockShell builds a real chip with its own click handler as part
+// of the shell — a chart no longer needs (or wants) a second, chip-less
+// one layered on top from here. That leaves every board owning its own
+// chip and this plugin's target set empty. Kept registered (not deleted)
+// rather than ripping the extension out of every extension list that
+// wires it in — a future non-board node type that needs a trailing-edge
+// chip without its own NodeView has a home to add itself to.
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { nodeKind, nodeFamily } from "../pin-display.js";
 
-// `table` is intentionally NOT here: a widget at the table node's trailing
-// edge anchors to a zero-width span at the bottom-left of the table, so the
-// chip (right-aligned) extends off the left page edge and gets clipped. The
-// table's chip is rendered by ShellTableView instead (bottom-right of the
-// table wrapper), matching how the other block NodeViews own their chip.
-// `attachment` is intentionally NOT here: it now renders as a compact
-// inline chip (AttachmentBlock.svelte) that's self-evidently a file, so a
-// trailing "file" type chip is redundant — and the widget anchored at the
-// node's trailing edge clipped off the left page edge anyway.
-const CHIP_TARGET_TYPES = new Set(["chart"]);
+const CHIP_TARGET_TYPES = new Set([]);
 
 export const BlockTypeChipPluginKey = new PluginKey("blockTypeChip");
 

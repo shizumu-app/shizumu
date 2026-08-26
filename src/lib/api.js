@@ -681,13 +681,30 @@ export function createMockInvoke() {
             return b.date.localeCompare(a.date) || b.page_number - a.page_number;
           })
           .slice(args.offset || 0, (args.offset || 0) + (args.limit || 20));
+        // Mirrors PageSummary (src-tauri/src/models.rs). lineage_id,
+        // content_json, what_shifted, is_open and parent_id were all
+        // missing here, so every row this mock returned read as UNTRAILED
+        // no matter what set_focus_lineage had done — memory's trail map
+        // (Memory.svelte filters `pages` by `p.lineage_id === l.id`) came
+        // up empty in dev and in every screenshot taken through it.
+        //
+        // pin_count/backlink_count stay 0 deliberately: the mock has no
+        // page_refs table at all, and counting store.pins here would move
+        // existing VR baselines (memory's activity calendar dots) for no
+        // behaviour under test. Left as the honest "not modelled" value
+        // rather than a wrong one.
         return allPages.map(p => ({
           id: p.id,
           date: p.date,
           page_number: p.page_number,
           preview_lines: (store.lines.get(p.id) || []).slice(0, 3).map(l => l.text),
           what_matters_now: p.what_matters_now,
+          what_shifted: p.what_shifted ?? null,
           what_shifted_complete: p.what_shifted_complete,
+          is_open: p.is_open ?? true,
+          parent_id: p.parent_id ?? null,
+          lineage_id: p.lineage_id ?? null,
+          content_json: p.content_json ?? null,
           line_count: (store.lines.get(p.id) || []).length,
           created_at: p.created_at,
           pin_count: 0,

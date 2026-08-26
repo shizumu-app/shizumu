@@ -19,7 +19,7 @@ describe("BlockTitle extension shape", () => {
     expect(plugins.length).toBe(1);
     const nodeViews = plugins[0].props.nodeViews;
     expect(Object.keys(nodeViews).sort()).toEqual(
-      ["blockquote", "list", "qaBlock", "recipeBlock"].sort(),
+      ["blockquote", "list", "qaBlock", "recipeBlock", "decisionBlock"].sort(),
     );
     // table is intentionally absent — its DOM contract fights NodeView wrapping;
     // it falls back to a CSS pseudo-element for the title slot.

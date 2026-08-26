@@ -12,7 +12,7 @@
   } from "../lib/api.js";
   import { attachmentLocality } from "../lib/attachment-locality.js";
   import { buildMentionLabel } from "../lib/mention-label.js";
-  import { pinFamily, pinDisplayTitle } from "../lib/pin-display.js";
+  import { pinFamily, pinDisplayTitle, pinSearchText, pinModalKind } from "../lib/pin-display.js";
   import SidebarShell from "../lib/ui/SidebarShell.svelte";
   import SidebarNavRow from "../lib/ui/SidebarNavRow.svelte";
   import SectionHeader from "../lib/ui/SectionHeader.svelte";
@@ -157,8 +157,13 @@
     if (!openPinId || loading) return;
     const target = [...pinsTrail, ...pinsGlobal].find((p) => p.id === openPinId);
     if (!target) return;
-    const t = isBoard(target) ? "artifact" : "note";
-    modal = { type: t, pinId: target.id };
+    // pinModalKind, not isBoard: the modal fork asks about the CONTENT's
+    // shape (a doc needs a doc renderer; only a real plain string belongs
+    // in the note modal's textarea), while isBoard below is this panel's
+    // bucketing/sorting question. They were the same list here and a
+    // different one in Memory, which is how the same pin opened two
+    // different modals depending on where it was clicked.
+    modal = { type: pinModalKind(target), pinId: target.id };
     onPinOpened();
   });
   let allLineages = $state([]);
@@ -348,14 +353,21 @@
   }
 
   /**
-   * Search predicate. Substring over title + plaintext content. Never
-   * status-based — `open / closed / orphaned` is an implementation detail.
+   * Search predicate. Substring over everything the pin has words in.
+   * Never status-based — `open / closed / orphaned` is an implementation
+   * detail.
+   *
+   * The haystack comes from pin-display's pinSearchText rather than the
+   * local getPlainText walk below: that one cannot see a block's title
+   * (it is a node ATTRIBUTE, not a text node) and falls back to the raw
+   * JSON string for anything it doesn't recognise, which made schema keys
+   * like "paragraph" matchable. getPlainText stays for the carry-forward
+   * row's label, where a title would only duplicate the line above it.
    */
   function pinMatches(p, q) {
     const needle = q.trim().toLowerCase();
     if (!needle) return true;
-    const haystack = (getPlainText(p) + " " + (p.title || "")).toLowerCase();
-    return haystack.includes(needle);
+    return pinSearchText(p).toLowerCase().includes(needle);
   }
 
   let visiblePins = $derived.by(() => {
@@ -639,7 +651,7 @@
       longPressFired = false;
       return;
     }
-    if (isBoard(obj)) {
+    if (pinModalKind(eff) === "artifact") {
       openArtifactModal(eff);
     } else {
       openNoteModal(eff);

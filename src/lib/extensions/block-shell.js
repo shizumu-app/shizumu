@@ -35,6 +35,10 @@ function createContentDOM(typeName) {
     el = document.createElement("div");
     el.dataset.type = "recipe-block";
     el.classList.add("recipe-block");
+  } else if (typeName === "decisionBlock") {
+    el = document.createElement("div");
+    el.dataset.type = "decision-block";
+    el.classList.add("decision-block");
   } else {
     el = document.createElement("div");
   }

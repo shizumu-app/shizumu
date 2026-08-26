@@ -23,6 +23,8 @@ Three active verbs (write · pin · trail) plus one passive default (sink). The 
 
 **Trail-exception clause (load-bearing).** Continuous trails look like piling because they're one document the user keeps adding to. They're not — they're the intentional exception. When one thread should genuinely keep growing (a book, a long project, a life-arc), the user chooses to trail it. That's a deliberate refusal of sinking for that one focused topic, not the default pile.
 
+**Context clause (pins return).** Assigning a previously untrailed page to a trail for the first time injects every pin on that trail and its ancestors marked `auto_insert` (`get_carry_forward_pins` in commands.rs; `injectCarryForwardPins` / `pinToNodes` in `src/lib/pin-carry-forward.js`) onto the page itself. The context you kept comes back to you instead of waiting in memory for you to go find it. This fires once, on first assignment — re-trailing a page between trails does not re-inject. It's the mechanism the pin claim promises but doesn't itself deliver: "the pins are where you left it" needs a way back to where you left them, and choosing the trail is that way back. This is also why a trail exists at all — a trail is for a project, not a day: a book, a job search, anything you'll come back to tomorrow.
+
 See `shizumu-mvp-prd.md` for full specification.
 
 ## Commands
@@ -85,7 +87,7 @@ Rust backend exposes commands for: page CRUD, line saving, navigation, thread/se
 - **Discrete trails never surface past days on the writing canvas.** If the user wants yesterday, they go to memory. The writing surface is now.
 - **No prompts, tags, folders, templates, streaks, or social features.** These are permanent refusals.
 - **All data local.** Nothing leaves the device without explicit export.
-- **Column width fixed at ~65 characters.** Margins expand with window.
+- **Column width fixed at ~72 characters.** Margins expand with window.
 - **Interface language:** see "Brand voice canon" below for the rules.
 
 ## Brand voice canon
@@ -103,6 +105,12 @@ Any user-facing string (onboarding, empty states, placeholders, button labels, s
 **Sink claim:** sink is not just a storage policy; it is what makes the writing honest. A page that keeps everything makes you write for posterity; a page that sinks lets you write to think. When sink appears in copy, prefer the behavior claim (how it changes the writing) over the cleanup claim (less clutter).
 
 **Trail-exception clause:** when the piling contrast is drawn, name continuous trails as the intentional refusal of sinking for one focused topic. Keeps the framing coherent rather than self-contradicting.
+
+**Context clause (compressed, for copy):** the on-canon shape for explaining trail + pin together, in plain language, simple and clear, short sentences:
+
+> a new page starts empty. a trail is for a project, not a day: a book, a job search, anything you'll come back to tomorrow. choose a trail and the page picks up context: the pins you already kept there, already on the page. everything else lives in memory: search it, or open one trail, one date, pages, or pins.
+
+This is the plain-language version of the carry-forward mechanic (see Context clause, Project Overview). Reuse this shape when trail + pin need explaining together rather than re-deriving it each time.
 
 **Continuous-trail pin clause:** on continuous trails sink does not operate, so pins are the compression valve — the doc grows because the user chose continuity; the pins keep it from becoming a wall to re-read. This is where pin × trail is strongest; name it when the trail exception is drawn in long-form copy.
 

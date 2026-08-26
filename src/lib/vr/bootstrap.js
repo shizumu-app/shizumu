@@ -49,7 +49,13 @@ export async function bootstrapVR() {
   installFixedClock(VR_CLOCK);
   installSeqUuid("vr");
 
-  window.__VR_INVOKE__ = await createSeededInvoke(scene.fixture);
+  // A scene that declares `blobs` gets attachment images that actually
+  // resolve; every other scene keeps the mock's blob-store gap, which is
+  // what page-image-content and dead-image-ref exist to photograph. The
+  // loader is a function so the bytes are fetched only for the scene that
+  // asked for them.
+  const blobs = typeof scene.blobs === "function" ? await scene.blobs() : undefined;
+  window.__VR_INVOKE__ = await createSeededInvoke(scene.fixture, { blobs });
   window.__VR__ = {
     scene: sceneId,
     theme,
