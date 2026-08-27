@@ -84,11 +84,27 @@ export function shouldDismissOnBlur({ pointerDownOnToolbar, coarsePointer }) {
  * Task 6's BLOCK_CONVERT_SHEET_TOUCH VR state, a real tap into the open
  * sheet exactly like this comment describes.
  *
+ * `.bubble-menu` joined last, and it is the one that had been missing
+ * longest. It renders INSIDE `.tiptap-wrapper` (TipTapEditor.svelte), so a
+ * touch tap on bold/italic/link ran the full pointerdown body with
+ * pointerDownOnToolbar false, and pointerup then re-resolved the tap to
+ * whatever block sits under the BUTTON — which is not the block the
+ * selection is in, because the menu is positioned clear of the selection.
+ * If that block is an untitled board, its title slot expands in flow and
+ * the page reflows while the user is mid-format: the same
+ * button-leaves-from-under-the-finger failure this whole file is a history
+ * of. It also armed the long-press drag timer on a formatting button.
+ *
+ * The comment above says the pointerup list "never got the same list, which
+ * is its own defect" and then fixes it for `.block-action-sheet`. The
+ * bubble menu is the case that was in front of us the whole time and was
+ * not swept with it.
+ *
  * @param {EventTarget|null} target
  * @returns {boolean}
  */
 export function isAffordanceTarget(target) {
   if (!target || typeof (/** @type {any} */ (target).closest) !== "function") return false;
   const el = /** @type {Element} */ (target);
-  return !!el.closest(".block-handles, .block-type-chip, .touch-block-handle, .board-title-slot, .block-action-sheet");
+  return !!el.closest(".block-handles, .block-type-chip, .touch-block-handle, .board-title-slot, .block-action-sheet, .bubble-menu");
 }

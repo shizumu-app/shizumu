@@ -17,7 +17,13 @@
 // gutter offering `delete` alone, shot from `mk-evidence-subject` by
 // `marketing/launch/screenshots/2026-08-26/_capture/capture-evidence.mjs`.
 // Re-shoot it with that script rather than editing it by hand.
-import evidenceEmptyTable from "../../../marketing/launch/screenshots/2026-08-26/_capture/assets/evidence-empty-table.png?inline";
+// Lives under src/, not under marketing/, and must stay there. The public
+// GitHub mirror ships an allowlisted tree: src/ is in, marketing/ is
+// explicitly forbidden. When this import pointed into marketing/ the mirror
+// got the importer without the file and flathub's build died on
+// "Could not resolve ../../../marketing/...evidence-empty-table.png?inline".
+// A src/ file may not reach outside src/ — src-boundary.test.js enforces it.
+import evidenceEmptyTable from "./assets/evidence-empty-table.png?inline";
 import { EVIDENCE_BLOB_HASH } from "./fixtures-marketing.js";
 
 export const MARKETING_BLOBS = {

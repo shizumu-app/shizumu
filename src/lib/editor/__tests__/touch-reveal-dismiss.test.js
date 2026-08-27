@@ -39,6 +39,18 @@ describe("isAffordanceTarget", () => {
   it("recognises the chip, the synthetic handle and the title slot", () => {
     expect(isAffordanceTarget(el('<span class="block-type-chip">tasks</span>'))).toBe(true);
     expect(isAffordanceTarget(el('<button class="touch-block-handle">+</button>'))).toBe(true);
+
+    // The bubble menu renders inside .tiptap-wrapper, so without this a
+    // touch tap on bold/italic ran the whole block-reveal path: pointerup
+    // re-resolved the tap to whatever block sits under the BUTTON, which is
+    // never the block the selection is in -- the menu is positioned clear of
+    // the selection on purpose. An untitled board there expands its title
+    // slot in flow and the page reflows mid-format, which is the
+    // button-moves-under-the-finger failure the module header is a history
+    // of. A nested button must match too, since that is what a finger hits.
+    expect(isAffordanceTarget(el('<div class="bubble-menu"></div>'))).toBe(true);
+    const menu = el('<div class="bubble-menu"><div class="bubble-rows"><button>B</button></div></div>');
+    expect(isAffordanceTarget(menu.querySelector("button"))).toBe(true);
     expect(isAffordanceTarget(el('<input class="board-title-slot" />'))).toBe(true);
   });
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { get } from "svelte/store";
-import { computeKeyboardState, startKeyboardState, keyboardOpen } from "../keyboard-state.js";
+import { computeKeyboardState, startKeyboardState, keyboardOpen, isTextFieldElement } from "../keyboard-state.js";
 import { fakeWindow } from "./fake-window.js";
 
 describe("computeKeyboardState", () => {
@@ -234,5 +234,72 @@ describe("startKeyboardState — scroll reset defers to a focused field", () => 
     fire("vv", "resize");
 
     expect(win.scrollTo).toHaveBeenCalledWith(0, 0);
+  });
+});
+
+describe("isTextFieldElement — who the keyboard is open for", () => {
+  it("recognises the three field shapes", () => {
+    expect(isTextFieldElement({ tagName: "INPUT" })).toBe(true);
+    expect(isTextFieldElement({ tagName: "TEXTAREA" })).toBe(true);
+    expect(isTextFieldElement({ isContentEditable: true })).toBe(true);
+  });
+
+  it("says no to nothing and to ordinary elements", () => {
+    // Not decoration: this is the value the focusout path falls back to
+    // when relatedTarget is null, which is the genuine blur-to-nothing
+    // case that SHOULD close the keyboard. If this returned true the
+    // keyboard would never be reported closed at all.
+    expect(isTextFieldElement(null)).toBe(false);
+    expect(isTextFieldElement(undefined)).toBe(false);
+    expect(isTextFieldElement({ tagName: "BODY" })).toBe(false);
+    expect(isTextFieldElement({ tagName: "BUTTON" })).toBe(false);
+  });
+});
+
+describe("startKeyboardState — focusout to another field keeps the keyboard open", () => {
+  it("does not publish 'closed' when focus is moving to a second field", () => {
+    // The real defect this guards, not a hypothetical: on focusout the
+    // browser has ALREADY set activeElement to BODY, so reading it alone
+    // says "nothing focused" even while focus is in flight to another
+    // input. That published keyboardOpen false and --kb-inset 0px for one
+    // paint -- the phone header un-collapsed and the page's bottom padding
+    // grew BETWEEN the tap and the click, moving the control out from under
+    // the finger. Driven through startKeyboardState rather than asserted on
+    // the predicate alone, because a predicate test passes whether or not
+    // anything calls it.
+    const { win, get: getVar, fire } = fakeWindow({ visual: 800, inner: 800 });
+    win.document.activeElement = { tagName: "INPUT" };
+    startKeyboardState(win);
+
+    win.visualViewport.height = 400;
+    fire("vv", "resize");
+    expect(get(keyboardOpen)).toBe(true);
+
+    // Focus leaves the first field for a second one. The browser's state at
+    // this instant: activeElement is BODY, relatedTarget is the new field.
+    win.document.activeElement = { tagName: "BODY" };
+    fire("doc", "focusout", { type: "focusout", relatedTarget: { tagName: "TEXTAREA" } });
+
+    expect(get(keyboardOpen)).toBe(true);
+    expect(getVar("--kb-inset")).toBe("400px");
+  });
+
+  it("still closes on a genuine blur to nothing", () => {
+    // The other half, and the reason the fallback to activeElement stays:
+    // relatedTarget is null when focus goes nowhere, which is exactly when
+    // the keyboard really is dismissed.
+    const { win, get: getVar, fire } = fakeWindow({ visual: 800, inner: 800 });
+    win.document.activeElement = { tagName: "INPUT" };
+    startKeyboardState(win);
+
+    win.visualViewport.height = 400;
+    fire("vv", "resize");
+    expect(get(keyboardOpen)).toBe(true);
+
+    win.document.activeElement = { tagName: "BODY" };
+    fire("doc", "focusout", { type: "focusout", relatedTarget: null });
+
+    expect(get(keyboardOpen)).toBe(false);
+    expect(getVar("--kb-inset")).toBe("0px");
   });
 });

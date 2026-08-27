@@ -41,6 +41,10 @@ export function fakeWindow({ visual = 800, inner = 800, scrollY = 0 } = {}) {
       listeners.win[t] = (listeners.win[t] || []).filter((g) => g !== f);
     },
   };
-  const fire = (scope, type) => (listeners[scope][type] || []).forEach((f) => f());
+  // The optional `event` is for handlers that read the event itself —
+  // keyboard-state's focusout path needs relatedTarget, because
+  // activeElement is already BODY by then. Existing callers pass
+  // nothing and still get f(undefined), exactly as before.
+  const fire = (scope, type, event) => (listeners[scope][type] || []).forEach((f) => f(event));
   return { win, get: (k) => root.style.get(k), fire, listeners };
 }

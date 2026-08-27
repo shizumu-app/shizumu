@@ -42,23 +42,46 @@ export function getViewportHeight(win = typeof window !== "undefined" ? window :
   return Number.isFinite(n) && n > 0 ? n : win.innerHeight || 0;
 }
 
+/** Is this the kind of element the soft keyboard is open FOR?
+ *
+ *  Exported because the caller below has to ask it about two different
+ *  elements, and a predicate spelled twice inline is a predicate that
+ *  drifts. */
+export function isTextFieldElement(el) {
+  return !!(el && (
+    el.tagName === "INPUT" ||
+    el.tagName === "TEXTAREA" ||
+    el.isContentEditable
+  ));
+}
+
 export function startKeyboardState(win = typeof window !== "undefined" ? window : null) {
   if (!win || !win.document) return () => {};
   const root = win.document.documentElement;
   let baseline = 0;
 
-  const apply = () => {
+  const apply = (event) => {
     const vvHeight = win.visualViewport?.height ?? win.innerHeight;
     if (!vvHeight) return;
     // Guarded (not just `win.document.activeElement`) because this also
     // runs under the fake-window test harness, where document/activeElement
     // may be absent or null.
     const active = win.document && win.document.activeElement;
-    const isTextField = !!(active && (
-      active.tagName === "INPUT" ||
-      active.tagName === "TEXTAREA" ||
-      active.isContentEditable
-    ));
+    // On focusout the browser has ALREADY moved activeElement to BODY, so
+    // asking it alone answers "nothing is focused" even when focus is on
+    // its way to another field. That published keyboardOpen false and
+    // --kb-inset 0 for one paint: the phone header un-collapsed and the
+    // page's bottom padding grew, mid-tap. Touch fires
+    // blur -> mouseup -> click with a real gap between them (see
+    // editor/touch-reveal-dismiss.js, which is a history of exactly this),
+    // so that reflow lands BETWEEN the tap and the click and the control
+    // moves out from under the finger.
+    //
+    // relatedTarget is where focus is GOING. Null on a genuine blur to
+    // nothing, which is the case that should close the keyboard, so the
+    // fallback to activeElement stays correct.
+    const incoming = event && event.type === "focusout" ? event.relatedTarget : null;
+    const isTextField = isTextFieldElement(incoming) || isTextFieldElement(active);
     const s = computeKeyboardState({ vvHeight, baseline, hasFocusedField: isTextField });
     baseline = s.nextBaseline;
     // A keyboard that isn't open isn't covering anything — publish 0 rather
