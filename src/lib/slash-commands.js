@@ -570,6 +570,18 @@ function renderRow(item, i, selectedIndex, onSelect, container) {
       b.classList.toggle("selected", j === i);
     });
   };
+  // Swallow mousedown, the same guard every editor toolbar in
+  // TipTapEditor.svelte carries. Without it a tap moves focus out of the
+  // editor: the IME closes, the visible viewport grows back, --kb-inset and
+  // --app-height change, and the shell reflows before the click resolves.
+  //
+  // That comment says the block-handles column "was the only editor toolbar
+  // IN THIS FILE missing it" -- true, and this menu is in another file, so
+  // the sweep never reached it. The menu itself is position:fixed on
+  // document.body and so does not move under the finger, which is why this
+  // reads as a keyboard flicker on every slash insert rather than a dead
+  // button.
+  btn.onmousedown = (e) => e.preventDefault();
   btn.onclick = () => onSelect(i);
 
   const body = document.createElement("span");

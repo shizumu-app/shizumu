@@ -26,7 +26,7 @@
   import { isBoardType } from "../lib/extensions/block-title.js";
   import { resolveHoveredMouseBlock, hoverClassTarget, isTrustedMouseHover } from "../lib/extensions/block-hover-guard.js";
   import { hoverPlan, HOVER_HIDE_DELAY_MS } from "../lib/editor/hover-reveal.js";
-  import { caretScrollDelta, isDegenerateCaretRect } from "../lib/editor/caret-scroll.js";
+  import { caretScrollDelta, isDegenerateCaretRect, CARET_SCROLL_MARGIN_PX } from "../lib/editor/caret-scroll.js";
   import { deleteBlockAt, resolveBlockPos } from "../lib/extensions/block-delete.js";
   import { writeClipboard } from "../lib/clipboard-write.js";
   import { sanitizePastedHtml } from "../lib/paste-sanitize.js";
@@ -467,6 +467,18 @@
         updateTableToolbar();
       },
       editorProps: {
+        // ProseMirror's own scroll-into-view runs with no margin unless it
+        // is given one, so until now the two paths disagreed: pressing
+        // Enter took the handleScrollToSelection branch below and got
+        // CARET_SCROLL_MARGIN_PX of slack, while typing a character that
+        // wrapped to a new line took PM's path and got the caret flush
+        // against the scroller's edge. Same writer, same sentence, two
+        // different amounts of breathing room depending on which key
+        // produced the line.
+        //
+        // One constant for both, so the two paths cannot drift again.
+        scrollMargin: CARET_SCROLL_MARGIN_PX,
+        scrollThreshold: CARET_SCROLL_MARGIN_PX,
         /**
          * Keep the caret in view when ProseMirror's own scroll declines to.
          *

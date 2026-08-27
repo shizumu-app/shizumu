@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   caretScrollDelta,
   isDegenerateCaretRect,
@@ -78,5 +79,60 @@ describe("isDegenerateCaretRect", () => {
 
   it("treats an empty rect at x=0 as degenerate", () => {
     expect(isDegenerateCaretRect({ top: 400, bottom: 400, left: 0, right: 0 })).toBe(true);
+  });
+});
+
+describe("caret-scroll has a caller", () => {
+  // The other tests here exercise the pure functions, and they pass whether
+  // or not anything calls them. That is not hypothetical: the editor split
+  // on shell/mobile moved editorProps into EditorCore and left
+  // handleScrollToSelection behind, and every test in this file stayed
+  // green while "Enter on the last line adds a line you cannot see" was
+  // live on that branch.
+  //
+  // Both hosts are scanned rather than one, so this guard says the same
+  // thing on either side of that split -- and so it does not itself become
+  // a merge conflict between the two trees.
+  //
+  // A source scan rather than a render: ProseMirror does not run
+  // meaningfully under jsdom, so a test that mounted the editor and claimed
+  // to cover scrolling would be the decoration CLAUDE.md warns about. This
+  // asserts only what it can -- the hook is wired, and it reaches here.
+  const HOSTS = [
+    "src/components/TipTapEditor.svelte",
+    "src/components/editor/EditorCore.svelte",
+  ];
+  const sources = HOSTS
+    .map((p) => { try { return readFileSync(p, "utf8"); } catch { return null; } })
+    .filter(Boolean);
+
+  it("finds at least one editor host to check", () => {
+    // Guards the guard: if both paths vanished, every assertion below would
+    // pass vacuously over an empty list.
+    expect(sources.length).toBeGreaterThan(0);
+  });
+
+  it("is wired into some host's editorProps", () => {
+    const wired = sources.filter((src) => {
+      const i = src.indexOf("editorProps: {");
+      return i !== -1 && src.slice(i).includes("handleScrollToSelection(view)");
+    });
+    expect(wired.length).toBeGreaterThan(0);
+  });
+
+  it("the wired host reaches this module", () => {
+    const reaching = sources.filter(
+      (src) => src.includes("caretScrollDelta") && src.includes("isDegenerateCaretRect"),
+    );
+    expect(reaching.length).toBeGreaterThan(0);
+  });
+
+  it("ProseMirror's own scroll uses the same margin this module defines", () => {
+    // The two scroll paths disagreed: Enter took the hook and got
+    // CARET_SCROLL_MARGIN_PX of slack, a wrapping keystroke took PM's own
+    // path and got none. One constant for both, asserted so they cannot
+    // drift apart again.
+    const configured = sources.filter((src) => src.includes("scrollMargin: CARET_SCROLL_MARGIN_PX"));
+    expect(configured.length).toBeGreaterThan(0);
   });
 });

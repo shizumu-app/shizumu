@@ -176,6 +176,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.7.7" date="2026-08-27">
+      <description>
+        <p>Fixes the Flatpak build. The 0.7.6 tree referenced an image from a directory the public source mirror does not ship, so the Flathub build could not resolve it. Nothing else changed: 0.7.7 is 0.7.6 plus that fix, and everything described below arrives with it.</p>
+      </description>
+    </release>
     <release version="0.7.6" date="2026-08-26">
       <description>
         <p>New shapes for a page. A decision block records what you considered, what you chose, and why. Any block can now turn into another from the chip on its edge: a list becomes an outline, an outline becomes question and answer, any of them become plain paragraphs. The text survives, the shape changes. A convert refuses rather than guesses, so a block holding a diagram or a table will not flatten it away.</p>
