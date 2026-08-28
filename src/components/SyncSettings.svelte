@@ -837,7 +837,7 @@
     } catch (e) {
       const msg = String(e);
       if (msg.includes("device_limit_reached")) {
-        errorMsg = "this account is at its free device limit. upgrade for unlimited devices.";
+        errorMsg = "this account already has a main device and a second one. upgrade to write on every device.";
         deviceLimitHit = true;
       } else if (msg.includes("no wrapped bundle deposited") || msg.includes("pair_token_state_invalid")) {
         errorMsg = "the other device did not finish. start over with a fresh code.";
@@ -1147,7 +1147,7 @@
             onclick={() => { relayChoice = "hosted"; relayUrl = HOSTED_RELAY_URL; errorMsg = ""; }}
           >
             <span class="relay-opt-name">hosted</span>
-            <span class="relay-opt-desc">we run the relay for you. free, end-to-end encrypted. upgrade later for more attachment room.</span>
+            <span class="relay-opt-desc">we run the relay for you. free for your main device and a second one, end-to-end encrypted. upgrade later for every device.</span>
           </button>
           <button
             type="button"
@@ -1318,7 +1318,7 @@
             <div class="error-callout-label">{deviceLimitHit ? "device limit" : "pairing error"}</div>
             <div class="error-callout-text">{errorMsg}</div>
             {#if deviceLimitHit}
-              <Button variant="accent" onClick={openPricing}>upgrade — unlimited devices</Button>
+              <Button variant="accent" onClick={openPricing}>upgrade to every device</Button>
             {/if}
           </div>
         {/if}

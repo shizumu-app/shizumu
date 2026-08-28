@@ -32,7 +32,7 @@ sudo dnf install webkit2gtk4.1-devel libsoup3-devel javascriptcoregtk4.1-devel g
 
 - writing is offline by default — no account needed, no data leaves your device.
 - sync requires a relay server. the app ships pointing at the official relay
-  (`sync.shizumu.app`) when sync is enabled. to run your own relay see
+  (`relay.shizumu.app`) when sync is enabled. to run your own relay see
   [shizumu-relay](https://github.com/shizumu-app/shizumu-relay).
 - to change the relay url: **settings → sync → relay url**.
 

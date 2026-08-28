@@ -27,7 +27,9 @@
     "test:vr:linux": "VITE_VR=1 npm run build && cargo build --manifest-path src-tauri/Cargo.toml && cd e2e && xvfb-run -a npm run vr:capture",
     "test:vr:linux:update": "VITE_VR=1 npm run build && cargo build --manifest-path src-tauri/Cargo.toml && cd e2e && xvfb-run -a npm run vr:update",
     "test:vr:android": "VITE_VR=1 npx tauri android build --apk --debug && cd e2e && VR_APK=\"$(cd .. && find src-tauri/gen/android/app/build/outputs/apk -name '*debug*.apk' | head -1)\" npm run vr:android",
-    "test:vr:android:update": "VITE_VR=1 npx tauri android build --apk --debug && cd e2e && VR_APK=\"$(cd .. && find src-tauri/gen/android/app/build/outputs/apk -name '*debug*.apk' | head -1)\" npm run vr:android:update"
+    "test:vr:android:update": "VITE_VR=1 npx tauri android build --apk --debug && cd e2e && VR_APK=\"$(cd .. && find src-tauri/gen/android/app/build/outputs/apk -name '*debug*.apk' | head -1)\" npm run vr:android:update",
+    "check:copy": "node scripts/check-copy-canon.mjs",
+    "test:copy": "node --test scripts/check-copy-canon.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
