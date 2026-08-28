@@ -279,7 +279,17 @@ export function createMockInvoke() {
       }
       case "get_pins": {
         if (!store.pins) store.pins = [];
-        return store.pins.filter(o => o.lineage_id === args.lineageId);
+        // source_page_lineage_id is a JOIN in commands.rs (pages p ON
+        // p.id = so.source_page_id), not a column on the pin. Omitting it
+        // here made every pin in the browser build report "from untrailed"
+        // in memory and the pin panel, whatever page it was actually kept
+        // from — a wrong label, not a missing one.
+        return store.pins
+          .filter(o => o.lineage_id === args.lineageId)
+          .map(o => {
+            const src = [...store.pages.values()].find(pg => pg.id === o.source_page_id);
+            return { ...o, source_page_lineage_id: src?.lineage_id ?? null };
+          });
       }
       case "create_pin": {
         if (!store.pins) store.pins = [];
@@ -287,11 +297,39 @@ export function createMockInvoke() {
           id: crypto.randomUUID(), lineage_id: args.lineageId,
           source_page_id: args.sourcePageId, object_type: args.objectType,
           title: args.title || null, content: args.content,
+          // Mirrors shared_objects.auto_insert (migration 013). The mock used
+          // to omit it entirely and answer [] to get_carry_forward_pins, which
+          // meant the browser build silently had no carry-forward at all —
+          // choosing a trail on an untrailed page did nothing, and the most
+          // distinctive mechanic in the product could not be demonstrated
+          // outside a real database.
+          auto_insert: args.autoInsert ? 1 : 0,
           status: "open", position: store.pins.length + 1,
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         };
         store.pins.push(obj);
         return obj;
+      }
+      // Faithful to commands.rs::get_carry_forward_pins: this trail only (not
+      // its ancestors, whatever the prose says), auto_insert set, orphans
+      // excluded, ordered by object_type then position then creation.
+      case "get_carry_forward_pins": {
+        if (!store.pins) return [];
+        return store.pins
+          .filter(o => o.lineage_id === args.lineageId
+            && !!o.auto_insert
+            && o.status !== "orphaned")
+          .sort((a, b) =>
+            String(a.object_type).localeCompare(String(b.object_type))
+            || (a.position - b.position)
+            || String(a.created_at).localeCompare(String(b.created_at)));
+      }
+      case "update_pin_auto_insert": {
+        if (store.pins) {
+          const o = store.pins.find(x => x.id === args.id);
+          if (o) { o.auto_insert = args.autoInsert ? 1 : 0; o.updated_at = new Date().toISOString(); }
+        }
+        return null;
       }
       case "update_pin_status": {
         if (store.pins) {
@@ -771,7 +809,6 @@ export function createMockInvoke() {
       // shaped commands return [], everything else returns null (the prior
       // default contract).
       case "get_trail_pages":
-      case "get_carry_forward_pins":
       case "attachment_list":
       case "sync_list_devices":
       case "sync_error_history":
@@ -793,7 +830,6 @@ export function createMockInvoke() {
       case "load_page_content_for_modal":
       case "delete_lineage":
       case "resolve_pin_divergence":
-      case "update_pin_auto_insert":
       case "update_pin_scope":
       case "save_image_bytes":
       case "save_image_file":

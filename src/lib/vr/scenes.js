@@ -270,6 +270,12 @@ export const SCENES = {
     space: "page", fixture: MARKETING_FIXTURES.marketingTasks,
     onboarding: false, marketing: true,
   },
+  // Filmed, not photographed: an untrailed page and a trail with
+  // carry-forward pins on it. See marketingTrail.
+  "mk-trail": {
+    space: "page", fixture: MARKETING_FIXTURES.marketingTrail,
+    onboarding: false, marketing: true,
+  },
   "mk-tools": {
     space: "page", fixture: MARKETING_FIXTURES.marketingTools,
     onboarding: false, marketing: true,

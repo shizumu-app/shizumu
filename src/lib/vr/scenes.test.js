@@ -12,7 +12,7 @@ const BASELINED = [
 
 const MARKETING = [
   "mk-blocks", "mk-decision", "mk-evidence", "mk-evidence-subject",
-  "mk-memory", "mk-mention", "mk-tasks", "mk-tools",
+  "mk-memory", "mk-mention", "mk-tasks", "mk-tools", "mk-trail",
 ];
 
 describe("vr scenes", () => {

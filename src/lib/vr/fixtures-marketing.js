@@ -144,19 +144,24 @@ const PINS = [
   ["v08", "a test that cannot fail is a comment", "the mock took an order the relay refuses, so the suite passed on a feature that never ran."],
   ["v08", "convert keeps the text, not the shape", "a task list becomes a q&a and every line survives. a convert that drops what it cannot flatten does not run at all."],
   ["v08", "the chip is not content", "it names the block and opens its actions. copy the block and the chip stays behind, because it was never in the doc."],
-  ["relay", "post the metadata, then put the blob", "the relay refuses an unannounced blob. order is the contract, not an implementation detail."],
-  ["relay", "keys never leave the device", "the relay stores sealed bytes it cannot read. that is the entire security model."],
+  // The two carry-forward pins (auto_insert). They are the relay's standing
+  // rules, so they belong on every page opened on that trail — which is
+  // precisely what the fourth element switches on, and what the `trail`
+  // clip records happening.
+  ["relay", "post the metadata, then put the blob", "the relay refuses an unannounced blob. order is the contract, not an implementation detail.", true],
+  ["relay", "keys never leave the device", "the relay stores sealed bytes it cannot read. that is the entire security model.", true],
   ["book", "the page did the work", "a pin is a pointer back into thinking, never the thinking itself."],
 ];
 
 async function seedPins(invoke, trails, sourcePageId) {
-  for (const [trailKey, title, body] of PINS) {
+  for (const [trailKey, title, body, carry] of PINS) {
     await invoke("create_pin", {
       lineageId: trails[trailKey].id,
       sourcePageId,
       objectType: "note",
       title,
       content: doc([p(body)]),
+      autoInsert: !!carry,
     });
   }
 }
@@ -191,13 +196,17 @@ async function seedPriorDays(invoke, trails) {
     await invoke("set_focus_lineage", { pageId: page.id, lineageId: trails[trailKey].id });
     await invoke("save_page_content", { pageId: page.id, contentJson: doc(lines.map(p)) });
   }
-  // One untrailed page. Most writing belongs to nothing and sinks; a memory
-  // shot with every page neatly trailed would be a lie about the product.
+  // One untrailed page. Most writing belongs to nothing; a memory shot with
+  // every page neatly trailed would be a lie about the product.
   const { page: loose } = await invoke("create_new_page", { date: dayBefore(DAYS.length + 1) });
   await invoke("update_what_matters_now", { pageId: loose.id, text: "a thought with nowhere to put it yet" });
   await invoke("save_page_content", {
     pageId: loose.id,
-    contentJson: doc([p("not every page belongs to something. most of them sink, and that is the point.")]),
+    // The word for what happens to unpinned writing was retired from
+    // user-facing copy on 2026-08-27, and a marketing fixture IS
+    // user-facing copy — it is photographed for the listing and filmed for
+    // the site's video.
+    contentJson: doc([p("not every page belongs to something. most of it is fuel for the next one, and that is the point.")]),
   });
 }
 
@@ -346,6 +355,36 @@ export async function marketingMention(invoke) {
   await seedPins(invoke, trails, page.id);
 }
 
+/** trail — an UNTRAILED page, and a trail with pins waiting on it.
+ *
+ *  The one scene that exists to be FILMED rather than photographed. Nothing
+ *  is staged: today's page has no lineage, `the relay` carries two
+ *  auto_insert pins, and the clip simply picks the trail. Page.svelte sees
+ *  a first-time assignment on a previously untrailed page, calls
+ *  get_carry_forward_pins, and appends what comes back — the real
+ *  carry-forward path, not a re-enactment of it.
+ *
+ *  The page is deliberately SHORT. The pins land at the end of the doc, and
+ *  a page that already fills the viewport puts them below the fold where
+ *  the camera cannot see them arrive.
+ */
+export async function marketingTrail(invoke) {
+  const trails = await seedTrails(invoke);
+  const { page } = await invoke("get_or_create_today", {});
+  // No set_focus_lineage: `wasUntrailed` in Page.svelte is what arms the
+  // carry-forward, and it reads page.lineage_id. Trail this page here and
+  // the clip records nothing happening.
+  await invoke("update_what_matters_now", { pageId: page.id, text: "back on the relay after two weeks" });
+  await invoke("save_page_content", {
+    pageId: page.id,
+    contentJson: doc([
+      p("picking the pairing work back up. i know i wrote the ordering rule down somewhere and i am not going looking for it."),
+    ]),
+  });
+  await seedPriorDays(invoke, trails);
+  await seedPins(invoke, trails, page.id);
+}
+
 /** blocks-slash / table picker / chart builder — a page with a line to type on. */
 export async function marketingBlocks(invoke) {
   const trails = await seedTrails(invoke);
@@ -443,6 +482,7 @@ export async function marketingEvidenceSubject(invoke) {
 
 export const MARKETING_FIXTURES = {
   marketingTasks,
+  marketingTrail,
   marketingTools,
   marketingMemory,
   marketingMention,
