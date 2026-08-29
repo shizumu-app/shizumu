@@ -14,11 +14,12 @@
 
   <description>
     <p>
-      Shizumu is a private thinking space built on four verbs.
-      You write to think, you pin what matters, you trail what
-      continues, and the rest sinks. The volume of writing is not
-      the artifact; what you pin is. No tags, no folders, no
-      templates. The calm of opening the app and not facing a pile.
+      Shizumu is a private space to think by writing. Open it and start
+      the sentence: there is nothing to structure first, and nowhere to
+      file it. You write to think, you pin what matters, and you trail
+      what continues. The volume of writing is not the artifact; what
+      you pin is. No tags, no folders, no templates, and no pile waiting
+      for you when you open the app.
     </p>
     <p>
       Pages flow into a daily memory you can scroll back through and
@@ -26,15 +27,24 @@
       daily stream: checklists, references, anything you want close at
       hand. Trails group writing that belongs together (a project, a
       book, an ongoing thread of thought) without forcing you to design
-      a structure first. Continuous trails are the one intentional
-      exception: when a single thread should genuinely keep growing,
-      you choose to trail it.
+      a structure first, and the first time you put a page on a trail,
+      the pins you already kept there come back onto the page. Continuous
+      trails are the one intentional exception: when a single thread
+      should genuinely keep growing, you choose to trail it.
+    </p>
+    <p>
+      The editor is keyboard driven. Type / for a table, a chart, an
+      outline or a block of code; type @ to reach a page, a pin or a
+      trail. Ctrl+K opens the trail index, Ctrl+P pins from the cursor,
+      Ctrl+F finds, and a shortcuts panel lists the rest.
     </p>
     <p>
       Local-first by design. Everything stays on your device, in a SQLite
-      database you can open with any compatible tool. Optional end-to-end
-      encryption keeps your words readable only by you. No account, no
-      analytics. Your writing remains yours.
+      database you can open with any compatible tool. Sync is optional and
+      end-to-end encrypted: your writing is sealed on your device before it
+      leaves it, the keys are derived there and never leave, and the relay
+      holds what it cannot read. Neither can we. No account, no analytics.
+      Your writing remains yours.
     </p>
     <p>
       Shizumu fits the writer who keeps a daily log, the developer with
@@ -43,12 +53,12 @@
       without learning a tagging system first.
     </p>
     <p xml:lang="fr">
-      Shizumu est un espace d'écriture privé construit sur quatre
-      verbes. Vous écrivez pour penser, vous épinglez ce qui compte,
-      vous suivez ce qui continue, et le reste se dépose. Le volume
-      d'écriture n'est pas l'objet ; ce que vous épinglez l'est.
-      Aucun tag, aucun dossier, aucun gabarit. Le calme d'ouvrir
-      l'application sans faire face à une pile.
+      Shizumu est un espace privé pour penser en écrivant. Ouvrez-le et
+      commencez la phrase : rien à structurer d'abord, nulle part où
+      classer. Vous écrivez pour penser, vous épinglez ce qui compte,
+      vous suivez ce qui continue. Le volume d'écriture n'est pas
+      l'objet ; ce que vous épinglez l'est. Aucun tag, aucun dossier,
+      aucun gabarit, et aucune pile qui vous attend à l'ouverture.
     </p>
     <p xml:lang="fr">
       Les pages s'écoulent dans une mémoire quotidienne que vous pouvez
@@ -56,16 +66,27 @@
       lignes qui comptent hors du flux : listes, références, tout ce
       que vous voulez garder à portée. Les pistes regroupent les écrits
       qui vont ensemble (un projet, un livre, un fil de pensée en
-      cours) sans imposer de structure préalable. Les pistes continues
-      sont l'exception intentionnelle : quand un seul fil doit vraiment
+      cours) sans imposer de structure préalable, et la première fois
+      qu'une page rejoint une piste, les épingles que vous y aviez
+      gardées reviennent sur la page. Les pistes continues sont
+      l'exception intentionnelle : quand un seul fil doit vraiment
       continuer à grandir, vous choisissez de le suivre.
+    </p>
+    <p xml:lang="fr">
+      L'éditeur se pilote au clavier. Tapez / pour un tableau, un
+      graphique, un plan ou un bloc de code ; tapez @ pour atteindre une
+      page, une épingle ou une piste. Ctrl+K ouvre l'index des pistes,
+      Ctrl+P épingle depuis le curseur, Ctrl+F recherche, et un panneau
+      de raccourcis liste le reste.
     </p>
     <p xml:lang="fr">
       Local d'abord, par conception. Tout reste sur votre appareil, dans
       une base SQLite que vous pouvez ouvrir avec n'importe quel outil
-      compatible. Le chiffrement de bout en bout, optionnel, garde vos
-      mots lisibles uniquement par vous. Pas de compte, pas d'analytique.
-      Vos écrits vous appartiennent.
+      compatible. La synchronisation est optionnelle et chiffrée de bout
+      en bout : vos écrits sont scellés sur votre appareil avant d'en
+      sortir, les clés y sont dérivées et n'en sortent jamais, et le relais
+      ne détient que ce qu'il ne peut pas lire. Nous non plus. Pas de
+      compte, pas d'analytique. Vos écrits vous appartiennent.
     </p>
     <p xml:lang="fr">
       Shizumu convient à l'auteur qui tient un journal, au développeur
@@ -250,7 +271,7 @@
     </release>
     <release version="0.4.0" date="2026-05-23">
       <description>
-        <p>Sync. End-to-end encrypted sync between your devices, through a relay you run yourself. A new device joins through a short pairing code; old devices can be revoked. Continuous trails ride on a CRDT (Yjs) so two devices writing into the same trail at the same time converge without losing characters or fighting cursors. Discrete pages travel under HLC ordering. Doc identifiers are encrypted in transit — the relay routes ops without learning which page they belong to. Your recovery phrase and the keys derived from it live in the system keyring (libsecret or kwallet), not in the database, so home-directory access doesn't hand over your sync identity. Settings gain a sync section with pause, resume, force-pull, device list, and op log stats. The engine can be turned off entirely if you prefer to stay fully local. The four verbs hold: write, pin, trail, sink — now across your devices.</p>
+        <p>Sync. End-to-end encrypted sync between your devices, through a relay you run yourself. A new device joins through a short pairing code; old devices can be revoked. Continuous trails ride on a CRDT (Yjs) so two devices writing into the same trail at the same time converge without losing characters or fighting cursors. Discrete pages travel under HLC ordering. Doc identifiers are encrypted in transit — the relay routes ops without learning which page they belong to. Your recovery phrase and the keys derived from it live in the system keyring (libsecret or kwallet), not in the database, so home-directory access doesn't hand over your sync identity. Settings gain a sync section with pause, resume, force-pull, device list, and op log stats. The engine can be turned off entirely if you prefer to stay fully local. The verbs hold: write, pin, trail — now across your devices.</p>
       </description>
     </release>
     <release version="0.3.2" date="2026-05-25">
@@ -265,7 +286,7 @@
     </release>
     <release version="0.3.0" date="2026-05-19">
       <description>
-        <p>shizumu, made flexible. Trails you've already made can be reshaped without touching the writing inside them. Rename, move under another trail, fold into a parent, or delete. A new export sends any trail (or every trail) out as readable markdown, one folder per lineage, so your words are never trapped in the app. Underneath: the block and pin rewrite (pin sync moved to a Rust-side cache hook, same-page edits propagate within one editor frame), unified Alt-arrow movement across blocks and list items, midnight transition handling so the day you wrote on stays the day you wrote on, and a quieter writing surface from the rail-system and list-marker rewrites that landed across the v0.2.x line. The four verbs hold: write, pin, trail, sink.</p>
+        <p>shizumu, made flexible. Trails you've already made can be reshaped without touching the writing inside them. Rename, move under another trail, fold into a parent, or delete. A new export sends any trail (or every trail) out as readable markdown, one folder per lineage, so your words are never trapped in the app. Underneath: the block and pin rewrite (pin sync moved to a Rust-side cache hook, same-page edits propagate within one editor frame), unified Alt-arrow movement across blocks and list items, midnight transition handling so the day you wrote on stays the day you wrote on, and a quieter writing surface from the rail-system and list-marker rewrites that landed across the v0.2.x line. The verbs hold: write, pin, trail.</p>
       </description>
     </release>
     <release version="0.2.17" date="2026-05-10">

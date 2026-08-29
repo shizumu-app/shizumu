@@ -139,29 +139,125 @@ async function seedTrails(invoke) {
  *  set — the convert rule is the decision on the evidence page, the chip
  *  rule is the chip the convert shot is opened from, the relay pair is the
  *  sync panel's own claim. A pin nobody can trace back to a page in the
- *  same set is what makes six screenshots read as six products. */
+ *  same set is what makes six screenshots read as six products.
+ *
+ *  Two of them are TASK pins and the rest are notes, and both facts are
+ *  deliberate. Everything here used to be a note holding one paragraph, so
+ *  every row in the panel carried the same `text` chip: a kind column that
+ *  never varies says nothing, and the claim the panel makes is that
+ *  different KINDS of thing get kept. The dates are deliberate for the same
+ *  reason — see seedPins below. */
 const PINS = [
-  ["v08", "a test that cannot fail is a comment", "the mock took an order the relay refuses, so the suite passed on a feature that never ran."],
-  ["v08", "convert keeps the text, not the shape", "a task list becomes a q&a and every line survives. a convert that drops what it cannot flatten does not run at all."],
-  ["v08", "the chip is not content", "it names the block and opens its actions. copy the block and the chip stays behind, because it was never in the doc."],
+  {
+    trail: "v08",
+    title: "convert keeps the text, not the shape",
+    body: "a task list becomes a q&a and every line survives. a convert that drops what it cannot flatten does not run at all.",
+    created: "2025-12-02T09:41:00.000Z",
+  },
+  // One of the two task pins. The panel groups board pins above notes, so
+  // whatever order this array is written in, the two task rows render first
+  // and the two text rows under them — which is why the pins-trail recipe
+  // finds the row it opens by NAME rather than by index.
+  {
+    trail: "v08",
+    title: "carried over from 0.7.7",
+    objectType: "board",
+    content: doc([list("task", [
+      ["the gutter comes back on short windows", true],
+      ["convert refuses a chart instead of eating it", true],
+      ["scroll margin on the last block", false],
+    ], "carried over from 0.7.7")]),
+    created: "2025-11-03T16:12:00.000Z",
+    updated: "2025-12-19T11:35:00.000Z",
+  },
+  {
+    trail: "v08",
+    title: "the chip is not content",
+    body: "it names the block and opens its actions. copy the block and the chip stays behind, because it was never in the doc.",
+    created: "2026-01-08T14:07:00.000Z",
+  },
+  // The other task pin, and the oldest thing on the trail: the same checklist
+  // every release has walked through since 0.6, which is why its dates run
+  // across the turn of the year — kept in august, ticked again in january.
+  // The pins beat opens THIS one, and its provenance row makes the caption's
+  // six-month claim in the app's own words rather than in a caption.
+  {
+    trail: "v08",
+    title: "what every release has to clear",
+    // objectType "board", not "note". TipTapEditor stamps a pinned list
+    // "board" (`pinCategory = isAttachment ? "file" : (isBoard ? …)`), and
+    // pinKind only reads the CONTENT SHAPE for a board pin — a task list
+    // filed as a note falls through to the `text` chip, which is what every
+    // pin in this set used to be.
+    objectType: "board",
+    content: doc([list("task", [
+      ["a signed tag, not a lightweight one", true],
+      ["the flatpak manifest pinned to that commit", true],
+      ["listing screenshots reshot against the new ui", false],
+      ["release notes written from the pins, not the log", false],
+    ], "what every release has to clear")]),
+    created: "2025-08-14T10:24:00.000Z",
+    updated: "2026-01-06T18:02:00.000Z",
+  },
+  // Four pins on v0.8 exactly, and the count is load-bearing across two
+  // beats of the video: `clips/pin.webm` films a pin being made on this same
+  // scene and its header counter lands on 4, and `clips/pins-trail.webm`
+  // opens the panel on the same page. Five rows here would make the second
+  // shot contradict the first one.
+  //
   // The two carry-forward pins (auto_insert). They are the relay's standing
   // rules, so they belong on every page opened on that trail — which is
-  // precisely what the fourth element switches on, and what the `trail`
-  // clip records happening.
-  ["relay", "post the metadata, then put the blob", "the relay refuses an unannounced blob. order is the contract, not an implementation detail.", true],
-  ["relay", "keys never leave the device", "the relay stores sealed bytes it cannot read. that is the entire security model.", true],
-  ["book", "the page did the work", "a pin is a pointer back into thinking, never the thinking itself."],
+  // precisely what `carry` switches on, and what the `trail` clip records
+  // happening.
+  {
+    trail: "relay",
+    title: "post the metadata, then put the blob",
+    body: "the relay refuses an unannounced blob. order is the contract, not an implementation detail.",
+    carry: true,
+    created: "2025-09-21T08:55:00.000Z",
+  },
+  {
+    trail: "relay",
+    title: "keys never leave the device",
+    body: "the relay stores sealed bytes it cannot read. that is the entire security model.",
+    carry: true,
+    created: "2025-09-21T09:03:00.000Z",
+  },
+  // Kept on `the relay` rather than on v0.8, where it used to sit: the thing
+  // it is about is the relay refusing an order the mock accepted. Moving it
+  // is also what leaves v0.8 with four.
+  {
+    trail: "relay",
+    title: "a test that cannot fail is a comment",
+    body: "the mock took an order the relay refuses, so the suite passed on a feature that never ran.",
+    created: "2025-10-30T19:18:00.000Z",
+  },
+  {
+    trail: "book",
+    title: "the page did the work",
+    body: "a pin is a pointer back into thinking, never the thinking itself.",
+    created: "2025-07-09T21:30:00.000Z",
+  },
 ];
 
 async function seedPins(invoke, trails, sourcePageId) {
-  for (const [trailKey, title, body, carry] of PINS) {
+  for (const pin of PINS) {
     await invoke("create_pin", {
-      lineageId: trails[trailKey].id,
+      lineageId: trails[pin.trail].id,
       sourcePageId,
-      objectType: "note",
-      title,
-      content: doc([p(body)]),
-      autoInsert: !!carry,
+      objectType: pin.objectType || "note",
+      title: pin.title,
+      content: pin.content || doc([p(pin.body)]),
+      autoInsert: !!pin.carry,
+      // Fixture dates, spread over months. The VR clock is frozen at
+      // 2026-01-15 (src/lib/vr/bootstrap.js), so these render in the pin
+      // modal as "created 14 aug 2025 · edited 6 jan" rather than as
+      // "created today" on every row — which is what a pin panel arguing
+      // the long view has to be able to show. `createdAt`/`updatedAt` are
+      // honoured by the browser MOCK only; see api.js, and the note there
+      // on why the Rust command does not take them.
+      createdAt: pin.created,
+      updatedAt: pin.updated || pin.created,
     });
   }
 }
@@ -238,7 +334,7 @@ export async function marketingTasks(invoke) {
       ], "before tag"),
       p("the rest of the list is the part i keep rewriting instead of doing. two of those lines have been there since sunday, which is its own answer."),
       // Not "the two lines i pinned": the trail chip beside it reads
-      // "pins 3", and a store image that contradicts its own header is the
+      // "pins 4", and a store image that contradicts its own header is the
       // kind of detail a reader notices and nobody can un-notice.
       p("none of this needs to survive the week. the lines i pinned do."),
     ]),

@@ -305,7 +305,17 @@ export function createMockInvoke() {
           // outside a real database.
           auto_insert: args.autoInsert ? 1 : 0,
           status: "open", position: store.pins.length + 1,
-          created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+          // MOCK-ONLY, and deliberately wider than the Rust command.
+          // commands.rs::create_pin_inner takes no timestamp — it stamps
+          // chrono::Utc::now() for both columns — so a caller passing
+          // createdAt in the real app is passing something nobody reads.
+          // The seeded fixtures need it: a pin panel whose whole argument
+          // is the long view cannot open a pin that says "created today ·
+          // edited today", and the dates ARE part of a fixture the same
+          // way its words are. Omit them and the mock behaves exactly as
+          // it did, which is what every non-fixture caller does.
+          created_at: args.createdAt || new Date().toISOString(),
+          updated_at: args.updatedAt || args.createdAt || new Date().toISOString(),
         };
         store.pins.push(obj);
         return obj;
