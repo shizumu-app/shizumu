@@ -1,4 +1,5 @@
 import { getLocalDateStr } from "./utils.js";
+import { resolveInvokeSource } from "./invoke-source.js";
 // Detect if running inside Tauri
 const isTauri = typeof window !== "undefined" && window.__TAURI_INTERNALS__;
 
@@ -16,10 +17,17 @@ let _invoke = null;
 
 async function call(cmd, args) {
   if (!_invoke) {
-    if (typeof window !== "undefined" && window.__VR_INVOKE__) {
+    const w = typeof window !== "undefined" ? window : {};
+    const source = resolveInvokeSource({
       // VR harness installs a deterministic, pre-seeded invoke here.
-      _invoke = window.__VR_INVOKE__;
-    } else if (isTauri) {
+      vrInvoke: w.__VR_INVOKE__ || null,
+      // The browser demo installs a seeded + persisted invoke here.
+      demoInvoke: w.__DEMO_INVOKE__ || null,
+      isTauri: !!isTauri,
+    });
+    if (source.invoke) {
+      _invoke = source.invoke;
+    } else if (source.kind === "tauri") {
       const core = await import("@tauri-apps/api/core");
       _invoke = core.invoke;
     } else {
@@ -32,6 +40,46 @@ async function call(cmd, args) {
 // In-memory mock for browser development
 export function createMockInvoke() {
   const store = { pages: new Map(), lines: new Map() };
+
+  // Page text lives in content_json (a TipTap doc), not in store.lines —
+  // lines are the pre-editor shape and seeded pages never populate them. A
+  // search that only read lines found nothing on any page the fixture wrote.
+  //
+  // Mirrors extract_search_text (src-tauri/src/search.rs:43): every text
+  // node, plus INDEXED_ATTRS ("blockTitle", "filename", "alt") — the string
+  // a user types to *name* a block or attachment, which lives in a node
+  // attribute rather than a text node and would otherwise never match.
+  //
+  // Not the same walker as src/lib/snippet.js's flattenDocText: that one
+  // deliberately strips dayMarkers and pinned-block text because it builds
+  // a display snippet, not a search index. Stripping those here would make
+  // search miss content it should find, so this stays a separate function.
+  function docText(contentJson) {
+    if (typeof contentJson !== "string" || !contentJson.trim()) return "";
+    const INDEXED_ATTRS = ["blockTitle", "filename", "alt"];
+    try {
+      const out = [];
+      (function walk(n) {
+        if (!n || typeof n !== "object") return;
+        if (typeof n.text === "string") out.push(n.text);
+        if (n.attrs && typeof n.attrs === "object") {
+          for (const key of INDEXED_ATTRS) {
+            const v = n.attrs[key];
+            if (typeof v === "string" && v.trim()) out.push(v.trim());
+          }
+        }
+        if (Array.isArray(n.content)) n.content.forEach(walk);
+      })(JSON.parse(contentJson));
+      return out.join(" ");
+    } catch {
+      // Malformed JSON: fall back to the raw string rather than "". This is
+      // deliberate, not an oversight — it means structural keys like "doc"
+      // become searchable in that edge case, but it only fires on
+      // genuinely broken content_json, and hiding a page that clearly has
+      // *something* in it is the worse failure mode.
+      return contentJson;
+    }
+  }
 
   function ensureToday() {
     const today = getLocalDateStr();
@@ -59,7 +107,35 @@ export function createMockInvoke() {
     return key;
   }
 
-  return async (cmd, args = {}) => {
+  // Builds the demo's exportable snapshot of the store. Shared by
+  // __demo_export (async path, via the switch below) and __demoSnapshot
+  // (the synchronous accessor attached to the returned invoke function) so
+  // the two can never drift apart into different shapes.
+  //
+  // This is a SHALLOW snapshot: pages/lines/lineages/blocks get fresh entry
+  // arrays, but the row objects inside them are the same live references the
+  // store mutates in place, and pins/settings are not copied at all - they
+  // are handed back by reference, store included. That is only safe because
+  // every caller captures the snapshot and writes it out in the same
+  // synchronous turn as the mutation that produced it (see bootstrap.js's
+  // comment on `lastSnapshot`). Anything that puts an await between
+  // capturing this snapshot and persisting it can end up writing a store
+  // that has already moved on. Do not "fix" this with a deep copy - that
+  // cost would land on every keystroke, which is exactly what the 50k-word
+  // typing-latency target exists to protect.
+  function buildDemoSnapshot() {
+    return {
+      pages: [...store.pages.entries()],
+      lines: [...store.lines.entries()],
+      pins: store.pins || [],
+      lineages: store.lineages ? [...store.lineages.entries()] : [],
+      blocks: store.blocks ? [...store.blocks.entries()] : [],
+      settings: store.settings || {},
+      onboardingComplete: !!store.onboardingComplete,
+    };
+  }
+
+  const invokeFn = async (cmd, args = {}) => {
     switch (cmd) {
       case "get_or_create_today": {
         const key = ensureToday();
@@ -156,6 +232,22 @@ export function createMockInvoke() {
       case "mark_onboarding_complete":
         store.onboardingComplete = true;
         return null;
+      // Demo-only. The store is closure-private, so the browser demo's
+      // persistence layer asks the mock to hand it out rather than reaching
+      // in. Maps serialize as entry arrays; everything else is already plain.
+      case "__demo_export":
+        return buildDemoSnapshot();
+      case "__demo_import": {
+        const d = args?.data || {};
+        store.pages = new Map(d.pages || []);
+        store.lines = new Map(d.lines || []);
+        store.pins = d.pins || [];
+        store.lineages = new Map(d.lineages || []);
+        store.blocks = new Map(d.blocks || []);
+        store.settings = d.settings || {};
+        store.onboardingComplete = !!d.onboardingComplete;
+        return null;
+      }
       case "get_setting":
         return store.settings?.[args.key] || null;
       case "set_setting":
@@ -348,6 +440,42 @@ export function createMockInvoke() {
         }
         return null;
       }
+      case "update_pin_auto_insert": {
+        if (store.pins) {
+          const o = store.pins.find(x => x.id === args.id);
+          if (o) { o.auto_insert = args.autoInsert ? 1 : 0; o.updated_at = new Date().toISOString(); }
+        }
+        return null;
+      }
+      // Mirrors get_carry_forward_pins in src-tauri/src/commands.rs:3853 —
+      // one lineage, auto_insert set, orphaned excluded, ordered by
+      // object_type then position then created_at. That query does NOT walk
+      // ancestors, whatever the comment in Page.svelte says; this mirrors the
+      // SQL that ships, not the comment beside it.
+      case "get_carry_forward_pins": {
+        if (!store.pins) store.pins = [];
+        return store.pins
+          .filter(o => o.lineage_id === args.lineageId && o.auto_insert && o.status !== "orphaned")
+          .sort((a, b) =>
+            String(a.object_type).localeCompare(String(b.object_type)) ||
+            (a.position ?? 0) - (b.position ?? 0) ||
+            String(a.created_at).localeCompare(String(b.created_at)));
+      }
+      // get_trail_pages returns Vec<PageWithLines> (src-tauri/src/models.rs:150),
+      // built by load_page_with_lines (src-tauri/src/commands.rs:12) —
+      // { page, lines, session_markers } per row, not a flat page. ORDER BY
+      // date ASC, page_number ASC — src-tauri/src/commands.rs:2647. No
+      // consumer calls getTrailPages yet (nothing outside api.js /
+      // api-mock.test.js), but a mock returning the wrong shape is a trap
+      // that pays off as `undefined` on every field the day someone wires
+      // it up — mirror the real shape now rather than when that breaks.
+      // session_markers isn't modelled in the mock store, so it's always
+      // [] — same "not modelled" call as elsewhere in this file.
+      case "get_trail_pages":
+        return [...store.pages.values()]
+          .filter(p => p.lineage_id === args.lineageId)
+          .sort((a, b) => a.date.localeCompare(b.date) || a.page_number - b.page_number)
+          .map(p => ({ page: p, lines: store.lines.get(p.id) || [], session_markers: [] }));
       case "update_pin_content": {
         if (store.pins) {
           const o = store.pins.find(x => x.id === args.id);
@@ -780,11 +908,16 @@ export function createMockInvoke() {
         const results = [];
         for (const p of store.pages.values()) {
           const pageLines = store.lines.get(p.id) || [];
-          const text = pageLines.map(l => l.text).join(" ") + " " + (p.what_matters_now || "") + " " + (p.what_shifted || "");
+          const body = docText(p.content_json);
+          const text = pageLines.map(l => l.text).join(" ") + " " + body + " " + (p.what_matters_now || "") + " " + (p.what_shifted || "");
           if (text.toLowerCase().includes(q)) {
             results.push({
               id: p.id, date: p.date, page_number: p.page_number,
-              preview_lines: pageLines.slice(0, 3).map(l => l.text),
+              preview_lines: pageLines.length
+                ? pageLines.slice(0, 3).map(l => l.text)
+                // filter(Boolean): "".split(...) yields [""], not [] — an
+                // empty body must not preview as one blank line.
+                : body.split(/(?<=\.)\s+/).filter(Boolean).slice(0, 3),
               what_matters_now: p.what_matters_now,
               what_shifted_complete: p.what_shifted_complete,
               line_count: pageLines.length,
@@ -818,7 +951,6 @@ export function createMockInvoke() {
       // array iteration and silences the unknown-command warning. List-
       // shaped commands return [], everything else returns null (the prior
       // default contract).
-      case "get_trail_pages":
       case "attachment_list":
       case "sync_list_devices":
       case "sync_error_history":
@@ -876,6 +1008,17 @@ export function createMockInvoke() {
         return null;
     }
   };
+
+  // Synchronous escape hatch for the browser demo's persistence layer.
+  // invokeFn's own switch body has no internal awaits — every mutation
+  // lands on `store` the instant a case runs, at call time, not when the
+  // returned promise settles. That means a caller who has already called
+  // (not necessarily awaited) invokeFn(cmd, args) can read a fully
+  // up-to-date snapshot synchronously, right now, via this — no promise,
+  // no microtask, no race with page teardown.
+  invokeFn.__demoSnapshot = buildDemoSnapshot;
+
+  return invokeFn;
 }
 
 // Public API

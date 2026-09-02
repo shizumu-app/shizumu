@@ -3,6 +3,7 @@ node_modules/
 
 # build output
 dist/
+dist-demo/
 
 # tauri build (handled by src-tauri/.gitignore too)
 src-tauri/target/

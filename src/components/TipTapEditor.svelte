@@ -14,6 +14,9 @@
 </script>
 
 <script>
+  // Aliased: `blockAlreadyPinned` is already this component's $state flag
+  // for the CURRENT block, and the import is the rule that decides it.
+  import { blockAlreadyPinned as isBlockKept } from "../lib/editor/block-already-pinned.js";
   import { onMount, onDestroy, tick } from "svelte";
   import { fade } from "svelte/transition";
   import { Editor } from "@tiptap/core";
@@ -205,9 +208,14 @@
   let handleIsBoard = $state(false);
   let handleHasContent = $state(false);
   // Whether the revealed block actually renders a `.board-title-slot` child
-  // to focus — mirrors block-actions.js's `hasTitle` (the same signal the
-  // touch action-sheet uses to decide whether to offer "title"; not every
-  // board type gets a slot, e.g. table's title is a CSS pseudo-element).
+  // to focus — the same DOM fact block-actions.js now calls `hasTitleSlot`,
+  // and the same signal the touch action-sheet uses to decide whether to
+  // offer "title". It is asked of the element rather than of the block type
+  // because the type list would have to be right forever; today every board
+  // type does render a slot, table included (ShellTableView wires a real
+  // `<input>` by hand since Plan 1c — the CSS pseudo-element this comment
+  // used to name has been gone since, and board-detection.test.js asserts
+  // the real slot on both a table and a chart).
   // Drives the gutter toolbar's T button on touch (see markup below).
   let handleHasTitleSlot = $state(false);
 
@@ -265,6 +273,16 @@
       const pins = await getPins(lineageId || null);
       existingPinContents = new Set(pins.map(p => p.content));
     } catch { existingPinContents = new Set(); }
+  }
+
+  // The decision lives in a pure module — see its header for the defect it
+  // was written for. This wrapper only supplies the two facts it needs.
+  function blockIsPinned(el, text) {
+    return isBlockKept({
+      pinId: el?.getAttribute?.("data-pin-id") || null,
+      text,
+      pinnedContents: existingPinContents,
+    });
   }
 
   // Word count (exposed to parent via bind:this)
@@ -477,8 +495,18 @@
         // produced the line.
         //
         // One constant for both, so the two paths cannot drift again.
+        // scrollMargin only. scrollThreshold was set here too and had to
+        // come out: margin is how much extra room is left WHEN a scroll
+        // happens, threshold is how close to an edge the selection must be
+        // BEFORE ProseMirror scrolls at all. The threshold made PM scroll on
+        // load for any document whose selection lands near an edge, and the
+        // amount varied with timing -- a VR diff that changed run to run
+        // (2065px, then 1420px) on a 360px-tall landscape viewport.
+        //
+        // Margin keeps the fix this was added for: Enter took the
+        // handleScrollToSelection branch and got CARET_SCROLL_MARGIN_PX of
+        // slack while a wrapping keystroke took PM's path and got none.
         scrollMargin: CARET_SCROLL_MARGIN_PX,
-        scrollThreshold: CARET_SCROLL_MARGIN_PX,
         /**
          * Keep the caret in view when ProseMirror's own scroll declines to.
          *
@@ -1028,7 +1056,7 @@
       // as full and the gutter offered a pin handle handlePinBlock then
       // refused to act on. Same call, same answer, every site.
       hasContent: blockMayBePinned(el),
-      alreadyPinned: existingPinContents.has(text),
+      alreadyPinned: blockIsPinned(el, text),
     };
   }
 
@@ -1537,13 +1565,18 @@
     const canPin = blockMayBePinned(block);
     const tag = block.tagName?.toLowerCase();
     const canInsert = tag === "p" || tag === "h1" || tag === "h2" || tag === "h3";
-    const hasTitle = !!block.querySelector?.(".board-title-slot");
+    // Gated on !readonly like canConvert below, and for the same reason a
+    // closed page offers no convert: the row would open a slot that now
+    // refuses to write (title-slot.js's mayWriteTitle). The guard there is
+    // the correctness fix and reaches every route; this is the affordance
+    // half, so a closed page does not offer a control that declines.
+    const hasTitleSlot = !readonly && !!block.querySelector?.(".board-title-slot");
     // dataset.board is set by createBlockShell (block-shell.js) and, since
     // Task 1, by the table view too — reliable for every board type.
     const canConvert = isBoard && !readonly && CONVERTIBLE_TYPES.includes(block.dataset?.board);
     let actions = blockActionsFor({
       isBoard,
-      hasTitle,
+      hasTitleSlot,
       canPin,
       isEmpty: canInsert && !canPin,
       canConvert,
@@ -2070,8 +2103,10 @@
       handleVisible = false;
       return;
     }
-    handleHasTitleSlot = !!node.querySelector?.(".board-title-slot");
-    blockAlreadyPinned = existingPinContents.has(node.textContent?.trim());
+    // Same gate as describeHoverBlock above — the touch reveal must not
+    // offer a T button on a page the write path will refuse.
+    handleHasTitleSlot = !readonly && !!node.querySelector?.(".board-title-slot");
+    blockAlreadyPinned = blockIsPinned(node, node.textContent?.trim());
     handleVisible = true;
   }
 

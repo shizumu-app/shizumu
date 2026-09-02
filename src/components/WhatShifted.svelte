@@ -106,9 +106,22 @@
      and overlapping "today", and visible in the device screenshot.
      This is the double-counting rule in CLAUDE.md ("the shell reserves the
      inset once; a surface inside it that re-adds it is double-counting"),
-     which memory hit before with the status-bar inset. A `position: fixed`
-     surface (BottomSheet) is NOT inside the shell's box and does still need
-     its own `bottom: var(--kb-inset)` — the distinction is flow vs fixed. */
+     which memory hit before with the status-bar inset.
+
+     The exception written here — that a `position: fixed` surface
+     (BottomSheet) is outside the shell's box and "does still need its own
+     `bottom: var(--kb-inset)`" — was WRONG, and produced this same
+     double-count a third time: the bottom sheets were measured entirely
+     off the top of the screen with the keyboard up. Flow vs fixed is not
+     the distinction. A fixed surface is positioned against the viewport,
+     and whether THAT already excludes the keyboard depends on which
+     viewport the browser shrank: under
+     interactive-widget=resizes-content (index.html since 74b6562d) the
+     layout viewport shrinks and `bottom: 0` is already clear, so any lift
+     double-counts. Under resizes-visual (iOS) it does not and the lift is
+     required. `--kb-overlay` (keyboardOverlayPx, keyboard-state.js) is
+     that difference and is what a fixed surface reads; `--kb-inset` is the
+     keyboard's height, for flow-level boxes reserving space. */
   @media (max-width: 480px), (orientation: landscape) and (max-height: 480px) {
     .what-shifted.expanded {
       background: var(--canvas-bg);

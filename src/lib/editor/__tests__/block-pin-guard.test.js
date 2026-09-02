@@ -228,7 +228,7 @@ describe("the sheet's rows, composed as openBlockActionSheet composes them", () 
     });
     return blockActionsFor({
       isBoard: el.classList?.contains("block-shell") || el.classList?.contains("code-block-wrap"),
-      hasTitle: !!el.querySelector?.(".board-title-slot"),
+      hasTitleSlot: !!el.querySelector?.(".board-title-slot"),
       canPin,
       isEmpty: canInsert && !canPin,
       canConvert,
@@ -419,7 +419,7 @@ describe("attachment detection off a real editor, both render branches", () => {
     });
     return blockActionsFor({
       isBoard: el.classList?.contains("block-shell") || el.classList?.contains("code-block-wrap"),
-      hasTitle: !!el.querySelector?.(".board-title-slot"),
+      hasTitleSlot: !!el.querySelector?.(".board-title-slot"),
       canPin,
       isEmpty: canInsert && !canPin,
       canConvert: false,

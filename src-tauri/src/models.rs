@@ -167,8 +167,24 @@ pub struct PageSummary {
     pub lineage_id: Option<String>,
     pub line_count: i64,
     pub created_at: String,
-    /// Populated for continuous-trail pages so THREAD view can render an
-    /// expandable dayMarker list without a second round-trip. May be null.
+    /// The page's full doc JSON, carried on every summary so THREAD view
+    /// can render a continuous trail's expandable dayMarker list without a
+    /// second round-trip. May be null.
+    ///
+    /// It says "on every summary" because that is what `get_thread` does —
+    /// `content_json: page.content_json.clone()`, unconditional
+    /// (commands.rs). This comment used to read "Populated for
+    /// continuous-trail pages", which describes the REASON it exists
+    /// rather than the rows it appears on, and reads as a condition that
+    /// is not there.
+    ///
+    /// What a summary does NOT carry is `yjs_state` — that lives on
+    /// `Page`, not here. So a summary is safe to render and unsafe to
+    /// EDIT: binding a canvas to one would save with `yjs_state: None`,
+    /// which `save_page_content_inner` COALESCEs into keeping the stale
+    /// value, and the next open would bind that stale doc and discard the
+    /// edit. Anything that puts a summary on a writable surface must
+    /// re-fetch the page by address first.
     #[serde(default)]
     pub content_json: Option<String>,
     /// Number of open shared_objects rows pinned from this page.

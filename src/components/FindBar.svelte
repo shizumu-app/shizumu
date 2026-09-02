@@ -15,6 +15,7 @@
 -->
 <script>
   import { onMount, onDestroy } from "svelte";
+  import { findCountLabel } from "../lib/editor/find-count-label.js";
   import Button from "../lib/ui/Button.svelte";
 
   /** @type {{
@@ -125,13 +126,11 @@
       onkeydown={handleKeydown}
       spellcheck="false"
     />
-    <span class="find-count" aria-live="polite">
-      {#if total > 0}
-        {activeIdx + 1} of {total}
-      {:else if query}
-        no matches
-      {/if}
-    </span>
+    <!-- findCountLabel, not four branches here: this bar owns no match
+         state, so inline branches could only be exercised by mounting the
+         whole component, and the "0 of 3" defect they carried sat unseen
+         because of it. See that module's header. -->
+    <span class="find-count" aria-live="polite">{findCountLabel(query, total, activeIdx)}</span>
     <button class="find-btn" onclick={prev} aria-label="previous match" title="previous (shift+enter)">↑</button>
     <button class="find-btn" onclick={next} aria-label="next match" title="next (enter)">↓</button>
 

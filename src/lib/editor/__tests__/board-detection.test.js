@@ -156,7 +156,7 @@ function emptyTableDoc() {
 function actionsForElement(el) {
   return blockActionsFor({
     isBoard: el.classList.contains("block-shell") || el.classList.contains("code-block-wrap"),
-    hasTitle: !!el.querySelector(".board-title-slot"),
+    hasTitleSlot: !!el.querySelector(".board-title-slot"),
     canPin: !!(el.textContent || "").trim(),
     isEmpty: false,
   });

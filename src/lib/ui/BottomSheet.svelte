@@ -131,7 +131,7 @@
 
   // A focusin scrollIntoView backstop used to live here (Android WebView
   // quirk workaround). It's gone: the sheet now lifts itself above the
-  // keyboard via `bottom: var(--kb-inset, 0px)` (see the .sheet rule
+  // keyboard via `bottom: var(--kb-overlay, 0px)` (see the .sheet rule
   // below), so the field is already in view without a scroll — and the
   // backstop's smooth-scroll animation was itself firing a stream of vv
   // scroll events that fought keyboard-state.js's scroll reset, which is
@@ -201,10 +201,21 @@
     right: 0;
     /* Extend to the very bottom of the viewport (above the gesture
        safe-area). MobileActionBar hides itself while a sheet is open
-       via body.shizumu-bottom-sheet-open. Above the soft keyboard: --kb-inset
-       (keyboard-state.js, the app's single viewport-state owner) is the
-       keyboard's height when it's covering the sheet, 0px otherwise. */
-    bottom: var(--kb-inset, 0px);
+       via body.shizumu-bottom-sheet-open. Above the soft keyboard:
+       --kb-overlay (keyboard-state.js, the app's single viewport-state
+       owner) is the part of the keyboard the LAYOUT viewport has not
+       already removed — 0 under resizes-content, the keyboard's height
+       under resizes-visual.
+
+       This was --kb-inset, the keyboard's full HEIGHT, and that lifted the
+       sheet a second keyboard off the top of the screen once index.html
+       asked for interactive-widget=resizes-content (74b6562d, 2026-08-07).
+       Measured: box at y -261..-119 in a 360px viewport, --kb-inset 479px,
+       the scrim still painted so the page dimmed with nothing on it to
+       type into. max-height did not save it — the sheet's BOTTOM edge was
+       already above y=0. See keyboardOverlayPx for why one expression is
+       right on both platforms. */
+    bottom: var(--kb-overlay, 0px);
     transition: bottom 160ms cubic-bezier(0.2, 0, 0, 1);
     z-index: 9999;
     background: var(--canvas-bg);
@@ -214,14 +225,16 @@
     /* Fill the space between the system status bar and the
        MobileActionBar so long content (filter sheet with calendar +
        sort + filter sections) is mostly visible without scrolling.
-       --app-height (keyboard-state.js), not 100dvh: dvh is the LAYOUT
-       viewport and doesn't shrink for the soft keyboard, so a tall sheet
-       capped against it — even with `bottom` already pulled up by
-       --kb-inset above — can still be TALLER than the space actually
-       available above the keyboard, pushing the sheet's own top (handle,
-       title) off the top of the visible area. Capping against the visible
-       viewport instead means the sheet can never be taller than the room
-       it actually has, keyboard open or not. */
+       --app-height (keyboard-state.js), not 100dvh. The reason written
+       here was that "dvh is the LAYOUT viewport and doesn't shrink for the
+       soft keyboard" — true when it was written, false since index.html
+       asked for interactive-widget=resizes-content (74b6562d), which
+       shrinks exactly that. The rule stays because --app-height is read
+       from the visual viewport and is the visible height under BOTH
+       widget modes, whereas dvh tracks the layout viewport and so answers
+       differently on iOS, where the keyboard does not shrink it. Capping
+       against the visible viewport means the sheet can never be taller
+       than the room it actually has, keyboard open or not. */
     max-height: calc(var(--app-height, 100dvh) - var(--safe-top) - 2rem);
     overflow-y: auto;
     padding:

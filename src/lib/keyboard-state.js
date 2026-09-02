@@ -55,6 +55,47 @@ export function isTextFieldElement(el) {
   ));
 }
 
+/** How much of the soft keyboard the LAYOUT viewport has NOT already
+ * removed — which is the only amount a `position: fixed` surface anchored
+ * to the viewport bottom should lift itself by.
+ *
+ * `--kb-inset` is the keyboard's HEIGHT. That is the right number for a
+ * flow-level box reserving space, and the wrong one for a fixed sheet,
+ * because whether a fixed `bottom: 0` is already keyboard-clear depends on
+ * which viewport the browser shrank:
+ *
+ *   resizes-content (Android, and what index.html asks for): the LAYOUT
+ *     viewport shrinks, so innerHeight == visualViewport.height and
+ *     `bottom: 0` already sits on top of the keyboard. Lifting by the
+ *     keyboard's height moves the sheet a second keyboard off the screen.
+ *   resizes-visual (iOS/WKWebView, which ignores interactive-widget): only
+ *     the VISUAL viewport shrinks. innerHeight stays full, `bottom: 0` is
+ *     underneath the keyboard, and the sheet must lift by the difference.
+ *
+ * innerHeight - visualViewport.height is 0 in the first case and the
+ * keyboard's height in the second, so one expression is correct on both
+ * and no surface needs to know which platform it is on.
+ *
+ * Written after both of this app's bottom sheets were measured entirely
+ * off the top of the screen with the keyboard up: the trail sheet's box
+ * at y -261..-119 in a 360px viewport with --kb-inset at 479px, its
+ * max-height cap no help because the sheet's BOTTOM edge was already above
+ * y=0. The scrim was still painted, so the page dimmed and there was
+ * nothing on it to type into. index.html gained
+ * interactive-widget=resizes-content on 2026-08-07 (74b6562d) and both
+ * sheets had been written against the resizes-visual behaviour that
+ * predated it.
+ *
+ * Gated on isOpen for the same reason --kb-inset is: a keyboard that is
+ * not up is not covering anything, and a cold-start transient shrink with
+ * no field focused must not nudge fixed chrome.
+ */
+export function keyboardOverlayPx({ innerHeight, vvHeight, isOpen }) {
+  if (!isOpen) return 0;
+  if (!Number.isFinite(innerHeight) || !Number.isFinite(vvHeight)) return 0;
+  return Math.max(0, innerHeight - vvHeight);
+}
+
 export function startKeyboardState(win = typeof window !== "undefined" ? window : null) {
   if (!win || !win.document) return () => {};
   const root = win.document.documentElement;
@@ -90,6 +131,15 @@ export function startKeyboardState(win = typeof window !== "undefined" ? window 
     // is also what keeps a cold-start transient shrink from nudging fixed
     // chrome before any field is ever focused.
     root.style.setProperty("--kb-inset", `${Math.round(s.isOpen ? s.keyboardPx : 0)}px`);
+    // The fixed-surface counterpart to --kb-inset above. See
+    // keyboardOverlayPx: this is 0 under resizes-content and the keyboard's
+    // height under resizes-visual, so a fixed sheet reads THIS and stays
+    // correct on both. --kb-inset keeps its meaning for the flow-level
+    // consumers (Page.svelte, Modal.svelte) that reserve space by it.
+    root.style.setProperty(
+      "--kb-overlay",
+      `${Math.round(keyboardOverlayPx({ innerHeight: win.innerHeight, vvHeight, isOpen: s.isOpen }))}px`,
+    );
     root.style.setProperty("--app-height", `${Math.round(vvHeight)}px`);
     keyboardOpen.set(s.isOpen);
     // Under resizes-visual the browser scrolls the layout viewport to keep

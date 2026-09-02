@@ -1,6 +1,7 @@
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { bootstrapVR } from "./lib/vr/bootstrap.js";
+import { bootstrapDemo } from "./lib/demo/bootstrap.js";
 import { installFocusTrace } from "./lib/focus-field.js";
 
 // Dev-only: logs every focusin/focusout with target + call-site stack so the
@@ -14,6 +15,7 @@ if (import.meta.env.DEV) installFocusTrace(window);
 // .then() instead of top-level await keeps the production build target happy
 // (default build target does not allow top-level await).
 bootstrapVR()
+  .then(() => bootstrapDemo())
   .then(() => {
     mount(App, {
       target: document.getElementById("app"),

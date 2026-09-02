@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { get } from "svelte/store";
-import { computeKeyboardState, startKeyboardState, keyboardOpen, isTextFieldElement } from "../keyboard-state.js";
+import { computeKeyboardState, keyboardOverlayPx, startKeyboardState, keyboardOpen, isTextFieldElement } from "../keyboard-state.js";
 import { fakeWindow } from "./fake-window.js";
 
 describe("computeKeyboardState", () => {
@@ -301,5 +301,101 @@ describe("startKeyboardState — focusout to another field keeps the keyboard op
 
     expect(get(keyboardOpen)).toBe(false);
     expect(getVar("--kb-inset")).toBe("0px");
+  });
+});
+
+describe("keyboardOverlayPx — how far a fixed sheet must lift itself", () => {
+  // The two widget modes, which is the whole point of the function. Both
+  // sheets in this app were measured entirely off the top of the screen
+  // because they lifted by the keyboard's HEIGHT under a mode that had
+  // already shrunk the layout viewport for them.
+  it("is zero under resizes-content, where the layout viewport already shrank", () => {
+    // Android with interactive-widget=resizes-content, which is what
+    // index.html asks for: innerHeight tracks the visual viewport, so a
+    // fixed `bottom: 0` is already sitting on top of the keyboard and any
+    // lift at all is a second subtraction of the same keyboard.
+    expect(keyboardOverlayPx({ innerHeight: 360, vvHeight: 360, isOpen: true })).toBe(0);
+  });
+
+  it("is the keyboard's height under resizes-visual, where it did not", () => {
+    // iOS/WKWebView ignores interactive-widget: innerHeight stays the full
+    // device height while the visual viewport shrinks, so `bottom: 0` is
+    // underneath the keyboard and the sheet has to supply the difference.
+    expect(keyboardOverlayPx({ innerHeight: 839, vvHeight: 360, isOpen: true })).toBe(479);
+  });
+
+  it("is zero when the keyboard is not open, whatever the viewports say", () => {
+    // Not a "nothing happens" placeholder: a cold-start transient shrink
+    // with no field focused reports isOpen false, and publishing a lift
+    // for it would nudge fixed chrome before the user has touched a field
+    // — the same class of bug the --kb-inset isOpen gate exists for.
+    expect(keyboardOverlayPx({ innerHeight: 839, vvHeight: 360, isOpen: false })).toBe(0);
+  });
+
+  it("never returns a negative lift", () => {
+    // visualViewport can report TALLER than innerHeight mid-rotation. A
+    // negative here would push a sheet down off the bottom of the screen,
+    // so it clamps rather than trusting the arithmetic.
+    expect(keyboardOverlayPx({ innerHeight: 360, vvHeight: 839, isOpen: true })).toBe(0);
+  });
+
+  it("is zero rather than NaN when a viewport height is missing", () => {
+    // startKeyboardState also runs under the fake-window harness and
+    // before visualViewport exists. NaN would serialise into the CSS var
+    // as "NaNpx" and silently void the whole rule.
+    expect(keyboardOverlayPx({ innerHeight: undefined, vvHeight: 360, isOpen: true })).toBe(0);
+    expect(keyboardOverlayPx({ innerHeight: 839, vvHeight: undefined, isOpen: true })).toBe(0);
+  });
+});
+
+describe("startKeyboardState — --kb-overlay reaches the document", () => {
+  // keyboardOverlayPx is pure and its unit tests above pass whether or not
+  // anything ever calls it. These assert the wiring: the var is published,
+  // and it is published from innerHeight rather than from the keyboard
+  // height that --kb-inset carries. Seven modules in this codebase have
+  // sat tested-and-uncalled; this is the assertion that would have caught
+  // an eighth.
+  it("publishes 0 under resizes-content while --kb-inset carries the keyboard", () => {
+    // innerHeight shrinks WITH the visual viewport: Android, and what
+    // index.html asks for. The two vars must disagree here — that
+    // disagreement is the entire reason --kb-overlay exists.
+    const { win, get: getVar, fire } = fakeWindow({ visual: 839, inner: 839 });
+    win.document.activeElement = { tagName: "INPUT" };
+    startKeyboardState(win);
+
+    win.visualViewport.height = 360;
+    win.innerHeight = 360;
+    fire("vv", "resize");
+
+    expect(getVar("--kb-inset")).toBe("479px");
+    expect(getVar("--kb-overlay")).toBe("0px");
+  });
+
+  it("publishes the keyboard height under resizes-visual", () => {
+    // innerHeight stays full while the visual viewport shrinks: iOS.
+    // Here the two vars agree, and a fixed sheet genuinely must lift.
+    const { win, get: getVar, fire } = fakeWindow({ visual: 839, inner: 839 });
+    win.document.activeElement = { tagName: "INPUT" };
+    startKeyboardState(win);
+
+    win.visualViewport.height = 360;
+    fire("vv", "resize");
+
+    expect(getVar("--kb-inset")).toBe("479px");
+    expect(getVar("--kb-overlay")).toBe("479px");
+  });
+
+  it("publishes 0 when no field is focused, like --kb-inset", () => {
+    // The cold-start transient shrink. Asserted rather than assumed
+    // because the gate lives in the caller, not in keyboardOverlayPx's
+    // arithmetic.
+    const { win, get: getVar, fire } = fakeWindow({ visual: 839, inner: 839 });
+    win.document.activeElement = null;
+    startKeyboardState(win);
+
+    win.visualViewport.height = 360;
+    fire("vv", "resize");
+
+    expect(getVar("--kb-overlay")).toBe("0px");
   });
 });

@@ -20,7 +20,8 @@ export const BLOCK_ACTION_LABELS = {
 };
 
 /**
- * blockActionsFor({ isBoard, hasTitle, canPin, isEmpty, canConvert }) -> string[]
+ * blockActionsFor({ isBoard, hasTitleSlot, canPin, isEmpty, canConvert })
+ *   -> string[]
  *
  * @param {object}  args
  * @param {boolean} args.isBoard   block is a board type (list, table,
@@ -29,14 +30,38 @@ export const BLOCK_ACTION_LABELS = {
  *                                 mirrors the old pill's `handleIsBoard`.
  *                                 Boards without content can still be
  *                                 deleted.
- * @param {boolean} args.hasTitle  this block instance actually renders a
- *                                 `.board-title-slot` element to focus.
- *                                 Since Plan 1c a table does: ShellTableView
- *                                 wires a real `<input>` slot by hand
- *                                 (table-shell-view.js), which is what makes
- *                                 `hasTitle` true for one at all — it is NOT
- *                                 a CSS pseudo-element, and table is still
- *                                 outside block-title.js's NODEVIEW_TYPES.
+ * @param {boolean} args.hasTitleSlot  this block instance actually renders a
+ *                                 `.board-title-slot` element to focus —
+ *                                 whether the block CAN be titled, never
+ *                                 whether it already IS. The `title` row
+ *                                 exists to put a title on a board that has
+ *                                 none, so gating it on a typed title would
+ *                                 offer it in exactly the wrong half of the
+ *                                 cases.
+ *
+ *                                 It was called `hasTitle` until 2026-08-31,
+ *                                 and so is the unrelated boolean
+ *                                 `readActiveBlock` publishes on the phone
+ *                                 shell's snapshot — which answers
+ *                                 `!!(node.attrs.blockTitle || "").trim()`,
+ *                                 the OTHER question. Same name, same type,
+ *                                 opposite meaning, so nothing type-checked
+ *                                 the difference and the shell could not
+ *                                 wire this row for three phases. The two
+ *                                 are `hasTitleSlot` (an element exists) and
+ *                                 `isTitled` (a title has been typed) now;
+ *                                 neither name can be read as the other, and
+ *                                 the guard below refuses the retired one
+ *                                 rather than defaulting it to false and
+ *                                 silently dropping the row.
+ *
+ *                                 Since Plan 1c a table renders one too:
+ *                                 ShellTableView wires a real `<input>` slot
+ *                                 by hand (table-shell-view.js), which is
+ *                                 what makes this true for a table at all —
+ *                                 it is NOT a CSS pseudo-element, and table
+ *                                 is still outside block-title.js's
+ *                                 NODEVIEW_TYPES.
  *                                 The flag stays a DOM fact rather than a
  *                                 type lookup precisely so this comment
  *                                 going stale cannot change behaviour: callers
@@ -68,17 +93,33 @@ export const BLOCK_ACTION_LABELS = {
  * @returns {string[]} ordered action ids, a subset of pin/copy/title/
  *                      convert/insert-below/delete
  */
-export function blockActionsFor({
-  isBoard = false,
-  hasTitle = false,
-  canPin = false,
-  isEmpty = false,
-  canConvert = false,
-} = {}) {
+export function blockActionsFor(args = {}) {
+  // The rename's whole point. Every gate here has a default, so a caller
+  // left holding the old name would pass an ignored key, take
+  // `hasTitleSlot = false`, and drop the `title` row from the desktop
+  // sheet — a silently flipped gate, which is the failure this module
+  // spent three phases being an example of. Loud instead: the only way to
+  // reach this line is a caller that was not updated, and the first tap
+  // (or the first test) says so by name.
+  if ("hasTitle" in args) {
+    throw new TypeError(
+      "blockActionsFor: `hasTitle` is retired. Pass `hasTitleSlot` — whether " +
+        "this block renders a `.board-title-slot` to focus. If you meant " +
+        "whether a title has been typed, that is the snapshot's `isTitled` " +
+        "and it is not this gate.",
+    );
+  }
+  const {
+    isBoard = false,
+    hasTitleSlot = false,
+    canPin = false,
+    isEmpty = false,
+    canConvert = false,
+  } = args;
   const actions = [];
   if (canPin) actions.push("pin");
   if (canPin) actions.push("copy");
-  if (hasTitle) actions.push("title");
+  if (hasTitleSlot) actions.push("title");
   if (canConvert) actions.push("convert");
   if (isEmpty) actions.push("insert-below");
   if (canPin || isBoard) actions.push("delete");

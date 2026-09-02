@@ -5,9 +5,12 @@ import { Suggestion } from "@tiptap/suggestion";
 import { PluginKey } from "@tiptap/pm/state";
 import { getLineages, searchPagesForMention, searchPinsForMention } from "../api.js";
 import { buildMentionLabel } from "../mention-label.js";
+import { silentSuggestionRender } from "../editor/silent-suggestion-render.js";
 
-// Unique plugin key — see slash-commands.js for the rationale.
-const MentionCommandPluginKey = new PluginKey("mentionCommand");
+// Unique plugin key — see slash-commands.js for the rationale, and for why
+// it is exported: the plugin state behind this key is the only producer of a
+// live `@` session, which a host drawing its own suggestion UI reads.
+export const MentionCommandPluginKey = new PluginKey("mentionCommand");
 
 const REF_LIMIT = 50;
 
@@ -264,6 +267,12 @@ export const MentionCommand = Extension.create({
       // Getter for the current page's lineage:
       //   getCurrentLineage() => { id, name } | null
       getCurrentLineage: () => null,
+      // Draw the floating menu, or leave the plugin bare. Same option, same
+      // default and same reasoning as SlashCommands' — see the long note
+      // there and editor/silent-suggestion-render.js. A host that passes
+      // false still gets active/range/query under MentionCommandPluginKey;
+      // omitting the extension instead would take those with the menu.
+      floatingMenu: true,
       suggestion: {
         char: "@",
         pluginKey: MentionCommandPluginKey,
@@ -395,7 +404,10 @@ export const MentionCommand = Extension.create({
           return [...refRows, ...pinRefRows, ...createRows];
         },
 
-        render: () => {
+        // Only the renderer is optional; the key, the trigger char, the
+        // item source and the state above it are identical either way.
+        // `=== false` and not merely falsy — see SlashCommands.
+        render: ext.options.floatingMenu === false ? silentSuggestionRender : () => {
           let menuEl = null;
           let currentItems = [];
           let selectedIndex = 0;

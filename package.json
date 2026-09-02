@@ -7,7 +7,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:demo": "VITE_DEMO=1 vite --mode demo",
     "build": "vite build",
+    "build:demo": "VITE_DEMO=1 vite build --mode demo",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
@@ -29,7 +31,9 @@
     "test:vr:android": "VITE_VR=1 npx tauri android build --apk --debug && cd e2e && VR_APK=\"$(cd .. && find src-tauri/gen/android/app/build/outputs/apk -name '*debug*.apk' | head -1)\" npm run vr:android",
     "test:vr:android:update": "VITE_VR=1 npx tauri android build --apk --debug && cd e2e && VR_APK=\"$(cd .. && find src-tauri/gen/android/app/build/outputs/apk -name '*debug*.apk' | head -1)\" npm run vr:android:update",
     "check:copy": "node scripts/check-copy-canon.mjs",
-    "test:copy": "node --test scripts/check-copy-canon.test.mjs"
+    "test:copy": "node --test scripts/check-copy-canon.test.mjs",
+    "check:demo-bundle": "node scripts/check-demo-bundle.mjs dist-demo",
+    "test:demo": "playwright test --config playwright.demo.config.js"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",

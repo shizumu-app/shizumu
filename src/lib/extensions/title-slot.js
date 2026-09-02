@@ -55,7 +55,26 @@ export function bindTitleSlot({
   // Debounced 120 ms from the input event; also called eagerly on blur and
   // ArrowDown.
   // ---------------------------------------------------------------------------
+  // A closed page is closed for the title too.
+  //
+  // The slot is an <input> this NodeView renders as chrome OUTSIDE the
+  // contenteditable (see the note further down), so TipTap's
+  // `editable: !readonly` never reaches it: on a read-only page the field
+  // still took focus, still accepted keystrokes, and still dispatched
+  // setNodeAttribute into a document the app says is frozen. Renaming
+  // every board on a page you cannot type into is not a smaller version
+  // of editing it.
+  //
+  // Guarded at the WRITE rather than only at the affordance, because the
+  // affordance is not the only route: focus can arrive by tab, by a
+  // restored caret, or from any host that reveals the slot without asking
+  // whether the page is open. `view.editable` is the same flag
+  // setEditable() writes, so this cannot drift from the editor's own
+  // answer the way a second readonly prop would.
+  const mayWriteTitle = () => view?.editable !== false;
+
   const dispatchTitle = (value) => {
+    if (!mayWriteTitle()) return;
     if (typeof getPos !== "function") return;
     const pos = getPos();
     if (typeof pos !== "number") return;
@@ -176,6 +195,7 @@ export function bindTitleSlot({
   // that's resolveContentPos(node, pos).
   // ---------------------------------------------------------------------------
   const commitTitleAndEnterBoard = (value) => {
+    if (!mayWriteTitle()) return;
     if (typeof getPos !== "function") return;
     const pos = getPos();
     if (typeof pos !== "number") return;

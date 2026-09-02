@@ -9,7 +9,7 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
-    include: ["src/**/*.test.js"],
+    include: ["src/**/*.test.js", "vite.config.test.js"],
     setupFiles: ["./vitest.setup.js"],
   },
 });

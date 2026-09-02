@@ -1,6 +1,7 @@
 import { placeMenu } from "./editor/menu-placement.js";
 import { getViewportHeight } from "./keyboard-state.js";
 import { isOutsideTap } from "./editor/outside-tap.js";
+import { silentSuggestionRender } from "./editor/silent-suggestion-render.js";
 import { Extension } from "@tiptap/core";
 import { Suggestion, exitSuggestion } from "@tiptap/suggestion";
 import { PluginKey, TextSelection } from "@tiptap/pm/state";
@@ -49,7 +50,14 @@ function pickFileBytes(accept) {
 // Unique key — without this, Suggestion's default PluginKey("suggestion")
 // collides with the @-trigger subtrail extension and ProseMirror only
 // registers the last plugin, silently disabling /-commands.
-const SlashCommandsPluginKey = new PluginKey("slashCommands");
+//
+// Exported because the plugin's state (active / range / query) is the only
+// producer of a live `/` session, and a host that draws its own suggestion
+// UI instead of this file's floating menu (see `floatingMenu` below) reads
+// it through this key. A second `new PluginKey("slashCommands")` would not
+// match — ProseMirror suffixes duplicate key names — so the key itself has
+// to travel.
+export const SlashCommandsPluginKey = new PluginKey("slashCommands");
 
 // A block as the document's first node is a trap: ArrowUp from inside it
 // goes to the block's own title, no gap cursor appears, and typing goes
@@ -389,8 +397,15 @@ export const commandItems = [
     const insertPos = editor.state.selection.from;
     const toast = editor.options?.element?.__shizumuShowToast;
     const picked = await pickFileBytes("image/*");
-    if (!picked) return; // user cancelled: silent.
-    if (picked.error) { if (toast) toast(`couldn't read image: ${picked.error.message || picked.error}`); return; }
+    // Every abandon below gives the opened line back — see
+    // discardOpenedLine. Silent on cancel is right; a blank line is not
+    // silent.
+    if (!picked) { discardOpenedLine(editor, range); return; }
+    if (picked.error) {
+      discardOpenedLine(editor, range);
+      if (toast) toast(`couldn't read image: ${picked.error.message || picked.error}`);
+      return;
+    }
     // `accept="image/*"` is a picker HINT, not a gate — every desktop file
     // dialog offers an "all files" escape hatch. Without this check a PDF
     // got stored with kind "image" and inserted as an image node, which
@@ -399,6 +414,7 @@ export const commandItems = [
     // WOULD work rather than only that this didn't. See
     // editor/image-file-guard.js for the two-signal rule.
     if (!isImagePick(picked)) {
+      discardOpenedLine(editor, range);
       if (toast) toast(imageRejectionMessage(picked));
       return;
     }
@@ -442,8 +458,14 @@ export const commandItems = [
       const insertPos = editor.state.selection.from;
       const toast = editor.options?.element?.__shizumuShowToast;
       const picked = await pickFileBytes();
-      if (!picked) return; // user cancelled: silent.
-      if (picked.error) { if (toast) toast(`couldn't read file: ${picked.error.message || picked.error}`); return; }
+      // Same as /image: give the opened line back rather than leaving a
+      // blank one where a file was asked for.
+      if (!picked) { discardOpenedLine(editor, range); return; }
+      if (picked.error) {
+        discardOpenedLine(editor, range);
+        if (toast) toast(`couldn't read file: ${picked.error.message || picked.error}`);
+        return;
+      }
       try {
         // Local-first: attach without syncing. The user authorizes sync
         // later from the attachment's hover action if they want it to roam.
@@ -469,7 +491,11 @@ export const commandItems = [
   },
 ];
 
-function filterItems(query) {
+// Exported because a host that draws its own suggestion UI has to filter
+// by the same rule this menu does. The mobile shell's chip strip carried a
+// hand-copy of the one line below for a phase, which is a second answer to
+// "does this command match what was typed" waiting to drift.
+export function filterItems(query) {
   return commandItems.filter((item) =>
     item.title.toLowerCase().includes(query.toLowerCase())
   );
@@ -794,11 +820,19 @@ function positionMenu(menuEl, rect) {
  *
  * @returns {{from: number, to: number}} a collapsed range at the cursor.
  */
-function prepareInsertionPoint(editor, range, title) {
+// Exported for the same reason as filterItems above: the shell reimplemented
+// this as `insertionPoint` because it was private, and a hand-copy of where a
+// block lands is exactly the kind of duplicate that goes wrong quietly. See
+// this function's own header for why the rule is not obvious.
+export function prepareInsertionPoint(editor, range, title) {
   editor.chain().focus().deleteRange(range).run();
   const { state } = editor;
   const { $from } = state.selection;
   const lineHasOtherText = $from.parent.isTextblock && $from.parent.content.size > 0;
+  // Did WE open this line? The async commands need to know, because they
+  // open it before suspending and a cancelled pick would otherwise leave
+  // it behind — see `openedLine` in the return, and discardOpenedLine.
+  let openedLine = false;
   if ($from.depth === 1 && needsFreshLine(title, lineHasOtherText)) {
     try {
       const after = $from.after(1);
@@ -806,13 +840,43 @@ function prepareInsertionPoint(editor, range, title) {
       tr = tr.setSelection(TextSelection.near(tr.doc.resolve(after + 1), 1));
       editor.view.dispatch(tr);
       editor.commands.focus();
+      openedLine = true;
     } catch {
       // Leave the cursor where it is rather than abandoning the command:
       // acting in place is the old behaviour, not a broken one.
     }
   }
   const pos = editor.state.selection.from;
-  return { from: pos, to: pos };
+  return { from: pos, to: pos, openedLine };
+}
+
+/**
+ * Undo the fresh line prepareInsertionPoint opened, when the command that
+ * asked for it produced nothing.
+ *
+ * `/image` and `/file` open the line BEFORE awaiting a picker, because the
+ * insertion point has to be captured before the dialog can move the
+ * selection. Cancel the dialog — or pick a PDF for `/image`, which is
+ * refused on purpose — and that paragraph stayed behind: the writer asked
+ * for a picture, got no picture, and got a blank line instead.
+ *
+ * Only removes a line this call opened (`openedLine`), and only while it is
+ * still empty. Typing on an already-empty line the writer owned, or into
+ * the fresh one before cancelling, both leave it alone — deleting a line
+ * with something on it would be a worse bug than the one being fixed.
+ */
+export function discardOpenedLine(editor, range) {
+  if (!range?.openedLine || !editor || editor.isDestroyed) return false;
+  try {
+    const { $from } = editor.state.selection;
+    if ($from.depth !== 1) return false;
+    if (!$from.parent.isTextblock || $from.parent.content.size !== 0) return false;
+    const from = $from.before(1);
+    editor.view.dispatch(editor.state.tr.delete(from, from + $from.parent.nodeSize));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export const SlashCommands = Extension.create({
@@ -857,6 +921,20 @@ export const SlashCommands = Extension.create({
 
   addOptions() {
     return {
+      // Draw the floating menu, or leave the plugin bare.
+      //
+      // The suggestion plugin and the menu it feeds are separable: the
+      // plugin tracks active/range/query off transactions, `render` below
+      // turns that into DOM. A host with its own suggestion surface (the
+      // mobile shell's chip strip, spec §3: "no floating slash/mention
+      // menu") passes false and keeps the state machine — see
+      // editor/silent-suggestion-render.js for why that is safe and what
+      // the substituted handlers must not do.
+      //
+      // Not the same as leaving this extension out of the editor. Removing
+      // it removes the state too, and the host is left reading a plugin
+      // that no longer exists.
+      floatingMenu: true,
       suggestion: {
         char: "/",
         pluginKey: SlashCommandsPluginKey,
@@ -887,7 +965,13 @@ export const SlashCommands = Extension.create({
 
         items: ({ query }) => filterItems(query),
 
-        render: () => {
+        // Everything above this line is the same plugin either way — the
+        // key, the trigger char, the item source, and the active/range/
+        // query state a host reads back. Only the renderer is optional.
+        // `=== false` and not merely falsy: turning a menu off is a
+        // positive claim a caller makes, never something a forgotten or
+        // undefined option should do on its way through configure().
+        render: ext.options.floatingMenu === false ? silentSuggestionRender : () => {
           let menuEl = null;
           let currentItems = [];
           let selectedIndex = 0;

@@ -331,9 +331,38 @@ export const Chart = Node.create({
       insertChart: ({ attrs }) => ({ editor: e, tr, dispatch }) => {
         const node = e.schema.nodes.chart.create(attrs);
         const para = e.schema.nodes.paragraph.create();
-        const pos = e.state.selection.from;
+        const sel = e.state.selection.$from;
+        // Replace the empty paragraph the caret is sitting in, rather than
+        // inserting into it.
+        //
+        // `/chart` runs through prepareInsertionPoint like every other
+        // BLOCK_COMMANDS entry, which opens a FRESH empty line before the
+        // builder is opened — correct, because a block command typed on a
+        // written line must not swallow that line. But the chart itself
+        // arrives later, from the builder's save, and inserting at
+        // `selection.from` puts it INSIDE that empty paragraph, which then
+        // survives above it: `/chart` on a written line produced
+        // paragraph, EMPTY paragraph, chart, paragraph.
+        //
+        // Every other board avoids this with
+        // insertBoardReplacingEmptyLeadingParagraph (slash-commands.js:117)
+        // — q&a, recipe and outline all use it, and chart alone did not,
+        // because chart is the one board whose insert is a separate
+        // command run after an async round trip through a modal.
+        //
+        // Same test as that helper's: top level, a paragraph, and empty.
+        // Nested or alongside text, the old behaviour is right and stands.
+        const onEmptyTopLevelParagraph =
+          sel.depth === 1 &&
+          sel.parent.type.name === "paragraph" &&
+          sel.parent.content.size === 0;
+        const pos = onEmptyTopLevelParagraph ? sel.before(1) : e.state.selection.from;
         if (dispatch) {
-          tr.insert(pos, [node, para]);
+          if (onEmptyTopLevelParagraph) {
+            tr.replaceWith(pos, pos + sel.parent.nodeSize, [node, para]);
+          } else {
+            tr.insert(pos, [node, para]);
+          }
           // Place cursor in the trailing paragraph.
           const after = pos + node.nodeSize + 1;
           tr.setSelection(TextSelection.near(tr.doc.resolve(after)));

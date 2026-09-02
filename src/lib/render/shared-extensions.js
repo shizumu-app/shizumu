@@ -109,6 +109,7 @@ export function buildEditingExtensions({
   onPinRefNavigate = () => {},
   onChartOpen = () => {},
   collaborationDoc = null,
+  floatingChrome = true,
 } = {}) {
   // When `collaborationDoc` (a Y.Doc) is supplied — continuous-trail
   // pages with the enable_yjs flag on — the Collaboration extension
@@ -141,10 +142,49 @@ export function buildEditingExtensions({
         return placeholder;
       },
     }),
-    SlashCommands,
+    // The three floating surfaces, and the one seam that turns them off.
+    //
+    // The mobile shell's spec (§3, 2026-08-22) states one rule: editor
+    // chrome exists in exactly two places, the bottom slot and the gutter
+    // handle on the active block — "No bubble menu, no floating
+    // slash/mention menu, no floating `+` widget." The bubble menu already
+    // obeyed, because it is markup in TipTapEditor.svelte and the shell
+    // does not render that file. These three are EXTENSIONS, registered
+    // here, so the shell inherited them by sharing this factory and the
+    // rule had no producer at all.
+    //
+    // It was not cosmetic. The floating slash menu dismisses on any
+    // pointerdown outside itself, on `document` in CAPTURE phase, and
+    // exitSuggestion zeroes the plugin's range/query before the shell's
+    // own suggestion chip handler runs — so a chip acting on `/outline`
+    // deleted nothing and converted the whole line.
+    //
+    // `floatingChrome: false` does NOT drop all three, and the first shape
+    // of this seam — which did — was unusable. SlashCommands and
+    // MentionCommand are not menus that happen to live in an extension;
+    // each IS the @tiptap/suggestion plugin whose state (active, range,
+    // query) is the only producer of a live `/` or `@` session. The shell's
+    // own chip strip is derived entirely from that state, read back through
+    // SlashCommandsPluginKey / MentionCommandPluginKey. Removing the
+    // extensions removed the state machine along with the renderer, and
+    // traded a doubled menu for no menu at all.
+    //
+    // So the plugins stay and their renderers go: `floatingMenu: false`
+    // (slash-commands.js, mention-command.js) swaps the floating-DOM
+    // renderer for handlers that build nothing. TouchBlockHandle, below,
+    // is the one of the three that really is free to omit — the shell has
+    // its own gutter handle, and nothing listens for the
+    // `shizumu-block-insert` event this one fires.
+    //
+    // Named for what it controls rather than for a host, because a host
+    // name here would have to be kept in step with hosts this file cannot
+    // see. Desktop keeps every floating surface by default; passing false
+    // is a positive claim that the caller renders its own chrome.
+    SlashCommands.configure({ floatingMenu: floatingChrome }),
     MentionCommand.configure({
       onCreate: onCreateSubtrail,
       getCurrentLineage,
+      floatingMenu: floatingChrome,
     }),
     PageRef.configure({
       onNavigate: onPageRefNavigate,
@@ -166,7 +206,8 @@ export function buildEditingExtensions({
     BlockEscExit,
     SelectionAccentDecorations,
     BlockTypeChip,
-    TouchBlockHandle,
+    // The genuinely free one — see the note above. Omitted, not disabled.
+    ...(floatingChrome ? [TouchBlockHandle] : []),
     LocalImage,
     Chart.configure({
       onOpen: onChartOpen,
