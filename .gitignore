@@ -104,3 +104,6 @@ skills/kamae/runtime/target/
 # nodes you want versioned.
 .kamae/state/runs/
 .kamae/state/locks/
+
+# the daily digest and what it has already shown: local state, one machine
+marketing/digest/

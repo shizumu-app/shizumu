@@ -10,6 +10,14 @@
   let shaking = $state(false);
   let unlocking = $state(false);
 
+  // Refused: shake, clear the field, let them try again.
+  function refuse() {
+    shaking = true;
+    passphrase = "";
+    unlocking = false;
+    setTimeout(() => { shaking = false; }, 500);
+  }
+
   async function handleSubmit() {
     if (!passphrase.trim() || unlocking) return;
 
@@ -18,16 +26,23 @@
     try {
       if (isTauri) {
         const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("unlock", { passphrase });
+        const ok = await invoke("unlock", { passphrase });
+        // A wrong passphrase is an answer, not an error: `unlock` returns
+        // false for it. Only an explicit false is a refusal — the browser
+        // mock answers null for commands it does not implement, and a bare
+        // falsy check would read that as a wrong passphrase.
+        if (ok === false) {
+          refuse();
+          return;
+        }
       }
       // In web dev mode (non-Tauri), any passphrase works
       onUnlock();
     } catch {
-      // Wrong passphrase — shake
-      shaking = true;
-      passphrase = "";
-      unlocking = false;
-      setTimeout(() => { shaking = false; }, 500);
+      // A real failure reaching us: a poisoned mutex, a database that will
+      // not open. A wrong passphrase does not land here — it comes back as
+      // false above.
+      refuse();
     }
   }
 
