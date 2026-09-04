@@ -2967,12 +2967,23 @@ fn refresh_pin_caches(
         // exactly one owner, so two pages cannot race, and the orphan sweep
         // below stays correct: it scopes by source_page_id, which now names
         // the page the pin actually lives on.
-        conn.execute(
-            "UPDATE shared_objects SET content = ?, title = ?, source_page_id = ?, \
-             status = CASE WHEN status = 'orphaned' THEN 'open' ELSE status END, \
-             updated_at = ? WHERE id = ?",
-            params![&node_json, &title, page_id, &now, pin_id],
-        )
+        // The title column is written only when the node could carry one.
+        // See extract_block_title: a paragraph has no `blockTitle` key, so
+        // deriving a title from it yields "no opinion", not "no title".
+        match title {
+            Some(t) => conn.execute(
+                "UPDATE shared_objects SET content = ?, title = ?, source_page_id = ?, \
+                 status = CASE WHEN status = 'orphaned' THEN 'open' ELSE status END, \
+                 updated_at = ? WHERE id = ?",
+                params![&node_json, &t, page_id, &now, pin_id],
+            ),
+            None => conn.execute(
+                "UPDATE shared_objects SET content = ?, source_page_id = ?, \
+                 status = CASE WHEN status = 'orphaned' THEN 'open' ELSE status END, \
+                 updated_at = ? WHERE id = ?",
+                params![&node_json, page_id, &now, pin_id],
+            ),
+        }
         .map_err(|e| e.to_string())?;
     }
 
@@ -3209,15 +3220,35 @@ pub fn get_backlinks_for_page(
     get_backlinks_for_page_inner(&conn, &target_page_id)
 }
 
-fn extract_block_title(node: &serde_json::Value) -> Option<String> {
+/// The title a saved node claims, and whether it gets to claim one at all.
+///
+/// Two layers, because pins have two kinds of source node and only one of
+/// them can hold a title:
+///
+///   `None`             — this node has no `blockTitle` key, so it cannot
+///                        express a title. The doc gets no vote; the pin
+///                        row keeps whatever it has.
+///   `Some(None)`       — the key is there and empty. The user cleared the
+///                        slot; clear the row too.
+///   `Some(Some(t))`    — the key is there with a value. That is the title.
+///
+/// `blockTitle` is registered on board types only (block-title.js), so a
+/// pinned paragraph, heading or file chip serializes without the key —
+/// which is why the flat `Option<String>` this replaced turned every note
+/// pin's title into a `NULL` on the next save (issue #1).
+fn extract_block_title(node: &serde_json::Value) -> Option<Option<String>> {
     let attrs = node.get("attrs")?.as_object()?;
-    let title = attrs.get("blockTitle")?.as_str()?;
-    let trimmed = title.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+    if !attrs.contains_key("blockTitle") {
+        return None;
     }
+    Some(
+        attrs
+            .get("blockTitle")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string),
+    )
 }
 
 #[tauri::command]
@@ -6766,6 +6797,112 @@ mod tests {
             .unwrap();
 
         assert_eq!(loaded, content);
+    }
+
+    /// An untrailed pin row with a title already on it, inserted straight
+    /// (test_helpers::insert_pin wants a real lineage; these two tests are
+    /// about the title column, not about trails).
+    fn untrailed_pin(db: &Db, page_id: &str, object_type: &str, title: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO shared_objects (id, lineage_id, source_page_id, object_type, title, content, status, position, created_at, updated_at) \
+                 VALUES (?, NULL, ?, ?, ?, 'cached', 'open', 0, ?, ?)",
+                params![&id, page_id, object_type, title, &now, &now],
+            )
+            .unwrap();
+        id
+    }
+
+    /// Issue #1 — a note pin's title vanished a second after it was typed.
+    ///
+    /// `confirmPin` writes the title to the pin ROW and stamps `pinId` onto
+    /// the source node, then flushes a save. A paragraph declares no
+    /// `blockTitle` attr (block-title.js registers it on board types only),
+    /// so the saved JSON has no `blockTitle` key at all — and
+    /// `refresh_pin_caches` used to derive `None` from that and write it
+    /// over the row. The doc cannot express this title, so the doc must not
+    /// get a vote on it.
+    #[test]
+    fn a_note_pins_title_survives_the_save_that_stamps_its_pin_id() {
+        let db = test_db();
+        let page = { insert_page(&db.lock().unwrap(), "2026-09-03", 1) };
+        let pin = untrailed_pin(&db, &page, "note", "grocery list");
+
+        // Exactly what TipTap serializes for a pinned paragraph: pinId
+        // present, no blockTitle key anywhere.
+        let doc = serde_json::json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph", "attrs": { "pinId": &pin },
+                  "content": [{ "type": "text", "text": "milk, bread" }] }
+            ]
+        })
+        .to_string();
+        save_page_content_inner(&db, &page, &doc, None).unwrap();
+
+        let title: Option<String> = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT title FROM shared_objects WHERE id = ?",
+                params![&pin],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            title.as_deref(),
+            Some("grocery list"),
+            "a paragraph cannot carry a title, so the save must leave the row's alone"
+        );
+    }
+
+    /// The other half of the same rule: a BOARD node does own a
+    /// `blockTitle` slot, it is what the user sees on the page, and the doc
+    /// stays authoritative for it — including when it is cleared. Without
+    /// this, "fix the note pin" would quietly become "no save ever clears a
+    /// title", and emptying a board's title slot would stop working.
+    #[test]
+    fn a_board_pins_title_still_follows_its_node_including_a_clear() {
+        let db = test_db();
+        let page = { insert_page(&db.lock().unwrap(), "2026-09-03", 1) };
+        let pin = untrailed_pin(&db, &page, "board", "old name");
+
+        let doc_with_title = |t: serde_json::Value| {
+            serde_json::json!({
+                "type": "doc",
+                "content": [
+                    { "type": "blockquote", "attrs": { "pinId": &pin, "blockTitle": t },
+                      "content": [{ "type": "paragraph",
+                                    "content": [{ "type": "text", "text": "quoted" }] }] }
+                ]
+            })
+            .to_string()
+        };
+        let read_title = || -> Option<String> {
+            db.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT title FROM shared_objects WHERE id = ?",
+                    params![&pin],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+
+        save_page_content_inner(&db, &page, &doc_with_title(serde_json::json!("new name")), None)
+            .unwrap();
+        assert_eq!(read_title().as_deref(), Some("new name"), "slot title wins");
+
+        save_page_content_inner(&db, &page, &doc_with_title(serde_json::Value::Null), None)
+            .unwrap();
+        assert_eq!(
+            read_title(),
+            None,
+            "emptying the slot must still clear the row — the key is present, so the doc has a vote"
+        );
     }
 
     /// Regression: `strip_pin_ids_in_place` (used by clone_page_for_new_day)

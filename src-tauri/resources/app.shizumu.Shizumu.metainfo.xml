@@ -197,6 +197,12 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.7.8" date="2026-09-04">
+      <description>
+        <p>Two fixes from the issue tracker. A title you give a pin now stays on it. Pinning a sentence, naming it, and finding the name gone was the common case: the name was saved and then overwritten a moment later by the page's own save, and only pins made from a list, an outline, a table or another shaped block were spared. Renaming a pin afterwards holds too.</p>
+        <p>An outline nested inside another outline is now drawn as one. Typing the quote marker on a line already inside an outline did nest it, but the result was indistinguishable from the line before it, so the keystrokes looked as though they had been swallowed. Nested outlines already in your pages become visible with this release. Nothing was lost and nothing is created.</p>
+      </description>
+    </release>
     <release version="0.7.7" date="2026-08-27">
       <description>
         <p>Fixes the Flatpak build. The 0.7.6 tree referenced an image from a directory the public source mirror does not ship, so the Flathub build could not resolve it. Nothing else changed: 0.7.7 is 0.7.6 plus that fix, and everything described below arrives with it.</p>

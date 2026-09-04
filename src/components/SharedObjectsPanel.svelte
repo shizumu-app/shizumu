@@ -3,6 +3,7 @@
   import { untrack, onMount, onDestroy } from "svelte";
   import { navPush, navClose } from "../lib/navstack.js";
   import { pinToNodes } from "../lib/pin-carry-forward.js";
+  import { pinTitleAuthority } from "../lib/pin-title-authority.js";
   import {
     getPins, updatePinContent, updatePinScope, deletePin,
     getLineages, updatePinAutoInsert, reorderPins,
@@ -530,15 +531,24 @@
 
     patchPin(p.id, { title: newTitle });
 
+    // Pins whose node has no title slot (a paragraph, a heading, the
+    // paragraph holding a file chip) keep their title on the ROW. Splicing
+    // a blockTitle into such a node is a no-op the schema swallows, which
+    // is what made a renamed note pin revert on the next save (issue #1).
+    const liveNode = livePinNodes.get(p.id);
+    if (pinTitleAuthority(p, liveNode) === "row") {
+      try { await updatePinContent(p.id, p.content, newTitle); } catch {}
+      return;
+    }
+
     // For same-page pins, dispatch the title change onto the live editor's
     // node so the canvas reflects it immediately. The editor's save path
     // refreshes the pin cache via the Rust hook.
     if (p.source_page_id === pageId) {
       // The same-page splice path expects a whole node; build it from the
       // live editor's current node by swapping in the new blockTitle attr.
-      const live = livePinNodes.get(p.id);
-      if (live) {
-        const next = { ...live, attrs: { ...(live.attrs || {}), blockTitle: newTitle } };
+      if (liveNode) {
+        const next = { ...liveNode, attrs: { ...(liveNode.attrs || {}), blockTitle: newTitle } };
         onSamePagePinSave(p.id, next);
         return;
       }
@@ -765,6 +775,17 @@
     const art = pinById(pinId);
     if (!art || !newNode) return;
     if (!contentChanged && !titleChanged) return;
+
+    // A title change on a pin whose node has no title slot must go to the
+    // row — the modal stamped `blockTitle` onto the node it handed back, and
+    // for a file pin (a paragraph holding an inline attachment chip) the
+    // schema drops it. The panel's isBoard() groups files WITH the boards,
+    // so this cannot be routed on object_type; it has to be the node.
+    // Issue #1.
+    const titleToRow =
+      titleChanged &&
+      pinTitleAuthority(art, livePinNodes.get(art.id)) === "row";
+
     try {
       if (art.source_page_id === pageId) {
         // Same-page: splice the new node into the MAIN editor's PM doc.
@@ -781,6 +802,17 @@
       }
     } catch (err) {
       console.error("Failed to save pin edit:", err);
+    }
+
+    // Write the row's title after the content splice, not before: the splice
+    // triggers a page save whose refresh_pin_caches hook rewrites the
+    // content cache, and this call carries the same content forward rather
+    // than an older copy of it.
+    if (titleToRow) {
+      const carried = contentChanged
+        ? JSON.stringify({ type: "doc", content: [newNode] })
+        : art.content;
+      try { await updatePinContent(art.id, carried, newTitle); } catch {}
     }
 
     // Optimistic local patch so the panel doesn't lag the modal close.

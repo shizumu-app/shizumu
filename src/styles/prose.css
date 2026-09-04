@@ -169,6 +169,27 @@
   margin: 0;
 }
 
+/* A board nested directly inside an OUTLINE. It carries no title slot and
+   no chip by design (createBoardNodeView's no-chrome branch), and a
+   blockquote's content region supplies no indent and no label of its own —
+   so the nested board landed with nothing at all distinguishing it from the
+   prose beside it. Typing "> " on a line already inside an outline nested a
+   blockquote that looked exactly like the paragraph it replaced, which read
+   as the app eating the keystrokes (issue #3).
+   Same mark as .block-shell, no other chrome.
+
+   Deliberately scoped to `blockquote.board-content >` rather than every
+   nested board: a list inside a list item, or inside a recipe/decision/q&a
+   slot, is already indented or labelled by its parent, and marking those
+   would put a second rule beside structure that is doing the job. The
+   outline's content region is the one that offers nothing. */
+.prose blockquote.board-content > .board-nested {
+  position: relative;
+  margin: 0.4375rem 0;
+  padding: 0 0 0 0.875rem;
+  border-left: 1px solid color-mix(in srgb, var(--warm-accent) 26%, transparent);
+}
+
 .prose .block-shell[data-board="blockquote"] > blockquote {
   /* No inner border — the shell's left-edge hairline is the single, uniform
      region mark for every block type, a blockquote included. */

@@ -456,11 +456,28 @@ function createBoardNodeView(node, view, getPos, ext) {
   })();
 
   if (!isTopLevel) {
-    // Nested board — skip the block-shell chrome entirely. The outer
-    // listItem's grid already provides visual indentation; applying the
-    // board border + padding + background to a nested list makes it look
-    // like a separate panel rather than a continuation of the outline.
+    // Nested board — no title slot and no type chip. The outer board's
+    // title already names the group and an inner one is just noise; that
+    // part of decision B stands.
+    //
+    // What does NOT stand is leaving the wrapper unstyled. This branch was
+    // written for a board sitting inside a LIST ITEM, where the item's grid
+    // supplies the indent, and the comment said so — but the branch fires
+    // for a board nested ANYWHERE, and an outline inside an outline has no
+    // grid to borrow from. It rendered with no mark, no indent and no
+    // margin, so typing "> " on a line already inside an outline nested a
+    // blockquote that looked exactly like the paragraph it replaced, and
+    // read as the app eating the keystrokes (issue #3).
+    //
+    // `board-nested` is a marker, not a style. prose.css paints it only
+    // where nothing else does the job — directly inside an outline's
+    // content region — so a list in a list item, or in a recipe/decision/
+    // q&a slot, renders byte-identically to what shipped. Leaving the
+    // scoping to the cascade also means it re-evaluates when the block is
+    // dragged into a different parent, which this constructor does not.
     const nestedDom = document.createElement("div");
+    nestedDom.className = "board-nested";
+    nestedDom.dataset.board = node.type.name;
     // NOTE: duplicates block-shell.js createContentDOM; collapses when the nested branch moves to the shell.
     const contentDOM = createBoardContentDOM(node.type.name);
     nestedDom.append(contentDOM);
