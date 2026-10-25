@@ -110,14 +110,18 @@
     <binary>shizumu</binary>
   </provides>
 
+  <!-- Phones as well as desktops: below a phone-sized window the app runs
+       its phone layout (src/shell). 360 is the logical width of a Librem 5
+       or PinePhone at scale 2, and tauri.conf.json's minWidth. -->
   <requires>
-    <display_length compare="ge">700</display_length>
+    <display_length compare="ge">360</display_length>
   </requires>
 
-  <supports>
+  <recommends>
     <control>keyboard</control>
     <control>pointing</control>
-  </supports>
+    <control>touch</control>
+  </recommends>
 
   <categories>
     <category>Office</category>
@@ -197,6 +201,17 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.8.0" date="2026-10-25">
+      <description>
+        <p>A new layout for phones. On a phone, shizumu now opens on a page built for a thumb and a keyboard instead of the desktop window squeezed down. The header carries the day, the trail, how many pins the page keeps, and find. While you type, one strip sits above the keyboard and follows the caret: insert comes first and opens the slash menu as a sheet you can search by name. The block the caret is in gets a handle in the margin, and a long press on it lifts the block so you can drag it somewhere else. Tables are sized with a thumb and the chart builder works on a small screen. Sheets open at the size of what they hold and close with a flick.</p>
+        <p>The rest of the app came with it. Pins have their own screen: tap one to read it, edit it in place, or move it to another trail, and the edit is written into the block it was pinned from. Memory searches, filters by date from a month calendar, and scopes to a trail from a sheet. A trail can start inside another one, a living document can be started and reached from the phone, and a trail can be renamed, moved or deleted from memory. Sync is set up, paired by camera, switched on and off and disconnected from the phone itself. A page that cannot take writing, such as a past day, says why instead of staying silent. Tapping an attachment on Android opens it in an app that can show it, rather than offering to send it somewhere. The date on a living document opens a list of its days, and picking one takes you there.</p>
+        <p>Sync is much more dependable between two devices. A sentence typed a moment before the other device's changes arrived could disappear from the screen and from the database; it now stays. Leaving a page whose writing had not arrived yet no longer saves the empty copy over the other device's words. A page deleted on one device is deleted on the others, and one deleted on one device but still being written on the other is kept on both. Writing that arrives from another device can be found by search again. A living document written on one device is readable on the other. Memory, the pins list and an open page show what the other device wrote without being reopened, and an image whose file arrives a little after its page is drawn when it lands. A device that joins an account starts from the newest snapshot instead of replaying every change, and a device that starts over or moves to a new account no longer brings back trails, pages or pins that were deleted, and no longer fails with "no content key".</p>
+        <p>The lock setting does what its row says. With the lock on, you can now change its passphrase or turn it off again, and lock after inactivity opens and takes effect without a restart. When the app locks itself after a while, an encrypted database is closed behind the lock screen until the right passphrase opens it again. The setup screen shows whole, no longer clipped inside a box with its encrypt button hidden, and it has a cancel button. Backups of an encrypted database work and keep their passphrase. A database that will not open shows a screen saying so, with its path, instead of the app closing.</p>
+        <p>Pins and mentions. An @-mention of a pin no longer overwrites that pin: saving the page that mentioned it used to replace the pin's content with the mention and move the pin there. A mention of a pin on another trail opens that pin. An edit made to a pin from memory or the pins panel is written into its block, so the page's next save no longer undoes it on every device, and an edit that has nowhere to go is said rather than dropped. Pressing pin on a block that is already pinned says so instead of making a second pin. While all trails are showing, the pins in memory are grouped by trail.</p>
+        <p>Trails. Deleting or folding a nested trail moves its children up to the same place on every device, where before each device could end up with a different tree. The trail picker keeps those children where they belong instead of offering to create them again. Delete all writing now also removes attachments and their files, as the setting says it does.</p>
+        <p>On the desktop. The interface type is finally set in DM Mono and italics in Lora: the font files that shipped had almost no Latin letters in them, so every platform had been drawing a substitute, and there were no bold faces at all. Copied text pastes into other apps as you wrote it, without stray backslashes. Search in memory finds older writing, not only the last hundred pages, and lists every match newest first. A page holding only its focus line can be found by it. Escape inside a block no longer throws the caret to the end of the page, and closing find clears its highlights and gives the caret back. Past eight pages in a day, the page dots become a count, and a page can still be deleted from there. A pasted image with no file extension is inserted, and so is a screenshot pasted on Linux, which used to make nothing at all. An @ or a / typed inside code stays as typed instead of opening a menu. Ctrl+Left and Ctrl+Right move the caret by a word while you write instead of turning the page; Ctrl+Page Up and Ctrl+Page Down turn it from anywhere. When a save fails, one line on the page says so and the app keeps trying.</p>
+      </description>
+    </release>
     <release version="0.7.8" date="2026-09-04">
       <description>
         <p>Two fixes from the issue tracker. A title you give a pin now stays on it. Pinning a sentence, naming it, and finding the name gone was the common case: the name was saved and then overwritten a moment later by the page's own save, and only pins made from a list, an outline, a table or another shaped block were spared. Renaming a pin afterwards holds too.</p>

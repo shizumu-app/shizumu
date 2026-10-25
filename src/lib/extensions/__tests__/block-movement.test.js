@@ -280,6 +280,99 @@ describe("BlockMovement.moveParentUnit no parent", () => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// moveBlockTo — the one transaction shared by keyboard moves and phone drag
+// ---------------------------------------------------------------------------
+
+describe("BlockMovement.moveBlockTo", () => {
+  const para = (t) => ({ type: "paragraph", content: [{ type: "text", text: t }] });
+  const topTexts = (editor) => editor.state.doc.content.content.map((n) => n.textContent);
+  // Three one-letter paragraphs: nodeSize 3 each → "a"@0, "b"@3, "c"@6.
+  const abc = () => ({ type: "doc", content: [para("a"), para("b"), para("c")] });
+
+  it("moves the first block to the end", () => {
+    const { editor, cleanup } = makeEditor(abc());
+    try {
+      expect(editor.commands.moveBlockTo(0, 2)).toBe(true);
+      expect(topTexts(editor)).toEqual(["b", "c", "a"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("moves the last block to the front", () => {
+    const { editor, cleanup } = makeEditor(abc());
+    try {
+      expect(editor.commands.moveBlockTo(6, 0)).toBe(true);
+      expect(topTexts(editor)).toEqual(["c", "a", "b"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("puts the selection inside the moved block", () => {
+    const { editor, cleanup } = makeEditor(abc());
+    try {
+      editor.commands.moveBlockTo(0, 2);
+      expect(editor.state.selection.$from.parent.textContent).toBe("a");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("returns false and leaves the doc alone when the index is unchanged", () => {
+    // Nothing happens on purpose: dispatching a delete+insert of a block
+    // onto its own index would push a no-op step onto the undo stack and
+    // fire onUpdate (a save) for a doc that did not change.
+    const { editor, cleanup } = makeEditor(abc());
+    try {
+      const before = editor.getJSON();
+      expect(editor.commands.moveBlockTo(3, 1)).toBe(false);
+      expect(editor.getJSON()).toEqual(before);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("clamps an out-of-range index to the last sibling", () => {
+    const { editor, cleanup } = makeEditor(abc());
+    try {
+      expect(editor.commands.moveBlockTo(0, 99)).toBe(true);
+      expect(topTexts(editor)).toEqual(["b", "c", "a"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("returns false when no node starts at the position", () => {
+    // Position 1 is inside paragraph "a" (its text), not before a node —
+    // a drag that resolved to a text position must not move anything.
+    const { editor, cleanup } = makeEditor(abc());
+    try {
+      expect(editor.commands.moveBlockTo(1, 2)).toBe(false);
+      expect(topTexts(editor)).toEqual(["a", "b", "c"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reorders inside a container without leaving it", () => {
+    // blockquote@0 wraps "x"@1 and "y"@4; "z"@9 is top-level.
+    const { editor, cleanup } = makeEditor({
+      type: "doc",
+      content: [{ type: "blockquote", content: [para("x"), para("y")] }, para("z")],
+    });
+    try {
+      expect(editor.commands.moveBlockTo(1, 1)).toBe(true);
+      const quote = editor.state.doc.firstChild;
+      expect(quote.type.name).toBe("blockquote");
+      expect(quote.content.content.map((n) => n.textContent)).toEqual(["y", "x"]);
+      expect(editor.state.doc.childCount).toBe(2);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
 // moveBlockAtPos — moving a block WITHOUT relying on the selection.
 //
 // Why this exists: a board's title is an <input> the NodeView renders as

@@ -6,6 +6,7 @@
   import TriggerChip from "../lib/ui/TriggerChip.svelte";
   import Icon from "../lib/ui/Icon.svelte";
   import { withOrdinals } from "../lib/page-ordinal.js";
+  import { railDots } from "../lib/rail-dots.js";
 
   /** @type {{ date: string, pageNumber: number, totalPages: number, onPrev: () => void, onNext: () => void, onDateSelect: (date: string) => void, focuses: Array<{id: string, what_matters_now: string|null, page_number: number, date: string}>, onFocusSelect: (focus: any) => void, earliestDate: string | null, onNewPage?: () => void, canNewPage?: boolean, currentPageId?: string | null }} */
   let { date, pageNumber, totalPages, onPrev, onNext, onDateSelect = () => {}, focuses = [], onFocusSelect = () => {}, earliestDate = null, onNewPage = () => {}, canNewPage = false, editorial = false, currentPageId = null } = $props();
@@ -144,9 +145,17 @@
             onClick={toggleFocusList}
             ariaLabel="select focus"
           >
-            {#each Array(totalPages) as _, i}
-              <span class="page-dot" class:page-dot-active={i + 1 === pageNumber}></span>
-            {/each}
+            <!-- Dots while they can be counted, a count after that
+                 (lib/rail-dots.js): on a busy day this chip held twenty-one
+                 dots too small to tell apart. The arrows either side still
+                 step, and the chip still opens the list. -->
+            {#if railDots({ count: totalPages, index: pageNumber - 1 }).kind === "count"}
+              <span class="page-count">{pageNumber} / {totalPages}</span>
+            {:else}
+              {#each Array(totalPages) as _, i}
+                <span class="page-dot" class:page-dot-active={i + 1 === pageNumber}></span>
+              {/each}
+            {/if}
             {#snippet trailing()}
               <span class="caret"><Icon name="chevron-down" /></span>
             {/snippet}
@@ -276,6 +285,12 @@
     gap: 0.25rem;
   }
 
+  .page-count {
+    font-family: "DM Mono", monospace;
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
   .page-dot {
     display: inline-block;
     width: 0.3125rem;

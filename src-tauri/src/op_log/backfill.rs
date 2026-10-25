@@ -26,6 +26,28 @@ const CURSOR_PINS: &str = "pins";
 const CURSOR_SETTINGS: &str = "settings";
 const CURSOR_DONE: &str = "done";
 
+/// Set when a device starts over in a new sequence space (reset, new relay,
+/// new identity; `start_over_in_a_new_sequence_space` in commands.rs). From
+/// then on a row counts as sent only once THIS run has emitted a backfill op
+/// for it: ops from before — this device's own history, and above all the
+/// ops other devices sent it — never reach the new relay as a create, so
+/// every row needs one. Unset (0) is the first backfill after install, where
+/// any op for the row is enough, exactly as before.
+const BACKFILL_SINCE: &str = "backfill_since";
+
+/// The rows a backfill has already covered, given `?2` = `backfill_since`.
+const SENT_SINCE: &str = "AND (?2 = 0 OR (state != 'received' AND created_at >= ?2 \
+     AND CAST(payload_blob AS TEXT) LIKE '%\"op\":\"backfill%'))";
+
+fn backfill_since(conn: &rusqlite::Connection) -> Result<i64, String> {
+    Ok(conn
+        .query_row("SELECT value FROM op_log_meta WHERE key = ?", params![BACKFILL_SINCE], |r| r.get::<_, String>(0))
+        .optional()
+        .map_err(|e| e.to_string())?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0))
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct BatchState {
     pub done: bool,
@@ -176,14 +198,14 @@ fn backfill_lineages(
     // Skip rows already emitted (resume after crash).
     let rows: Vec<(String, String, Option<String>, Option<String>)> = {
         let mut stmt = conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT id, name, mode, parent_id FROM lineages
-                 WHERE id NOT IN (SELECT doc_id FROM op_log WHERE doc_id IS NOT NULL)
-                 LIMIT ?",
-            )
+                 WHERE id NOT IN (SELECT doc_id FROM op_log WHERE doc_id IS NOT NULL {SENT_SINCE})
+                 LIMIT ?1",
+            ))
             .map_err(|e| e.to_string())?;
         let rs = stmt
-            .query_map(params![batch_size as i64], |r| {
+            .query_map(params![batch_size as i64, backfill_since(conn)?], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })
             .map_err(|e| e.to_string())?
@@ -221,17 +243,18 @@ fn backfill_pages(
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
     )> = {
         let mut stmt = conn
-            .prepare(
-                "SELECT id, date, page_number, content_json, what_matters_now, lineage_id
+            .prepare(&format!(
+                "SELECT id, date, page_number, content_json, what_matters_now, lineage_id, what_shifted
                  FROM pages
-                 WHERE id NOT IN (SELECT doc_id FROM op_log WHERE doc_id IS NOT NULL)
-                 LIMIT ?",
-            )
+                 WHERE id NOT IN (SELECT doc_id FROM op_log WHERE doc_id IS NOT NULL {SENT_SINCE})
+                 LIMIT ?1",
+            ))
             .map_err(|e| e.to_string())?;
         let rs = stmt
-            .query_map(params![batch_size as i64], |r| {
+            .query_map(params![batch_size as i64, backfill_since(conn)?], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -239,6 +262,7 @@ fn backfill_pages(
                     r.get(3)?,
                     r.get(4)?,
                     r.get(5)?,
+                    r.get(6)?,
                 ))
             })
             .map_err(|e| e.to_string())?
@@ -248,7 +272,7 @@ fn backfill_pages(
     };
 
     let n = rows.len();
-    for (id, date, page_number, content_json, what_matters_now, lineage_id) in rows {
+    for (id, date, page_number, content_json, what_matters_now, lineage_id, what_shifted) in rows {
         emit_page(
             engine,
             conn,
@@ -260,6 +284,7 @@ fn backfill_pages(
                 "content_json": content_json,
                 "what_matters_now": what_matters_now,
                 "lineage_id": lineage_id,
+                "what_shifted": what_shifted,
             }),
         );
     }
@@ -278,17 +303,20 @@ fn backfill_pins(
         String,
         Option<String>,
         String,
+        String,
+        bool,
+        i64,
     )> = {
         let mut stmt = conn
-            .prepare(
-                "SELECT id, lineage_id, source_page_id, object_type, title, content
+            .prepare(&format!(
+                "SELECT id, lineage_id, source_page_id, object_type, title, content, status, auto_insert, position
                  FROM shared_objects
-                 WHERE id NOT IN (SELECT doc_id FROM op_log WHERE doc_id IS NOT NULL)
-                 LIMIT ?",
-            )
+                 WHERE id NOT IN (SELECT doc_id FROM op_log WHERE doc_id IS NOT NULL {SENT_SINCE})
+                 LIMIT ?1",
+            ))
             .map_err(|e| e.to_string())?;
         let rs = stmt
-            .query_map(params![batch_size as i64], |r| {
+            .query_map(params![batch_size as i64, backfill_since(conn)?], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -296,6 +324,9 @@ fn backfill_pins(
                     r.get(3)?,
                     r.get(4)?,
                     r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
                 ))
             })
             .map_err(|e| e.to_string())?
@@ -305,7 +336,7 @@ fn backfill_pins(
     };
 
     let n = rows.len();
-    for (id, lineage_id, source_page_id, object_type, title, content) in rows {
+    for (id, lineage_id, source_page_id, object_type, title, content, status, auto_insert, position) in rows {
         emit_pin(
             engine,
             conn,
@@ -317,6 +348,9 @@ fn backfill_pins(
                 "object_type": object_type,
                 "title": title,
                 "content": content,
+                "status": status,
+                "auto_insert": auto_insert,
+                "position": position,
             }),
         );
     }
@@ -435,6 +469,43 @@ mod tests {
         let emitted_again = run(&db, &engine).unwrap();
         assert_eq!(emitted_again, 0);
         assert_eq!(count_op_log(&db), 5);
+    }
+
+    /// A backfill is the whole of what a device that starts over sends, so a
+    /// row's every synced field has to ride on it. The pin's carried no
+    /// status, no carry-forward and no place in the list, and a fresh laptop
+    /// joining a reset phone got three carry-forward pins back as plain ones
+    /// (2026-10-23); the page's carried no `what_shifted`, which the merge
+    /// arm reads.
+    #[test]
+    fn a_backfill_carries_every_synced_field_of_its_row() {
+        let db = test_db();
+        let engine = make_engine(&db);
+        let (page, pin) = {
+            let conn = db.lock().unwrap();
+            let lin = insert_lineage(&conn, "the book", "discrete");
+            let page = insert_page(&conn, "2026-05-01", 1);
+            conn.execute("UPDATE pages SET what_shifted = 'the quay floods twice' WHERE id = ?", [&page]).unwrap();
+            let pin = insert_pin(&conn, &lin, &page, "note", "every chapter ends on a question");
+            conn.execute(
+                "UPDATE shared_objects SET status = 'orphaned', auto_insert = 1, position = 3 WHERE id = ?",
+                [&pin],
+            ).unwrap();
+            (page, pin)
+        };
+        run(&db, &engine).unwrap();
+        let conn = db.lock().unwrap();
+        let fields = |id: &str| -> serde_json::Value {
+            let blob: Vec<u8> = conn
+                .query_row("SELECT payload_blob FROM op_log WHERE doc_id = ?", [id], |r| r.get(0))
+                .unwrap();
+            serde_json::from_slice::<serde_json::Value>(&blob).unwrap()["fields"].clone()
+        };
+        let p = fields(&pin);
+        assert_eq!(p["status"], "orphaned");
+        assert_eq!(p["auto_insert"], true);
+        assert_eq!(p["position"], 3);
+        assert_eq!(fields(&page)["what_shifted"], "the quay floods twice");
     }
 
     /// `sync_revoked` is device-local (`LOCAL_ONLY_SETTINGS`). A device

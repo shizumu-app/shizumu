@@ -1,5 +1,6 @@
 <script>
-  import { onMount, tick } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { fade } from "svelte/transition";
   import {
     getLineages,
@@ -69,6 +70,9 @@
     } else if (!isOpen && searchInputEl) focusField.reset(searchInputEl);
   });
   let currentLineage = $state(null);
+  // The trail id the cache-miss refetch below last ran for (plain, not
+  // state: it only stops that effect from looping).
+  let refetchedFor = null;
   let selectedParent = $state(null);
   let showNestPicker = $state(false);
   let newTrailMode = $state("discrete");
@@ -88,6 +92,24 @@
     } catch { lineages = []; }
   });
 
+  // THE OTHER DEVICE RENAMES OR MOVES A TRAIL. This list is the chip's own,
+  // read on mount, so a rename on the phone left the laptop's header on the
+  // old name until the page was reopened (sync journey 18, 2026-10-15).
+  // Read again after every pull that brought ops; the effect below then
+  // re-resolves the current trail from the fresh list.
+  let unlistenPull = null;
+  let alive = true;
+  onMount(() => {
+    listen("sync-pulled", async () => {
+      try {
+        const lins = await getLineages();
+        if (alive) lineages = lins;
+      } catch {}
+    }).then((off) => { if (alive) unlistenPull = off; else off(); })
+      .catch((err) => console.error("trail chip: could not listen for sync pulls", err));
+  });
+  onDestroy(() => { alive = false; unlistenPull?.(); });
+
   $effect(() => {
     if (!lineageId) {
       currentLineage = null;
@@ -102,7 +124,14 @@
     }
     // Cache miss — the page just got assigned to a lineage that wasn't in
     // our list (most often: a fresh trail or subtrail created via @ in the
-    // editor, or by another component). Refetch and re-resolve.
+    // editor, or by another component). Refetch and re-resolve, ONCE per id:
+    // storing the fresh list re-runs this effect, and a trail that is not in
+    // it either (another device deleted it) used to refetch forever.
+    if (refetchedFor === lineageId) {
+      currentLineage = null;
+      return;
+    }
+    refetchedFor = lineageId;
     getLineages()
       .then((lins) => {
         lineages = lins;
@@ -291,7 +320,10 @@
     if (!foldingTrail || !foldTargetId) return;
     try {
       const result = await foldLineage(foldingTrail.id, foldTargetId);
-      lineages = lineages.filter((l) => l.id !== foldingTrail.id);
+      // Re-read rather than drop the one row: the backend re-parents the
+      // folded trail's children, and a child left pointing at a trail that
+      // is gone falls out of the tree (see confirmDelete).
+      lineages = await getLineages();
       if (currentLineage?.id === foldingTrail.id) {
         currentLineage = null;
         onLineageChange(foldTargetId);
@@ -343,7 +375,12 @@
     const targetId = deleteMode === "move" ? moveTargetId : null;
     try {
       await deleteLineage(deletingTrail.id, targetId);
-      lineages = lineages.filter(l => l.id !== deletingTrail.id);
+      // Re-read rather than drop the one row. The backend re-parents the
+      // deleted trail's children to its parent (or to none); dropping only
+      // the row left them pointing at a trail that was gone, so they fell
+      // out of the tree and searching for one offered to create it again
+      // (scripts/desktop/scenarios/trail-manage.mjs).
+      lineages = await getLineages();
       if (currentLineage?.id === deletingTrail.id) {
         currentLineage = null;
         onLineageChange(null);

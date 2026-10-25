@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { blockAlreadyPinned } from "../block-already-pinned.js";
+import { blockAlreadyPinned, pinAlreadyHolds } from "../block-already-pinned.js";
 
 describe("blockAlreadyPinned", () => {
   it("says yes on the stamp, whatever the stored content looks like", () => {
@@ -49,5 +49,27 @@ describe("blockAlreadyPinned", () => {
     // returned. A throw here would take out the block-handle reveal.
     expect(blockAlreadyPinned({ pinId: null, text: "anything" })).toBe(false);
     expect(blockAlreadyPinned()).toBe(false);
+  });
+});
+
+describe("pinAlreadyHolds", () => {
+  const stored = { id: "pin_1", content: '{"type":"doc","content":[{"type":"list","attrs":{"pinId":"pin_1","blockTitle":"list"}}]}' };
+
+  it("knows a stamped board whose content no longer matches what was stored", () => {
+    // THE regression: the first pin stamps pinId and blockTitle, so the
+    // re-read content differs from the stored one and the content match
+    // missed — every gutter press on a pinned board made another pin.
+    const reRead = '{"type":"doc","content":[{"type":"list","attrs":{"pinId":"pin_1","blockTitle":"list"},"content":[]}]}';
+    expect(pinAlreadyHolds([stored], { pinId: "pin_1", content: reRead })).toBe(true);
+  });
+
+  it("still knows the same words kept from an unstamped block", () => {
+    expect(pinAlreadyHolds([stored], { pinId: null, content: stored.content })).toBe(true);
+  });
+
+  it("lets a block be kept again once the pin its stamp names is gone", () => {
+    // False on purpose: the stamp outlived its pin (deleted), and refusing
+    // here would leave the block unpinnable for good.
+    expect(pinAlreadyHolds([], { pinId: "pin_1", content: "a kept thought" })).toBe(false);
   });
 });

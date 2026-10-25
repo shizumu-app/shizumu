@@ -26,10 +26,23 @@ vi.mock("../../lib/responsive.js", async (importOriginal) => {
   return { ...actual, isCoarsePointer: () => responsiveState.coarse };
 });
 
+// jsdom has no Tauri to deliver the worker's events; the handler is
+// captured and called by hand, as the worker would.
+const events = vi.hoisted(() => ({ handlers: {} }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn((name, handler) => { events.handlers[name] = handler; return Promise.resolve(() => { delete events.handlers[name]; }); }),
+}));
+
 import LineageSelector from "../LineageSelector.svelte";
+import * as api from "../../lib/api.js";
 
 afterEach(cleanupAll);
-beforeEach(() => vi.clearAllMocks());
+// clearAllMocks keeps a mockResolvedValue a test set, so a later test would
+// start on that test's trails; every test starts on the default list.
+beforeEach(() => {
+  vi.clearAllMocks();
+  api.getLineages.mockResolvedValue([{ id: "L1", name: "book", parent_id: null, mode: "discrete" }]);
+});
 
 async function settle() {
   await new Promise((r) => setTimeout(r, 0));
@@ -77,6 +90,43 @@ describe("LineageSelector", () => {
     noTrail.click();
     await settle();
     expect(onLineageChange).toHaveBeenCalledWith(null);
+  });
+
+  // Deleting a trail re-parents its children in the backend (to the deleted
+  // trail's parent, or to none). The picker used to drop only the deleted
+  // row from its own copy, so a child kept a parent that no longer existed,
+  // fell out of the tree, and searching for it offered to create it again
+  // (scripts/desktop/scenarios/trail-manage.mjs, 2026-10-24).
+  it("keeps a deleted trail's child in the list, where the backend put it", async () => {
+    const parent = { id: "P", name: "the novel", parent_id: null, mode: "discrete" };
+    const child = { id: "C", name: "chapter three", parent_id: "P", mode: "discrete" };
+    api.getLineages.mockResolvedValue([parent, child]);
+    const { target } = render(LineageSelector, { ...base, onLineageChange: vi.fn() });
+    await settle();
+    target.querySelector(".trigger-chip").click();
+    await settle();
+
+    api.getLineages.mockResolvedValue([{ ...child, parent_id: null }]);
+    target.querySelector(".trail-actions").click();
+    await settle();
+    target.querySelector(".row-action.danger").click();
+    await settle();
+    target.querySelector(".delete-confirm").click();
+    await settle();
+
+    expect(api.deleteLineage).toHaveBeenCalledWith("P", null);
+    const names = [...target.querySelectorAll(".lineage-option-name")].map((n) => n.textContent.trim());
+    expect(names).toEqual(["chapter three"]);
+  });
+
+  // A page whose trail is not in the list (another device deleted it, and
+  // the page has not been re-saved yet) made the chip refetch, store the
+  // list, re-run its own check, miss again and refetch, without end: a hot
+  // loop against the backend, and a hang in this suite. One refetch per id.
+  it("asks for the list once, not forever, when the page's trail no longer exists", async () => {
+    render(LineageSelector, { pageId: "p1", lineageId: "GONE", onLineageChange: vi.fn() });
+    for (let i = 0; i < 5; i++) await settle();
+    expect(api.getLineages.mock.calls.length).toBeLessThanOrEqual(2);
   });
 
   it("selects a trail and reports the choice", async () => {
@@ -147,5 +197,22 @@ describe("LineageSelector", () => {
       expect(focusSpy).toHaveBeenCalled();
       focusSpy.mockRestore();
     });
+  });
+
+  it("shows the trail's new name after a pull, when the other device renamed it", async () => {
+    // Sync journey 18: the phone renamed the trail of the page open on the
+    // laptop. The chip had read the trails once, on mount, and kept the
+    // old name until the page was reopened.
+    const { target } = render(LineageSelector, { pageId: "p1", lineageId: "L1", onLineageChange: vi.fn() });
+    await settle();
+    expect(target.querySelector(".trigger-chip").textContent).toContain("book");
+
+    api.getLineages.mockResolvedValue([{ id: "L1", name: "the novel", parent_id: null, mode: "discrete" }]);
+    expect(events.handlers["sync-pulled"]).toBeTypeOf("function");
+    events.handlers["sync-pulled"]();
+    await settle();
+    await settle();
+
+    expect(target.querySelector(".trigger-chip").textContent).toContain("the novel");
   });
 });

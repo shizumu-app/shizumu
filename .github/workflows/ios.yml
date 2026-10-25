@@ -1,0 +1,803 @@
+# iOS build — the one pipeline that does not run on GitLab.
+#
+# WHY GITHUB AT ALL. Every other target builds in .gitlab-ci.yml (GitLab is the
+# only git remote this repo has). iOS needs a macOS runner, and GitHub gives
+# macOS minutes free to PUBLIC repositories. That is the reason this file
+# exists, and it is the constraint that shapes it: on a public repo the
+# build LOG is public. Secrets are still safe — GitHub redacts registered
+# secret values wherever they appear in log output — but anything DERIVED at
+# runtime is not covered, so derived values are masked explicitly with
+# ::add-mask:: below, and no step runs `set -x`.
+#
+# TWO HOMES. The public mirror (shizumu-app/shizumu) is a snapshot of `main`,
+# cut by .gitlab-ci.yml's strip-and-push on version tags — so there, this
+# workflow builds the shipped phone UI. The mobile redesign lives on
+# shell/mobile until it has been tested on a device, and the device build is
+# the test; so until it merges, scripts/push-ios-snapshot.sh pushes the same
+# allowlisted tree to a PRIVATE repo and this file runs there by hand
+# (docs/PHASE1-ios-bootstrap.md, "the private-repo route"). Private macOS
+# minutes are metered at 10x, roughly six to eight cold builds a month, which
+# is why the caching and the timeouts below are as tight as they are. Nothing
+# in this file is private-repo-only: the same file ships to the mirror later.
+#
+# AWS EC2 Mac was considered and rejected: those instances run on Dedicated
+# Hosts with a 24-hour minimum allocation, so there is no per-minute billing to
+# optimise. Device testing is BrowserStack, per minute, fed the .ipa this
+# workflow uploads.
+#
+# ── WHAT RUN 1 SETTLED (2026-09-20, private repo) ───────────────────────────
+# The first execution reached xcodebuild in 21 minutes and failed there. What
+# it proved, so nobody re-derives it:
+#   - `tauri ios init` runs unattended on the runner and needs no Mac: it
+#     installed the iOS targets, fetched libimobiledevice and rendered
+#     gen/apple/ (project.yml, shizumu.xcodeproj, ExportOptions.plist,
+#     shizumu_iOS/Info.plist). The 15-minute cap was not hit.
+#   - The .p12 and the profile import cleanly: "1 valid identities found".
+#   - The generated Info.plist is gen/apple/shizumu_iOS/Info.plist — exactly
+#     one candidate, and the camera patch applied to it.
+#   - --export-method takes app-store-connect | release-testing | debugging.
+#   - xcodegen and cocoapods are both already on the macos-15 image.
+#   - ALL EIGHTEEN app icons differ from the committed set, not the three
+#     iPad ones a truncated first read of the log suggested: runs 1-6 shipped
+#     tauri's generic icon on every size, iPhone included. FIXED in run 8 by
+#     scripts/patch-ios-icons.py, which copies the committed set over them the
+#     way the patch-android-* scripts do, and which reported replacing 18.
+#   - THE FAILURE: the generated project signs AUTOMATICALLY, which wants an
+#     Xcode account and a development profile. Neither exists in CI. Manual
+#     signing (project.yml + ExportOptions.plist) fixed it; run 3 produced the
+#     first .ipa.
+#
+# WHAT RUN 9 SETTLED (2026-09-22). The first upload attempt. The build was
+# fine and the .ipa was signed; App Store Connect refused it twice over, which
+# is the cheapest possible way to learn both:
+#   - The large app icon may not carry an alpha channel. Every committed iOS
+#     icon did (opaque in appearance, alpha 254-255), so they are flattened
+#     now and patch-ios-icons.py refuses to copy a transparent one.
+#   - Uploads must be built with the iOS 26 SDK or later. macos-15 defaults to
+#     Xcode 16.4 (iOS 18.5 SDK) and carries 26.0 through 26.3 unselected,
+#     which the step below now picks.
+#
+# WHAT RUN 10 SETTLED (2026-09-22). Building on Xcode 26.3 got through the
+# Rust compile and died in the linker: three Swift back-compatibility archives
+# (swiftCompatibility56, swiftCompatibilityConcurrency, swiftCompatibilityPacks)
+# are referenced by every Swift object in libapp.a and are not in the
+# toolchain. swiftc auto-links them only for deployment targets old enough to
+# need them — 15.4, 15.0 and 17.0 respectively — so the fix is the floor, not
+# the linker: bundle.iOS.minimumSystemVersion is now 17.0 and none of the
+# three is referenced. tauri-apps/tauri#15066 is the upstream report; its only
+# suggested workaround is staying on Xcode 16.4, which App Store Connect no
+# longer accepts.
+# Everything else below still carries its original UNVERIFIED reasoning.
+# ────────────────────────────────────────────────────────────────────────────
+#
+# The model is .gitlab-ci.yml's `build-android` job: `src-tauri/gen/` is
+# gitignored in full, so the platform project is regenerated from scratch on
+# every build and every local modification to it is re-applied afterwards by a
+# script under scripts/. Android needs five of those. iOS needs two: the camera
+# usage description, and the app icons.
+
+name: ios
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      export_method:
+        description: >-
+          Passed to `tauri ios build --export-method`. VERIFIED off the CLI's
+          own help in run 1 (2026-09-20): the accepted values are
+          app-store-connect, release-testing and debugging. There is no
+          `enterprise`, and ad hoc is spelled release-testing. The default is
+          app-store-connect because the installed profile is an App Store
+          profile; release-testing exports ad hoc and would need an Ad Hoc
+          profile carrying the target devices, which this account has not got.
+        required: false
+        default: app-store-connect
+        type: string
+      viewport_readout:
+        description: >-
+          Build with the viewport readout on (VITE_VIEWPORT_READOUT=1): three
+          lines of raw viewport numbers at the top of the app, for settling
+          the iOS keyboard report from a screenshot. See
+          docs/ios-keyboard-readout.md for what each number decides. Off for
+          every normal build: the readout ships inert and renders nothing
+          unless this is on.
+        required: false
+        default: false
+        type: boolean
+
+# Read-only: nothing here writes to the repo, opens a release, or comments.
+permissions:
+  contents: read
+
+# A second dispatch on the same ref cancels the first rather than running two
+# macOS jobs side by side. On the private repo that is the difference between
+# one metered build and two.
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # The private snapshot repo only. strip-and-push copies this file to the
+    # public mirror, where a v* tag or any pull request would start a macOS
+    # build with no signing secrets, fail, and leave a red mark on the release.
+    if: github.repository == 'shizumu-app/shizumu-mobile-shell'
+    runs-on: macos-15
+    # A cold Rust build of this project for a new target is slow (the Android
+    # equivalent budgets 30-45 minutes cold, dominated by sqlcipher + vendored
+    # openssl from source). This ceiling is generous on purpose: the failure it
+    # is really guarding against is a `tauri ios init` that stops to prompt for
+    # a development team and waits forever.
+    timeout-minutes: 90
+
+    env:
+      # One diagnostic build's flag, empty everywhere else. Set at the JOB
+      # level so it reaches the frontend build on both paths — the unsigned
+      # `npm run build` and the `tauri ios build` that runs it through
+      # beforeBuildCommand.
+      VITE_VIEWPORT_READOUT: ${{ inputs.viewport_readout && '1' || '' }}
+      # Overrides `bundle.iOS.developmentTeam` in tauri.conf.json, which is
+      # currently null. VERIFIED from the CLI's own config schema
+      # (node_modules/@tauri-apps/cli/config.schema.json, IosConfig
+      # developmentTeam: "The APPLE_DEVELOPMENT_TEAM environment variable can
+      # be set to overwrite it"). It is a secret here only so GitHub redacts it
+      # from the public log; a team ID is not itself dangerous to leak, but it
+      # is not ours to publish either.
+      APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+
+    steps:
+      # Actions are pinned to major tags rather than commit SHAs. SHA pinning
+      # is the stronger form and is worth doing — it is left as a follow-up
+      # because the correct SHAs cannot be looked up from this machine, and a
+      # guessed SHA is worse than a tag.
+      - uses: actions/checkout@v4
+
+      # ── Can this run sign? ────────────────────────────────────────────────
+      # Pull requests from forks receive NO secrets. Without this gate the
+      # signing steps would fail on every fork PR with a confusing "no identity
+      # found" from codesign, several minutes in. Instead the run detects the
+      # absence up front and does the unsigned half, which is still worth
+      # doing: it is what catches "the Rust tree no longer compiles for iOS"
+      # (keyring and tauri-plugin-global-shortcut are cfg'd out for iOS in
+      # src-tauri/Cargo.toml, and that gate is easy to break from the desktop
+      # side without noticing).
+      #
+      # In the PRIVATE repo there are no forks and no pull requests (the
+      # snapshot script pushes to main and nothing else), so IS_FORK is always
+      # false there and the unsigned path is reached only by a dispatch made
+      # before the secrets were set. That path still costs a metered Rust
+      # compile with no .ipa at the end: set the secrets first. The fork
+      # branch stays because this file is the public mirror's too.
+      #
+      # The `secrets` context is not available in a job-level `if:`, which is
+      # why this is a step that publishes an output rather than a job
+      # condition.
+      - name: Decide whether this run can sign
+        id: gate
+        env:
+          # Comparing to '' inside env, never echoing the value itself.
+          HAS_CERT: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 != '' }}
+          HAS_CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          HAS_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 != '' }}
+          HAS_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM != '' }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork == true }}
+        run: |
+          set -euo pipefail
+          echo "fork pull request: $IS_FORK"
+          echo "signing secrets visible to this job:"
+          echo "  APPLE_CERTIFICATE_P12_BASE64      = $HAS_CERT"
+          echo "  APPLE_CERTIFICATE_PASSWORD        = $HAS_CERT_PASSWORD"
+          echo "  APPLE_PROVISIONING_PROFILE_BASE64 = $HAS_PROFILE"
+          echo "  APPLE_DEVELOPMENT_TEAM            = $HAS_TEAM"
+          if [ "$HAS_CERT" = "true" ] && [ "$HAS_CERT_PASSWORD" = "true" ] \
+             && [ "$HAS_PROFILE" = "true" ] && [ "$HAS_TEAM" = "true" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "-> signed build: will produce an .ipa"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "-> unsigned build: compiling for iOS only, no .ipa"
+            if [ "$IS_FORK" = "true" ]; then
+              echo "   (expected — fork pull requests never receive secrets)"
+            else
+              echo "   NOTE: this is not a fork PR, so a secret is genuinely"
+              echo "   missing or misnamed. See docs/PHASE1-ios-bootstrap.md"
+              echo "   step 5 for the four names, spelled exactly."
+            fi
+          fi
+
+      # ── Toolchain ─────────────────────────────────────────────────────────
+      - name: Select an Xcode App Store Connect will accept
+        run: |
+          set -euo pipefail
+          # This step used to only REPORT the toolchain, on the grounds that
+          # which Xcodes exist on macos-15 could not be checked from Linux and
+          # selecting an absent one would fail the run for nothing. Run 9
+          # (2026-09-22) answered both halves at once: the image's default is
+          # Xcode 16.4, and the upload was refused —
+          #
+          #   SDK version issue. This app was built with the iOS 18.5 SDK. All
+          #   iOS and iPadOS apps must be built with the iOS 26 SDK or later,
+          #   included in Xcode 26 or later, in order to be uploaded to App
+          #   Store Connect or submitted for distribution.
+          #
+          # — after a complete, correctly signed build had already been paid
+          # for. The same image carries Xcode 26.0 through 26.3, so this is a
+          # selection, not an install.
+          #
+          # Highest 26.x present rather than a pinned path: the runner image
+          # adds and drops point releases without notice, and a pinned
+          # /Applications/Xcode_26.3.app is a run that dies the week it goes.
+          # `sort -V` orders 26.10 above 26.9, which a lexical sort would not.
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$XCODE" ]; then
+            echo "ERROR: no Xcode 26.x on this runner. Available:"
+            ls /Applications | grep -i '^Xcode' || true
+            echo "App Store Connect refuses anything built with an older SDK,"
+            echo "so a build here could not be uploaded. Pick a newer runner"
+            echo "image rather than building something unusable."
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          sw_vers
+          xcodebuild -version
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+
+          # Run 10 linked against Xcode 26.3 and died on three missing Swift
+          # back-compatibility archives (swiftCompatibility56,
+          # swiftCompatibilityConcurrency, swiftCompatibilityPacks), which
+          # swiftc auto-links only when the deployment target is old enough to
+          # need them. Raising bundle.iOS.minimumSystemVersion to 17.0 is the
+          # actual fix: above that threshold none of the three is referenced.
+          #
+          # This listing stays because the cause was ambiguous — Apple may have
+          # dropped the archives in Xcode 26, or this runner image may be
+          # missing them (actions/runner-images#13135 calls it a regression
+          # between two image builds). One line in the log says which world we
+          # are in the next time a link fails, instead of another 12-minute
+          # build spent finding out.
+          LIBDIR="$(xcrun --sdk iphoneos --show-sdk-platform-path)/../../Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos"
+          echo "swift compatibility archives in this toolchain:"
+          ls "$LIBDIR"/libswiftCompatibility*.a 2>/dev/null | xargs -n1 basename 2>/dev/null || echo "  none"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # aarch64-apple-ios is the only target a device build or an .ipa
+          # needs. aarch64-apple-ios-sim is here so a simulator build is one
+          # flag away when someone wants one; adding a target costs a download,
+          # not a compile.
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          # Keyed apart from any desktop cache: a cache entry built for
+          # x86_64-apple-darwin is useless here and only wastes restore time.
+          key: ios
+          # UNVERIFIED. The action's default is to save the cache only when
+          # the job succeeds — and the first runs of this workflow are
+          # expected to fail late, after the 30-45 minute cold compile (see
+          # timeout-minutes above). Saving on failure too means the second
+          # attempt starts from the compiled dependencies instead of paying
+          # for them again, which on the private repo is most of a month's
+          # budget. Only the target dir is cached, never the tree, so a
+          # failed build cannot poison a later one with a bad artifact:
+          # cargo re-checks everything against the sources it is given.
+          cache-on-failure: true
+
+      - name: npm ci
+        run: npm ci
+
+      # ── Unsigned path (fork PRs, and any run missing a secret) ────────────
+      # Stops before `tauri ios init`. That command wants a development team
+      # and, with none set, may prompt — a prompt in CI is a 90-minute hang,
+      # not an error. Compiling the Rust tree for the iOS target is the part
+      # that has real signal in it anyway.
+      - name: Build the frontend (unsigned path)
+        if: steps.gate.outputs.signed != 'true'
+        run: npm run build
+
+      - name: Compile for aarch64-apple-ios (unsigned path)
+        if: steps.gate.outputs.signed != 'true'
+        run: |
+          set -euo pipefail
+          # UNVERIFIED: that a bare `cargo build --target aarch64-apple-ios`
+          # succeeds without the iOS scaffold present. tauri's build script
+          # reads tauri.conf.json and needs frontendDist (../dist) to exist,
+          # which the previous step created. If this fails on something that is
+          # plainly a missing Xcode project rather than a code error, drop this
+          # step to `cargo check` or delete it — its only job is to catch iOS
+          # cfg rot early, and it is not worth debugging for its own sake.
+          cargo build --manifest-path src-tauri/Cargo.toml \
+                      --target aarch64-apple-ios --lib
+
+      # ── Signed path ───────────────────────────────────────────────────────
+      - name: Install the signing certificate
+        if: steps.gate.outputs.signed == 'true'
+        env:
+          CERT_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # No `set -x` anywhere in this file. On a public repo, tracing a
+          # script that handles a .p12 password prints the password.
+
+          # The keychain password is generated here, so it is NOT a registered
+          # secret and GitHub will not redact it on its own. Mask it before it
+          # can reach the log through any later command's error output.
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+
+          KEYCHAIN="$RUNNER_TEMP/ios-build.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+
+          # base64 -d, not --decode: BSD base64 on macOS accepts -d, and the
+          # long option differs between the BSD and GNU tools.
+          echo "$CERT_P12_BASE64" | base64 -d > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Auto-lock after 6h. Without this the keychain can lock mid-build
+          # and codesign fails with a "user interaction is not allowed" that
+          # explains nothing.
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          # -T grants specific tools access to the imported private key. NOT
+          # -A (which grants every application): -A and -T together are
+          # contradictory, and -A is the looser of the two for no gain.
+          security import "$CERT_PATH" -P "$CERT_PASSWORD" \
+            -f pkcs12 -k "$KEYCHAIN" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$CERT_PATH"
+
+          # Without set-key-partition-list, codesign triggers a GUI
+          # authorisation prompt for the private key and hangs. This is the
+          # single most commonly missed line in an Actions signing setup.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+
+          # Put it on the search list, keeping the login keychain, so
+          # xcodebuild finds the identity.
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN"
+
+          # An identity's display name carries the team name and team ID, so
+          # print only find-identity's trailing summary line ("N valid
+          # identities found"), never the identity list itself. Zero here is
+          # the failure worth seeing early: it means the .p12 imported without
+          # its private key, and codesign will fail much later with something
+          # far less legible.
+          echo -n "build keychain: "
+          security find-identity -v -p codesigning "$KEYCHAIN" | tail -1
+
+      - name: Install the provisioning profile
+        if: steps.gate.outputs.signed == 'true'
+        id: profile
+        env:
+          PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          PROFILE="$RUNNER_TEMP/profile.mobileprovision"
+          echo "$PROFILE_BASE64" | base64 -d > "$PROFILE"
+
+          # A .mobileprovision is a CMS-signed plist. Decode it to read the
+          # UUID, which is the filename Xcode looks the profile up by.
+          PLIST="$RUNNER_TEMP/profile.plist"
+          security cms -D -i "$PROFILE" > "$PLIST"
+          UUID="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PLIST")"
+          # The UUID is derived at runtime, not a registered secret, so GitHub
+          # would print it verbatim. It identifies the profile; mask it.
+          echo "::add-mask::$UUID"
+          # The profile's Name and TeamIdentifier live in the same plist. Do
+          # not print them either; delete the decoded copy now that the UUID
+          # is out, so no later step can cat it into the log by accident.
+          rm -f "$PLIST"
+
+          # Two locations, because Xcode moved: <= 15 reads
+          # ~/Library/MobileDevice/Provisioning Profiles, and 16 reads
+          # ~/Library/Developer/Xcode/UserData/Provisioning Profiles.
+          # UNVERIFIED which one this runner's Xcode uses; writing both costs
+          # nothing and removes the question.
+          for DIR in "$HOME/Library/MobileDevice/Provisioning Profiles" \
+                     "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$DIR"
+            cp "$PROFILE" "$DIR/$UUID.mobileprovision"
+          done
+          echo "provisioning profile installed in both Xcode profile directories"
+
+          # Handed to the manual-signing step below as
+          # PROVISIONING_PROFILE_SPECIFIER. Installing the profile is not
+          # enough on its own: run 1 (2026-09-20) proved that the generated
+          # project asks Xcode to CHOOSE a profile, and an installed one it was
+          # never told to use is invisible to that search. Masked above, so it
+          # stays masked wherever it is interpolated.
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+      - name: iOS build prerequisites
+        if: steps.gate.outputs.signed == 'true'
+        env:
+          # UNVERIFIED. Without these, the first `brew install` runs a full
+          # `brew update` (minutes, every run) and a cleanup pass afterwards.
+          # Neither changes what gets installed.
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: |
+          set -euo pipefail
+          # Tauri's iOS prerequisites list CocoaPods; XcodeGen is what
+          # cargo-mobile2 renders `bundle.iOS.template` (a project.yml) with.
+          # Whether the GitHub macOS image ships either could not be checked
+          # from here, so both are installed only when absent. If a `brew
+          # install` here is the slowest step in the job, delete the one that
+          # turns out to be preinstalled.
+          command -v pod      >/dev/null || brew install cocoapods
+          command -v xcodegen >/dev/null || brew install xcodegen
+          pod --version
+          xcodegen --version
+
+      - name: tauri ios init
+        if: steps.gate.outputs.signed == 'true'
+        # UNVERIFIED. The hang this whole job's 90-minute ceiling was set for
+        # is an init that stops to prompt for a development team. Cap the step
+        # itself: a prompt then costs 15 minutes, not 90 (which at the private
+        # repo's 10x meter would be 900 of the month's 2,000). The step's real
+        # work (cocoapods resolution, xcodegen) is expected in low single-digit
+        # minutes; if a genuine init is seen to need longer, raise this and say
+        # what it was doing.
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # src-tauri/gen/ is gitignored in full, so the Xcode project does not
+          # exist in the checkout and is regenerated here every run — exactly
+          # what `build-android` does with `tauri android init`. Idempotent;
+          # safe to run every build.
+          npx tauri ios init
+
+          echo "--- generated tree ---"
+          find src-tauri/gen/apple -maxdepth 2 -print | head -60
+
+      - name: Add the privacy manifest
+        if: steps.gate.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          # Before the signing step, because that step runs `xcodegen
+          # generate`, which is what turns the project.yml entry this adds
+          # into a Copy Bundle Resources line. Without the manifest App Store
+          # Connect bounces the upload (ITMS-91053). See the script.
+          #
+          # PyYAML in a throwaway venv: the runner's python is Homebrew's,
+          # which refuses a plain `pip install` (PEP 668).
+          python3 -m venv "$RUNNER_TEMP/yaml-venv"
+          "$RUNNER_TEMP/yaml-venv/bin/pip" install --quiet pyyaml
+          "$RUNNER_TEMP/yaml-venv/bin/python" scripts/patch-ios-privacy.py \
+            src-tauri/gen/apple src-tauri/ios/PrivacyInfo.xcprivacy
+
+      - name: Switch the generated project to manual signing
+        if: steps.gate.outputs.signed == 'true'
+        env:
+          PROFILE_UUID: ${{ steps.profile.outputs.uuid }}
+          TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+        run: |
+          set -euo pipefail
+          # Run 1 (2026-09-20) died here, after a successful init, with:
+          #
+          #   error: No Accounts: Add a new account in Accounts settings.
+          #   error: No profiles for 'app.shizumu.Shizumu' were found: Xcode
+          #     couldn't find any iOS App Development provisioning profiles
+          #     matching 'app.shizumu.Shizumu'.
+          #
+          # Neither is about the certificate or the profile — both imported
+          # cleanly one step earlier ("1 valid identities found"). Tauri's
+          # generated project uses AUTOMATIC signing, which asks Xcode to log
+          # into an Apple account and fetch a DEVELOPMENT profile. A CI runner
+          # has no account to log into, and this account's profile is a
+          # distribution one, so the search fails twice over.
+          #
+          # Manual signing is the CI answer: name the identity and the profile
+          # and Xcode stops searching. cargo-mobile2 renders the project from
+          # gen/apple/project.yml through XcodeGen, so the settings go in there
+          # and the project is regenerated — that way it survives whether or
+          # not `tauri ios build` re-renders the project itself, which could
+          # not be established from here.
+          #
+          # Ruby, not python3+PyYAML: ruby ships with macOS and YAML is in its
+          # standard library, so there is nothing to install. The patch walks
+          # whatever targets the template defines rather than assuming the
+          # file's shape.
+          cd src-tauri/gen/apple
+          ruby -ryaml -e '
+            WANTED = {
+              "CODE_SIGN_STYLE" => "Manual",
+              "CODE_SIGN_IDENTITY" => "Apple Distribution",
+              "DEVELOPMENT_TEAM" => ENV.fetch("TEAM"),
+              "PROVISIONING_PROFILE_SPECIFIER" => ENV.fetch("PROFILE_UUID"),
+            }
+            # XcodeGen accepts `settings` either flat (a plain map of build
+            # settings) or structured (base / configs / groups). Which shape
+            # cargo-mobile2s template uses is not knowable from Linux, so
+            # handle both: a flat map is written into directly, a structured
+            # one gets base PLUS every per-configuration override, because a
+            # value left in a `configs:` block would otherwise beat base and
+            # quietly put automatic signing back.
+            def apply(settings)
+              structured = %w[base configs groups].any? { |k| settings.key?(k) }
+              if structured
+                settings["base"] ||= {}
+                settings["base"].merge!(WANTED)
+                (settings["configs"] || {}).each_value do |cfg|
+                  next unless cfg.is_a?(Hash)
+                  WANTED.each_key { |k| cfg.delete(k) }
+                end
+              else
+                settings.merge!(WANTED)
+              end
+            end
+            spec = YAML.load_file("project.yml")
+            patched = []
+            (spec["targets"] || {}).each do |name, target|
+              next unless name.end_with?("_iOS")
+              target["settings"] ||= {}
+              apply(target["settings"])
+              patched << name
+            end
+            abort("no *_iOS target in project.yml — read the generated tree printed above") if patched.empty?
+            File.write("project.yml", spec.to_yaml)
+            # Target names only. The team ID and the profile UUID are masked,
+            # but there is no reason to echo them back at all.
+            STDOUT.puts("manual signing set on: #{patched.join(", ")}")
+          '
+          xcodegen generate --spec project.yml
+
+          # Fail here, cheaply, rather than 20 minutes later inside xcodebuild:
+          # if the settings did not reach the regenerated project, the build
+          # would fall straight back to the automatic-signing failure that run 1
+          # died of. Counting only — the values themselves are not printed.
+          PBX=shizumu.xcodeproj/project.pbxproj
+          MANUAL="$(grep -c "CODE_SIGN_STYLE = Manual" "$PBX" || true)"
+          SPEC="$(grep -c "PROVISIONING_PROFILE_SPECIFIER" "$PBX" || true)"
+          echo "project.pbxproj: $MANUAL manual-signing blocks, $SPEC profile specifiers"
+          if [ "$MANUAL" -eq 0 ] || [ "$SPEC" -eq 0 ]; then
+            echo "ERROR: the manual signing settings did not reach the project."
+            echo "The patch above matched a target but xcodegen did not render it;"
+            echo "read gen/apple/project.yml and correct the shape this writes."
+            exit 1
+          fi
+
+          # The same check for the privacy manifest the step before added:
+          # it must be a bundle resource in the rendered project, or the
+          # upload is refused after the whole build has run.
+          if ! grep -q "PrivacyInfo.xcprivacy in Resources" "$PBX"; then
+            echo "ERROR: PrivacyInfo.xcprivacy is not in Copy Bundle Resources."
+            echo "patch-ios-privacy.py edited project.yml but xcodegen did not render it."
+            exit 1
+          fi
+          echo "project.pbxproj: PrivacyInfo.xcprivacy is a bundle resource"
+
+          # ── The export half of manual signing ────────────────────────────
+          # Run 2 (2026-09-20) archived correctly with the settings above —
+          # EXPANDED_CODE_SIGN_IDENTITY_NAME was "Apple Distribution: ..." and
+          # CODE_SIGN_STYLE=Manual — and then died in the very next phase:
+          #
+          #   error: exportArchive "shizumu.app" requires a provisioning profile.
+          #   ** EXPORT FAILED **  (xcodebuild exit 70)
+          #
+          # Archiving and exporting are signed separately. The archive reads
+          # the project; the export reads ExportOptions.plist, which
+          # cargo-mobile2 renders at init and which says nothing about which
+          # profile to use. Automatic signing would have gone and found one;
+          # manual signing, correctly, refuses to guess.
+          #
+          # So name it here. The bundle identifier is the key of the
+          # provisioningProfiles map and is VERIFIED from tauri.conf.json.
+          # PlistBuddy Delete before Add because Add on an existing key fails,
+          # and this must be idempotent across re-runs of the step.
+          PLIST=ExportOptions.plist
+          for KEY in signingStyle signingCertificate teamID provisioningProfiles; do
+            /usr/libexec/PlistBuddy -c "Delete :$KEY" "$PLIST" 2>/dev/null || true
+          done
+          /usr/libexec/PlistBuddy \
+            -c "Add :signingStyle string manual" \
+            -c "Add :signingCertificate string Apple Distribution" \
+            -c "Add :teamID string $TEAM" \
+            -c "Add :provisioningProfiles dict" \
+            -c "Add :provisioningProfiles:app.shizumu.Shizumu string $PROFILE_UUID" \
+            "$PLIST"
+          echo "ExportOptions.plist keys now:"
+          # Key names only. The team ID and the UUID are masked, but printing
+          # a signing plist wholesale into a public log is a habit worth not
+          # forming — the mirror gets this same file.
+          /usr/libexec/PlistBuddy -c "Print" "$PLIST" | grep -E "^\s+[A-Za-z]+ =" | sed -E "s/=.*/= <set>/"
+
+      - name: Re-apply the camera usage description
+        if: steps.gate.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          # `tauri ios init` regenerated gen/apple/ a moment ago, discarding
+          # anything previously patched into it. Same reason every
+          # patch-android-* script runs immediately after `tauri android init`.
+          #
+          # Without NSCameraUsageDescription, iOS terminates the app the
+          # instant QrScanner calls getUserMedia. See the script's docstring.
+          #
+          # The path is discovered rather than hardcoded: the generated layout
+          # is believed to be gen/apple/<ProductName>_iOS/Info.plist but nobody
+          # has seen it. If more than one Info.plist turns up, this stops
+          # instead of patching an arbitrary one.
+          #
+          # No `mapfile` here: the macOS runner's /bin/bash is 3.2, which does
+          # not have it, and the step would die with "command not found" after
+          # the slow init step had already succeeded.
+          PLISTS="$(find src-tauri/gen/apple -name 'Info.plist' -not -path '*/build/*')"
+          COUNT="$(printf '%s\n' "$PLISTS" | grep -c . || true)"
+          echo "Info.plist candidates ($COUNT):"
+          printf '  %s\n' $PLISTS
+          if [ "$COUNT" -ne 1 ]; then
+            echo "ERROR: expected exactly one generated Info.plist, found $COUNT."
+            echo "Pick the app target's plist by hand and pin the path here."
+            echo "See docs/PHASE1-ios-bootstrap.md, 'first run failures'."
+            exit 1
+          fi
+          python3 scripts/patch-ios-camera.py "$PLISTS"
+
+      - name: Re-apply the app icons
+        if: steps.gate.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          # This was a report-only diagnostic until run 1 answered the question
+          # it existed to ask. `tauri ios init` DOES write its own
+          # AppIcon.appiconset, and three of the eighteen came out different
+          # from the committed set: AppIcon-76x76@1x, 76x76@2x and
+          # 83.5x83.5@2x, all iPad. So every build before this one shipped
+          # shizumu's icon on iPhone and tauri's on iPad.
+          #
+          # Now it patches, on the same terms as the five patch-android-*
+          # scripts: init regenerates gen/ wholesale, so every local
+          # modification is re-applied after it. The script writes only
+          # AppIcon-*.png files the generated set already has, never
+          # Contents.json (generated, and what actool reads to find them), and
+          # exits non-zero if the naming scheme ever changes underneath it
+          # rather than reporting a success it did not achieve.
+          DEST="$(find src-tauri/gen/apple -type d -name 'AppIcon.appiconset')"
+          COUNT="$(printf '%s\n' "$DEST" | grep -c . || true)"
+          if [ "$COUNT" -ne 1 ]; then
+            echo "ERROR: expected exactly one AppIcon.appiconset, found $COUNT:"
+            printf '  %s\n' $DEST
+            exit 1
+          fi
+          python3 scripts/patch-ios-icons.py "$DEST"
+
+      - name: tauri ios build
+        if: steps.gate.outputs.signed == 'true'
+        env:
+          EXPORT_METHOD: ${{ inputs.export_method || 'app-store-connect' }}
+          # Through env rather than interpolated into the script body. Nothing
+          # here is attacker-controlled, but a `run:` block that splices
+          # ${{ }} straight into shell is the shape of the standard Actions
+          # script-injection bug, and it is not worth having one to imitate.
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          # --build-number is VERIFIED to exist: the CLI config schema says
+          # "The `tauri ios build` CLI command has a `--build-number <number>`
+          # option that lets you append a build number to the app version".
+          # App Store Connect rejects a re-uploaded build number, and
+          # github.run_number only ever increases, which is the property that
+          # matters.
+          #
+          # --export-method's accepted spellings are now VERIFIED, off
+          # `tauri ios build --help` printed by run 1 (2026-09-20):
+          # app-store-connect, release-testing, debugging. The step that
+          # printed that help has been deleted, its question answered.
+          #
+          # --ci exists too and is implied by CI=true, which Actions always
+          # sets, so the CLI prompts for nothing here.
+          npx tauri ios build \
+            --export-method "$EXPORT_METHOD" \
+            --build-number "$BUILD_NUMBER"
+
+      - name: What the export was given (failure only)
+        if: failure() && steps.gate.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          # One open question this cannot answer from Linux: whether
+          # `tauri ios build` REWRITES gen/apple/ExportOptions.plist when it
+          # applies --export-method, which would discard the profile named in
+          # the patch step and reproduce run 2's failure exactly. This step
+          # settles it from the corpse rather than costing another 25-minute
+          # run: if the keys below are missing, tauri rewrote the file, and the
+          # answer is to stop using its export and run
+          # `xcodebuild -exportArchive` here against our own plist.
+          PLIST=src-tauri/gen/apple/ExportOptions.plist
+          if [ -f "$PLIST" ]; then
+            echo "ExportOptions.plist as it stands after the build:"
+            /usr/libexec/PlistBuddy -c "Print" "$PLIST" \
+              | grep -E "^\s+[A-Za-z]+ =" | sed -E "s/=.*/= <set>/"
+          else
+            echo "no ExportOptions.plist at $PLIST"
+          fi
+          echo "archives and apps produced:"
+          find src-tauri/gen/apple \
+            \( -name '*.xcarchive' -o -name '*.ipa' \) -maxdepth 4 -print || true
+
+      - name: Locate the .ipa
+        if: steps.gate.outputs.signed == 'true'
+        id: ipa
+        run: |
+          set -euo pipefail
+          # Searched, not hardcoded: the output path under gen/apple/ is not
+          # documented anywhere reachable from a Linux machine, and a wrong
+          # literal path here would fail as "no such file" long after the
+          # expensive part of the build succeeded.
+          IPA="$(find src-tauri/gen/apple -name '*.ipa' | head -1)"
+          if [ -z "$IPA" ]; then
+            echo "ERROR: the build reported success but produced no .ipa."
+            echo "Everything under gen/apple that looks like output:"
+            find src-tauri/gen/apple \
+              \( -name '*.ipa' -o -name '*.app' -o -name '*.xcarchive' \) -print
+            exit 1
+          fi
+          echo "ipa=$IPA" >> "$GITHUB_OUTPUT"
+          ls -lh "$IPA"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.signed == 'true'
+        with:
+          name: shizumu-ios-${{ github.run_number }}
+          path: ${{ steps.ipa.outputs.ipa }}
+          # Long enough to cover a BrowserStack session that gets postponed,
+          # short enough not to hoard signed binaries on a public repo.
+          retention-days: 14
+          if-no-files-found: error
+
+      # ── TestFlight (optional, opt-in on the API-key secrets) ──────────────
+      - name: Decide whether to upload to App Store Connect
+        if: steps.gate.outputs.signed == 'true'
+        id: asc
+        env:
+          HAS_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY != '' }}
+        run: echo "upload=$HAS_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to TestFlight
+        if: steps.gate.outputs.signed == 'true' && steps.asc.outputs.upload == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          IPA: ${{ steps.ipa.outputs.ipa }}
+        run: |
+          set -euo pipefail
+          # UNVERIFIED, end to end. altool reads the key from a fixed location
+          # and filename shape (private_keys/AuthKey_<KEYID>.p8) rather than a
+          # path argument; that convention is stable but has not been exercised
+          # here. If this step is the only thing failing, take the .ipa from
+          # the artifact above and upload it by hand — the build is not wasted.
+          mkdir -p ~/private_keys
+          echo "$ASC_PRIVATE_KEY" | base64 -d > ~/private_keys/AuthKey_"$ASC_KEY_ID".p8
+          chmod 600 ~/private_keys/AuthKey_"$ASC_KEY_ID".p8
+
+          # --output-format json keeps altool's own progress chatter, which can
+          # echo back parts of the request, out of a public log.
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" \
+            --output-format json
+
+          rm -f ~/private_keys/AuthKey_"$ASC_KEY_ID".p8
+
+      - name: Tear down the build keychain
+        # Runs even on failure. The runner is ephemeral, so this is belt and
+        # braces rather than load-bearing — but a job that leaves a default
+        # keychain switched is the kind of thing that confuses the NEXT
+        # debugging session on a self-hosted runner, if one ever appears.
+        if: always() && steps.gate.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          security delete-keychain "$RUNNER_TEMP/ios-build.keychain-db" || true
+          rm -rf ~/private_keys

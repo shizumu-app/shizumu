@@ -57,6 +57,25 @@ export async function createSeededInvoke(fixture, opts = {}) {
   // happened to take — adding one await to a fixture is enough to start
   // capturing it. Deterministic scenes can't depend on losing that race.
   await invoke("set_setting", { key: "mobile_gestures_tip_seen", value: "true" });
+  // Opt every scene out of the shell BEFORE its fixture runs, so a scene
+  // that wants the shell has to ask for it — scenes.js's `withShellFlag`
+  // overwrites this with "true" from inside the fixture.
+  //
+  // Without this line P5 silently re-points a third of the suite. Both
+  // Android projects are phone-shaped viewports and both photograph the
+  // DESKTOP tree — `android-landscape` photographs nothing else
+  // (PROJECT_SURFACES, visual.spec.js), and its 23 committed baselines are
+  // the desktop tree at 863x360. Since P5 an unwritten `try_new_shell`
+  // means ON, and the mock answers null for a key nobody wrote (api.js:251)
+  // — so every desktop scene on those two projects would boot the shell and
+  // compare a shell screenshot against a desktop baseline. That fails, but
+  // it fails as a wall of diffs that reads like a layout regression rather
+  // than like a harness that stopped seeding the tree it photographs.
+  //
+  // The value is the escape hatch used exactly as a tester uses it, which
+  // is what makes it honest rather than a test-only backdoor: for these
+  // scenes the harness IS an opted-out phone.
+  await invoke("set_setting", { key: "try_new_shell", value: "false" });
   await fixture(invoke);
   const blobs = opts.blobs;
   if (!blobs || Object.keys(blobs).length === 0) return invoke;

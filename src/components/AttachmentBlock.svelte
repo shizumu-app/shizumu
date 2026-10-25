@@ -2,6 +2,9 @@
   import { NodeViewWrapper } from "svelte-tiptap";
   import { attachmentOpen, attachmentSetSync, attachmentLocalSrc } from "../lib/api.js";
   import { describeAttachmentOpenError } from "../lib/editor/attachment-error.js";
+  import { looksAgainAfterPull } from "../lib/editor/attachment-relookup.js";
+  import { listen } from "@tauri-apps/api/event";
+  import { untrack } from "svelte";
 
   /** @type {{ node: any, updateAttributes: (a: any) => void, deleteNode: () => void, selected: boolean }} */
   let { node, updateAttributes, deleteNode, selected } = $props();
@@ -40,8 +43,12 @@
   // Plain let, deliberately not $state: it is a memo of what we already
   // fetched, and making it reactive would re-trigger the effect that sets it.
   let resolvedHash = null;
+  // Bumped to ask again after a sync pull (see the listener below); read
+  // first in the effect so a bump re-runs it.
+  let lookups = $state(0);
 
   $effect(() => {
+    void lookups;
     if (!isImage || !node.attrs.blob_hash) { resolvedSrc = null; resolvedHash = null; return; }
     const hash = node.attrs.blob_hash;
     // Never re-fetch a hash whose image already failed to load.
@@ -69,6 +76,33 @@
     return () => { cancelled = true; };
   });
 
+  // THE BYTES CAN COME AFTER THE NODE. A page synced from another device
+  // brings the attachment node in one op and its bytes as a relay object,
+  // fetched by the worker's tick or the startup sweep, often a tick after
+  // the op. The backend announces a fetch as "attachments-fetched"
+  // (attachments/backfill.rs), and a pull whose op carried the bytes inline
+  // as "sync-pulled". The memo above kept a missing answer for good, so an
+  // open page drew "image not on this device" after the bytes had landed
+  // (sync journey J4.6, docs/desktop-findings.md). On either, a missing
+  // image asks once more; a drawn one never does (attachment-relookup.js).
+  // Events, not a timer: they are the moments bytes can arrive. Only an
+  // image listens; a file chip resolves nothing (`kind` never changes on a
+  // node, so it is read once, untracked).
+  $effect(() => {
+    if (!untrack(() => isImage)) return;
+    const offs = [];
+    let alive = true;
+    const again = () => {
+      if (!looksAgainAfterPull({ isImage, hash: node.attrs.blob_hash || null, drawn: !!resolvedSrc, failedHash })) return;
+      resolvedHash = null;
+      lookups += 1;
+    };
+    for (const name of ["attachments-fetched", "sync-pulled"]) {
+      listen(name, again).then((u) => { if (alive) offs.push(u); else u(); }).catch(() => {});
+    }
+    return () => { alive = false; offs.forEach((u) => u()); };
+  });
+
   function formatSize(n) {
     if (n < 1024) return `${n} B`;
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -78,6 +112,18 @@
 
   async function onOpen() {
     if (busy) return;
+    // BOTH ATTRS DEFAULT TO null (extensions/attachment.js), and
+    // attachment_open takes two non-Option Strings — so a node missing
+    // either is rejected by Tauri's own argument layer, before the command
+    // body runs, with "invalid type: null, expected a string". That is a
+    // machine's sentence about a file the writer can see on the page, and
+    // the error mapper collapses it to the generic line that says the
+    // original may be missing. Asking here says the true thing instead, and
+    // says it without a round trip.
+    if (!node.attrs.blob_hash || !node.attrs.filename) {
+      errorMsg = describeAttachmentOpenError(new Error("this file lost track of itself"));
+      return;
+    }
     busy = true;
     errorMsg = "";
     try {

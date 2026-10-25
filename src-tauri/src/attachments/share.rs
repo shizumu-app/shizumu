@@ -96,20 +96,61 @@ pub fn stage_for_share(
 ) -> Result<(PathBuf, &'static str), String> {
     let name = sanitize_share_name(filename);
     let dest_dir = cache_dir.join("shared");
-    std::fs::create_dir_all(&dest_dir).map_err(|e| format!("create share dir: {e}"))?;
+    // Both messages are for a reader, with the technical one logged beside
+    // them: attachment-error.js only shows a string it recognises, and an
+    // `e.to_string()` here was one of the four that collapsed into its
+    // generic fallback with nothing in the log either.
+    std::fs::create_dir_all(&dest_dir).map_err(|e| {
+        log::warn!("stage_for_share: create {}: {e}", dest_dir.display());
+        "could not make room for this file".to_string()
+    })?;
     let dest_path = dest_dir.join(&name);
-    std::fs::copy(blob_path, &dest_path).map_err(|e| format!("stage share copy: {e}"))?;
+    std::fs::copy(blob_path, &dest_path).map_err(|e| {
+        log::warn!(
+            "stage_for_share: copy {} -> {}: {e}",
+            blob_path.display(),
+            dest_path.display()
+        );
+        "could not make a copy of this file to open".to_string()
+    })?;
     Ok((dest_path, mime_for(&name)))
+}
+
+/// Open a staged file in whatever app the phone already uses for its kind.
+///
+/// Calls `openFile(String, String)` on `MainActivity`, which fires an
+/// `ACTION_VIEW` intent and falls back to the share chooser when nothing
+/// can view that type — see `scripts/patch-android-share.py` for the Kotlin
+/// and for why the fallback is a `try`/`catch` rather than a
+/// `resolveActivity` probe.
+///
+/// THIS USED TO BE `share_via_intent` AT EVERY CALL SITE, and the verb was
+/// wrong for one of them. Tapping an attachment fired `ACTION_SEND`, which
+/// is "send this file to another app" — a gallery registers for
+/// `ACTION_VIEW`, so a photo found few takers in that chooser and the
+/// writer's own file was one step further away than it is in every other
+/// app on the phone. Exporting pages and backing up the database still
+/// share, because sharing is what those mean.
+#[cfg(target_os = "android")]
+pub fn open_via_intent(path: &str, mime: &str) -> Result<(), String> {
+    call_activity_file_method("openFile", path, mime)
 }
 
 /// Hand a staged file to the Android system share sheet.
 ///
 /// Calls the `shareFile(String, String)` method
-/// `scripts/patch-android-share.py` injects into `MainActivity.kt`, via
-/// `ndk-context`'s stashed `JavaVM` + activity pointers and the `jni` crate.
-/// `MainActivity.shareFile` builds an `ACTION_SEND` chooser — deliberately
-/// not `ACTION_VIEW` — so a device with no app registered for the MIME type
-/// still gets somewhere useful instead of a dead-end "no app can open this".
+/// `scripts/patch-android-share.py` injects into `MainActivity.kt`.
+/// `MainActivity.shareFile` builds an `ACTION_SEND` chooser, which is what
+/// "share" means — and it is also `openFile`'s own fallback when no
+/// installed app can view the type.
+#[cfg(target_os = "android")]
+pub fn share_via_intent(path: &str, mime: &str) -> Result<(), String> {
+    call_activity_file_method("shareFile", path, mime)
+}
+
+/// The JNI half both of the above share: reach the running Activity through
+/// `ndk-context`'s stashed `JavaVM` + activity pointers and call one of its
+/// `(String, String) -> void` methods.
 ///
 /// Never panics: every failure — attaching the JVM thread, boxing the
 /// arguments, the method call itself (including a pending Java exception,
@@ -117,8 +158,12 @@ pub fn stage_for_share(
 /// next JNI call) — becomes a readable `Err` the caller logs and turns into
 /// a message the UI can show. This path cannot be exercised on the dev
 /// host; it needs a device.
+///
+/// `method` is a literal at both call sites, never user input: a wrong name
+/// is a `NoSuchMethodError` surfaced as `Err`, which is the same shape as
+/// an APK built without `patch-android-share.py` having run.
 #[cfg(target_os = "android")]
-pub fn share_via_intent(path: &str, mime: &str) -> Result<(), String> {
+fn call_activity_file_method(method: &str, path: &str, mime: &str) -> Result<(), String> {
     let ctx = ndk_context::android_context();
 
     // SAFETY: `ndk_context::android_context()` is populated by wry's
@@ -143,11 +188,11 @@ pub fn share_via_intent(path: &str, mime: &str) -> Result<(), String> {
 
     env.call_method(
         &activity,
-        "shareFile",
+        method,
         "(Ljava/lang/String;Ljava/lang/String;)V",
         &[(&jpath).into(), (&jmime).into()],
     )
-    .map_err(|e| format!("call MainActivity.shareFile: {e}"))?;
+    .map_err(|e| format!("call MainActivity.{method}: {e}"))?;
 
     Ok(())
 }

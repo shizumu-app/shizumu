@@ -3,7 +3,21 @@ use std::path::Path;
 use zeroize::Zeroize;
 
 const KEYRING_SERVICE: &str = "app.shizumu.Shizumu";
-const KEYRING_USER: &str = "db-key";
+/// The one slot every profile used until 2026-10-15. Still READ, so an
+/// existing install opens; written and deleted only when it holds this
+/// profile's own key.
+#[cfg_attr(not(desktop), allow(dead_code))]
+const LEGACY_KEYRING_USER: &str = "db-key";
+
+/// This profile's keyring slot, named after its key file, which already
+/// lives in the profile's own data folder. One shared name meant that turning
+/// encryption on in a second profile (a test profile, a Flatpak beside a
+/// native install) overwrote the first one's key, and the first could no
+/// longer open its database at launch.
+#[cfg_attr(not(desktop), allow(dead_code))]
+fn keyring_user_for(key_file: &Path) -> String {
+    format!("db-key:{}", key_file.display())
+}
 
 /// Inside a Flatpak sandbox the `keyring` crate would talk directly to
 /// `org.freedesktop.secrets`, which Flathub disallows (apps must use the
@@ -115,6 +129,62 @@ pub fn migrate_to_encrypted(path: &Path, passphrase: &str) -> Result<(), String>
     }
 }
 
+/// Re-key an encrypted database file under `next`, or write it out as plain
+/// SQLite when `next` is None (the lock turned off).
+///
+/// Same shape as `migrate_to_encrypted`: export to a sibling file, swap it in,
+/// and keep the original as `.db.bak` until the swapped file opens with the
+/// key it should open with. The caller must have released its own connection
+/// first, because switching the source to DELETE journal mode (which folds
+/// any write-ahead log into the file, so no stale `-wal` is left beside the
+/// new one) needs the file to itself.
+pub fn rekey_file(path: &Path, current: &str, next: Option<&str>) -> Result<(), String> {
+    let staged_path = path.with_extension("db.rekeyed");
+    let _ = std::fs::remove_file(&staged_path);
+
+    let conn = open_encrypted(path, current)
+        .map_err(|e| format!("failed to open encrypted db: {e}"))?;
+    conn.execute_batch("PRAGMA journal_mode=DELETE;")
+        .map_err(|e| format!("failed to set journal mode: {e}"))?;
+    // An empty KEY attaches a plaintext database: SQLCipher's documented way
+    // to decrypt with sqlcipher_export.
+    conn.execute_batch(&format!(
+        "ATTACH DATABASE '{}' AS staged KEY '{}';",
+        staged_path.display().to_string().replace('\'', "''"),
+        next.unwrap_or("").replace('\'', "''")
+    ))
+    .map_err(|e| format!("failed to attach the new db: {e}"))?;
+    conn.execute_batch("SELECT sqlcipher_export('staged');")
+        .map_err(|e| format!("sqlcipher_export failed: {e}"))?;
+    conn.execute_batch("DETACH DATABASE staged;")
+        .map_err(|e| format!("failed to detach: {e}"))?;
+    drop(conn);
+
+    let backup_path = path.with_extension("db.bak");
+    std::fs::rename(path, &backup_path)
+        .map_err(|e| format!("failed to back up original db: {e}"))?;
+    if let Err(e) = std::fs::rename(&staged_path, path) {
+        let _ = std::fs::rename(&backup_path, path);
+        return Err(format!("failed to replace db file: {e}"));
+    }
+
+    let opens = match next {
+        Some(key) => open_encrypted(path, key).map(|_| ()),
+        None if check_db_encrypted(path) => Err(rusqlite::Error::InvalidQuery),
+        None => open_unencrypted(path).map(|_| ()),
+    };
+    match opens {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&backup_path);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::rename(&backup_path, path);
+            Err(format!("the re-keyed db did not open: {e}"))
+        }
+    }
+}
+
 /// Store the database passphrase. Tries system keyring first, falls back to file.
 /// Always verifies the store succeeded by reading back. On mobile (iOS,
 /// Android) the keyring crate isn't compiled in — `keyring_ok` is set
@@ -127,7 +197,7 @@ pub fn store_key(passphrase: &str) -> Result<(), String> {
     {
         keyring_ok = if !use_keyring() {
             false
-        } else if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        } else if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &keyring_user_for(&key_file_path())) {
             if entry.set_password(passphrase).is_ok() {
                 // Verify it actually persisted by reading back
                 if let Ok(readback) = entry.get_password() {
@@ -168,35 +238,76 @@ pub fn store_key(passphrase: &str) -> Result<(), String> {
 pub fn retrieve_key() -> Option<String> {
     #[cfg(desktop)]
     if use_keyring() {
-        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
-            if let Ok(pw) = entry.get_password() {
-                return Some(pw);
+        for user in [keyring_user_for(&key_file_path()), LEGACY_KEYRING_USER.to_string()] {
+            if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &user) {
+                if let Ok(pw) = entry.get_password() {
+                    return Some(pw);
+                }
             }
         }
     }
     // Fallback: read from file (the only store on mobile).
     let key_path = key_file_path();
-    std::fs::read_to_string(&key_path).ok()
+    let key = std::fs::read_to_string(&key_path).ok();
+    if key.is_some() {
+        restrict_key_file(&key_path);
+    }
+    key
+}
+
+/// Best effort, at every startup: a key file written before owner-only
+/// permissions existed is otherwise only tightened when encryption is set
+/// up again or the passphrase changes, which for most writers is never.
+fn restrict_key_file(key_path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600)) {
+            log::warn!("could not restrict the key file: {e}");
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = key_path;
 }
 
 fn store_key_to_file(passphrase: &str) -> Result<(), String> {
-    let key_path = key_file_path();
+    write_key_file(&key_file_path(), passphrase)
+}
+
+fn write_key_file(key_path: &Path, passphrase: &str) -> Result<(), String> {
     if let Some(parent) = key_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    std::fs::write(&key_path, passphrase)
-        .map_err(|e| format!("failed to store key: {e}"))
+    std::fs::write(key_path, passphrase)
+        .map_err(|e| format!("failed to store key: {e}"))?;
+    // Owner-only. Set after the write so a file an older version left 0644
+    // is tightened too; on Windows the profile folder's ACL does this job.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("failed to restrict the key file: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Delete the stored passphrase from both keyring and file.
 pub fn delete_key() -> Result<(), String> {
+    let key_path = key_file_path();
     #[cfg(desktop)]
     if use_keyring() {
-        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        let mine = std::fs::read_to_string(&key_path).ok();
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &keyring_user_for(&key_path)) {
             let _ = entry.delete_credential();
         }
+        // The shared slot goes only if it is this profile's key: another
+        // profile may still depend on it.
+        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, LEGACY_KEYRING_USER) {
+            if mine.is_some() && entry.get_password().ok() == mine {
+                let _ = entry.delete_credential();
+            }
+        }
     }
-    let key_path = key_file_path();
     let _ = std::fs::remove_file(&key_path);
     Ok(())
 }
@@ -237,6 +348,42 @@ pub struct SecurePassphrase(pub String);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_profile_has_its_own_keyring_slot() {
+        // Named for the key file, which sits in the profile's data folder.
+        let a = keyring_user_for(Path::new("/home/w/.local/share/app.shizumu.Shizumu/.dbkey"));
+        let b = keyring_user_for(Path::new("/tmp/test-profile/app.shizumu.Shizumu/.dbkey"));
+        assert_ne!(a, b);
+        assert_ne!(a, LEGACY_KEYRING_USER, "a new key never lands in the shared slot");
+    }
+
+    // The key file is the store the database key actually lives in (the
+    // keyring branch is best effort), so it must not be readable by other
+    // accounts on the machine: written with the default umask it was 0644.
+    #[cfg(unix)]
+    #[test]
+    fn key_file_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("shizumu-test-{}", uuid::Uuid::new_v4()));
+        let path = dir.join(".dbkey");
+
+        write_key_file(&path, "first").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+
+        // a key file left 0644 by an older version is tightened on the next write
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_key_file(&path, "second").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+
+        // and one that is only ever read, never rewritten, is tightened at startup
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        restrict_key_file(&path);
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn encrypted_db_roundtrip() {

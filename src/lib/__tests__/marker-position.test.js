@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { chooseMarkerInsertPosition } from "../../components/TipTapEditor.svelte";
+import { chooseMarkerInsertPosition } from "../../components/editor/EditorCore.svelte";
 
 describe("chooseMarkerInsertPosition", () => {
   test("first marker on a doc with no existing markers goes at position 0", () => {

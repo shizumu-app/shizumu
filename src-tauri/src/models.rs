@@ -343,6 +343,9 @@ pub struct PinRefRow {
     /// Human-readable scope label — either the owning trail's `name` or
     /// the literal string "global" when `lineage_id` is null.
     pub scope_label: String,
+    /// The owning trail, so a mention of a pin outside the open page's
+    /// trail can load it from there (SharedObjectsPanel `reachPin`).
+    pub lineage_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

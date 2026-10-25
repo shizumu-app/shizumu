@@ -35,6 +35,17 @@ fn load_page_with_lines(conn: &rusqlite::Connection, page: Page) -> Result<PageW
     })
 }
 
+/// Today, by the clock that dates every page. The WebView has its own clock
+/// and on Android its tz data can disagree with this one: measured on an
+/// SM-A065F in Africa/Casablanca, the phone's WebView said UTC+00 while this
+/// said UTC+01, so for an hour each night the page this backend had just
+/// made as today's was yesterday's to the frontend, and read-only. A
+/// frontend that decides writability or mints a page date asks here.
+#[tauri::command]
+pub fn local_today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
 #[tauri::command]
 pub fn get_or_create_today(
     db: State<'_, Db>,
@@ -628,29 +639,42 @@ pub fn update_what_matters_now(
     page_id: String,
     text: String,
 ) -> Result<(), String> {
+    update_what_matters_now_inner(&db, &engine, &page_id, &text)?;
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    schedule_sync_wake(&worker_slot, &conn);
+    Ok(())
+}
+
+pub fn update_what_matters_now_inner(
+    db: &Db,
+    engine: &op_log::OpLog,
+    page_id: &str,
+    text: &str,
+) -> Result<(), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
 
     conn.execute(
         "UPDATE pages SET what_matters_now = ?, updated_at = ? WHERE id = ?",
-        params![&text, &now, &page_id],
+        params![text, &now, page_id],
     )
     .map_err(|e| e.to_string())?;
 
-    // Update FTS
-    let _ = conn.execute(
-        "UPDATE pages_fts SET what_matters_now = ? WHERE page_id = ?",
-        params![&text, &page_id],
-    );
+    // The whole FTS row, written if missing: a new page has none until its
+    // body is first saved, and an UPDATE then matched nothing, so a page
+    // holding only its focus line could not be found by it. An editor echo
+    // save on load used to create the row by accident; that save is gone
+    // (it emptied other devices' pages), so the focus write indexes itself,
+    // the way merge.rs already does for a focus line that arrives.
+    crate::search::reindex_page(&conn, page_id);
 
     op_log::emit_page(
-        &engine,
+        engine,
         &conn,
-        &page_id,
+        page_id,
         "update_what_matters_now",
-        serde_json::json!({ "text": &text }),
+        serde_json::json!({ "text": text }),
     );
-    schedule_sync_wake(&worker_slot, &conn);
 
     Ok(())
 }
@@ -1103,6 +1127,28 @@ pub fn get_thread(
     Ok(summaries)
 }
 
+/// Every page the index matches, newest first. This used to be the 200
+/// best-ranked, which memory then re-sorted by date: a word on more than
+/// 200 pages listed a relevance cut in date order, so last week's page could
+/// be missing while one from a year ago showed, and the count read 200.
+/// Memory groups by day and renders everything it loads, so the honest
+/// answer is all of them, in its order.
+pub fn search_page_ids(conn: &rusqlite::Connection, match_expr: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id FROM pages
+              WHERE id IN (SELECT page_id FROM pages_fts WHERE pages_fts MATCH ?)
+              ORDER BY date DESC, page_number DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let ids = stmt
+        .query_map(params![match_expr], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(ids)
+}
+
 #[tauri::command]
 pub fn search_pages(db: State<'_, Db>, query: String) -> Result<Vec<PageSummary>, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
@@ -1117,15 +1163,7 @@ pub fn search_pages(db: State<'_, Db>, query: String) -> Result<Vec<PageSummary>
         return Ok(Vec::new());
     };
 
-    let mut stmt = conn
-        .prepare("SELECT page_id FROM pages_fts WHERE pages_fts MATCH ? ORDER BY rank LIMIT 50")
-        .map_err(|e| e.to_string())?;
-
-    let matches: Vec<String> = stmt
-        .query_map(params![&match_expr], |row| row.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+    let matches = search_page_ids(&conn, &match_expr)?;
 
     let mut summaries = Vec::new();
     for page_id in matches {
@@ -1304,9 +1342,24 @@ pub fn set_close_to_tray(_enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn delete_all_data(db: State<'_, Db>) -> Result<(), String> {
+pub fn delete_all_data(app: tauri::AppHandle, db: State<'_, Db>) -> Result<(), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
+    let blobs = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| crate::attachments::store::blobs_root(&d));
+    delete_all_data_inner(&conn, blobs.as_deref())
+}
 
+/// The sync tables (sync_keys, sync_state, sync_error_history) are kept: a
+/// device wiped clean keeps its pairing and gets everything back from the
+/// others (sync journey J10, claim 43). Only the pull cursor goes back to
+/// zero, so that it can.
+pub fn delete_all_data_inner(
+    conn: &rusqlite::Connection,
+    blobs: Option<&std::path::Path>,
+) -> Result<(), String> {
     // Delete in order respecting foreign key constraints. The op_log
     // is cleared alongside the rest — delete_all_data is the user's
     // panic-button reset, so a fresh op_log on the way back up is the
@@ -1325,6 +1378,24 @@ pub fn delete_all_data(db: State<'_, Db>) -> Result<(), String> {
     let _ = conn.execute("DELETE FROM op_log", []);
     let _ = conn.execute("DELETE FROM op_log_meta", []);
     let _ = conn.execute("DELETE FROM hlc_state", []);
+    // The row promises every attachment: the index, the references a
+    // mention left behind, and the bytes themselves, which no GC reaches
+    // once nothing in the database names them.
+    // A snapshot claims the tables hold everything up to the pull cursor
+    // (snapshot.rs `publish`). With the tables empty and the cursor kept,
+    // the wiped device published an empty account tagged with its head,
+    // and a device joining later started empty there (J10.4). From zero
+    // the claim is true, and the next pull brings the account back:
+    // bootstrap from the newest snapshot, then the ops after it.
+    let _ = conn.execute("UPDATE sync_state SET last_seen_user_seq = 0 WHERE id = 1", []);
+    let _ = conn.execute("DELETE FROM attachments", []);
+    let _ = conn.execute("DELETE FROM page_refs", []);
+    let _ = conn.execute("DELETE FROM pin_refs", []);
+    if let Some(dir) = blobs {
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).map_err(|e| format!("the writing is gone, but its files could not be removed: {e}"))?;
+        }
+    }
 
     Ok(())
 }
@@ -1899,13 +1970,47 @@ pub fn get_inherited_shared_blocks(
 }
 
 #[tauri::command]
-pub fn delete_focus(db: State<'_, Db>, page_id: String) -> Result<(), String> {
-    delete_focus_inner(&db, &page_id)
+pub fn delete_focus(
+    db: State<'_, Db>,
+    engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
+    page_id: String,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let n = delete_page_rows(&conn, &page_id)?;
+    // A user delete used to write no op at all, so the page stayed on every
+    // other device for good. The receiving side (merge_tombstone's
+    // delete_page arm) runs this same delete_page_rows behind an HLC gate.
+    if n > 0 {
+        engine.try_apply(&conn, delete_page_op(&page_id));
+        schedule_sync_wake(&worker_slot, &conn);
+    }
+    Ok(())
+}
+
+/// The tombstone a user's page delete broadcasts.
+pub fn delete_page_op(page_id: &str) -> op_log::Op {
+    op_log::Op {
+        kind: op_log::OpKind::tombstone(),
+        doc_id: Some(page_id.to_string()),
+        stream_id: op_log::stream::DISCRETE_PAGES,
+        payload: serde_json::json!({
+            "op": "delete_page",
+            "page_id": page_id,
+        }),
+    }
 }
 
 pub fn delete_focus_inner(db: &Db, page_id: &str) -> Result<(), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
+    delete_page_rows(&conn, page_id).map(|_| ())
+}
 
+/// Delete a page and everything hanging off it; its pins survive orphaned
+/// with their cache (the pin pointer clause). Returns the number of page
+/// rows removed — 0 when the page was already gone. Shared by the local
+/// delete and the sync merge of a peer's delete, so the two cannot drift.
+pub fn delete_page_rows(conn: &rusqlite::Connection, page_id: &str) -> Result<usize, String> {
     // Delete block items for blocks on this page
     conn.execute(
         "DELETE FROM block_items WHERE block_id IN (SELECT id FROM blocks WHERE page_id = ?)",
@@ -1954,9 +2059,7 @@ pub fn delete_focus_inner(db: &Db, page_id: &str) -> Result<(), String> {
 
     // Delete the page
     conn.execute("DELETE FROM pages WHERE id = ?", params![page_id])
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2189,15 +2292,18 @@ pub fn get_canonical_trail_page(
     }
 }
 
-#[tauri::command]
-pub fn delete_lineage(
-    db: State<'_, Db>,
-    engine: State<'_, op_log::OpLog>,
-    worker_slot: State<'_, SyncWorkerSlot>,
-    lineage_id: String,
-    target_lineage_id: Option<String>,
-) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
+/// Delete a lineage locally: pages move to `target_lineage_id` (or unlink),
+/// child trails move to the deleted trail's own parent (or top level), pins
+/// move to the target, else to the deleted trail's parent. Returns the
+/// number of lineage rows deleted (0 when it did not exist).
+///
+/// This is the spec the sync merge (`sync::merge`, `delete_lineage`
+/// tombstone) must reproduce on the receiving device.
+pub fn delete_lineage_inner(
+    conn: &rusqlite::Connection,
+    lineage_id: &str,
+    target_lineage_id: Option<&str>,
+) -> Result<usize, String> {
     let now = chrono::Utc::now().to_rfc3339();
 
     // Move or unlink pages
@@ -2249,9 +2355,20 @@ pub fn delete_lineage(
     }
 
     // Delete the lineage
-    let n = conn
-        .execute("DELETE FROM lineages WHERE id = ?", params![&lineage_id])
-        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM lineages WHERE id = ?", params![&lineage_id])
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_lineage(
+    db: State<'_, Db>,
+    engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
+    lineage_id: String,
+    target_lineage_id: Option<String>,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let n = delete_lineage_inner(&conn, &lineage_id, target_lineage_id.as_deref())?;
 
     if n > 0 {
         engine.try_apply(
@@ -2811,10 +2928,11 @@ pub fn save_page_content(
     content_json: String,
     yjs_state: Option<Vec<u8>>,
 ) -> Result<(), String> {
-    save_page_content_inner(&db, &page_id, &content_json, yjs_state.as_deref())?;
+    let pins = save_page_content_inner(&db, &page_id, &content_json, yjs_state.as_deref())?;
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
         emit_page_op(&engine, &conn, &page_id, &content_json, yjs_state.as_deref());
+        emit_pin_cache_changes(&engine, &conn, &pins);
         // Debounced wake: subsequent saves within the window reset the
         // target, so a flurry of edits (including a `/`-command
         // interaction — open menu, navigate, pick) coalesces into one
@@ -2877,10 +2995,49 @@ pub fn save_page_content_with_pin_refresh(
     content_json: String,
     yjs_state: Option<Vec<u8>>,
 ) -> Result<(), String> {
-    save_page_content_inner(&db, &page_id, &content_json, yjs_state.as_deref())?;
+    let pins = save_page_content_inner(&db, &page_id, &content_json, yjs_state.as_deref())?;
     let conn = db.lock().map_err(|e| e.to_string())?;
     emit_page_op(&engine, &conn, &page_id, &content_json, yjs_state.as_deref());
+    emit_pin_cache_changes(&engine, &conn, &pins);
     Ok(())
+}
+
+/// A pin row a save rewrote from its node: the new cache, and the title
+/// when the node gets a vote on it (see `extract_block_title`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinCacheChange {
+    pub id: String,
+    pub content: String,
+    pub title: Option<Option<String>>,
+}
+
+/// Send each pin cache a save rewrote to the other devices.
+///
+/// `refresh_pin_caches` keeps a pin row in step with its node, but only on
+/// the device that saved: the page op carries the node, and a receiver's
+/// merge applies it without touching the pin row (`rescue_orphaned_pins`
+/// only un-orphans). So an edit typed into a pinned block, or spliced into
+/// it from the pins panel, reached the other device's page and never its
+/// pin (sync journey J2.8: "never left the other device"). The receiver
+/// already merges `update_pin_content` by HLC, so the change goes as one.
+///
+/// A node without a title slot sends no title; the merge's
+/// `COALESCE(?, title)` then keeps the receiver's.
+pub fn emit_pin_cache_changes(
+    engine: &op_log::OpLog,
+    conn: &rusqlite::Connection,
+    changes: &[PinCacheChange],
+) {
+    for c in changes {
+        let title = c.title.clone().flatten();
+        op_log::emit_pin(
+            engine,
+            conn,
+            &c.id,
+            "update_pin_content",
+            serde_json::json!({ "content": &c.content, "title": title }),
+        );
+    }
 }
 
 pub fn save_page_content_inner(
@@ -2888,7 +3045,7 @@ pub fn save_page_content_inner(
     page_id: &str,
     content_json: &str,
     yjs_state: Option<&[u8]>,
-) -> Result<(), String> {
+) -> Result<Vec<PinCacheChange>, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -2926,11 +3083,11 @@ pub fn save_page_content_inner(
         params![page_id, &text_content, &page.what_matters_now, &page.what_shifted, &page.voice_memo_transcript],
     );
 
-    refresh_pin_caches(&conn, page_id, content_json)?;
+    let pins = refresh_pin_caches(&conn, page_id, content_json)?;
     refresh_page_refs(&conn, page_id, content_json)?;
     refresh_pin_refs(&conn, page_id, content_json)?;
 
-    Ok(())
+    Ok(pins)
 }
 
 /// Walks the saved doc for nodes with `pinId` attrs and refreshes the
@@ -2942,11 +3099,12 @@ fn refresh_pin_caches(
     conn: &rusqlite::Connection,
     page_id: &str,
     content_json: &str,
-) -> Result<(), String> {
+) -> Result<Vec<PinCacheChange>, String> {
     let doc: serde_json::Value = match serde_json::from_str(content_json) {
         Ok(v) => v,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(Vec::new()),
     };
+    let mut changed: Vec<PinCacheChange> = Vec::new();
     let mut found: std::collections::HashMap<String, serde_json::Value> =
         std::collections::HashMap::new();
     collect_pin_nodes(&doc, &mut found);
@@ -2956,6 +3114,27 @@ fn refresh_pin_caches(
     for (pin_id, node) in &found {
         let node_json = node.to_string();
         let title = extract_block_title(node);
+        // What the row holds now, to send only what this save changed
+        // (emit_pin_cache_changes). No row: nothing to update or send.
+        let before: Option<(Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT content, title FROM shared_objects WHERE id = ?",
+                params![pin_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some((old_content, old_title)) = &before {
+            let content_moved = old_content.as_deref() != Some(node_json.as_str());
+            let title_moved = matches!(&title, Some(t) if t != old_title);
+            if content_moved || title_moved {
+                changed.push(PinCacheChange {
+                    id: pin_id.clone(),
+                    content: node_json.clone(),
+                    title: title.clone(),
+                });
+            }
+        }
         // Ownership follows the doc. This used to require
         // `source_page_id = ?`, so a pin injected into another page carried
         // its id but could never write back — every edit to the injected
@@ -3008,16 +3187,29 @@ fn refresh_pin_caches(
             .map_err(|e| e.to_string())?;
     }
 
-    Ok(())
+    Ok(changed)
+}
+
+/// A `pinRef` is an @-mention of a pin: it carries the pin's id in the same
+/// `pinId` attr the pinned block does, but it points at the pin and is not
+/// it. Every walk that asks "which pins does this page hold" skips it —
+/// taking it for the pin rewrote the pin's content with the mention and
+/// moved the pin to the mentioning page. src/lib/pin-node.js is the
+/// front end's copy of the same rule.
+pub(crate) fn is_pin_mention(node: &serde_json::Value) -> bool {
+    node.get("type").and_then(|t| t.as_str()) == Some("pinRef")
 }
 
 fn collect_pin_nodes(
     node: &serde_json::Value,
     out: &mut std::collections::HashMap<String, serde_json::Value>,
 ) {
+    let is_mention = is_pin_mention(node);
     if let Some(attrs) = node.get("attrs").and_then(|a| a.as_object()) {
         if let Some(pin_id) = attrs.get("pinId").and_then(|v| v.as_str()) {
-            out.entry(pin_id.to_string()).or_insert_with(|| node.clone());
+            if !is_mention {
+                out.entry(pin_id.to_string()).or_insert_with(|| node.clone());
+            }
         }
     }
     if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
@@ -3260,18 +3452,10 @@ pub fn save_trail_content(
     page_id: String,
     content_json: String,
 ) -> Result<(), String> {
-    save_trail_content_inner(&db, &lineage_id, &page_id, &content_json)?;
+    let pins = save_trail_content_inner(&db, &lineage_id, &page_id, &content_json)?;
     let conn = db.lock().map_err(|e| e.to_string())?;
-    op_log::emit_page(
-        &engine,
-        &conn,
-        &page_id,
-        "save_trail_content",
-        serde_json::json!({
-            "lineage_id": &lineage_id,
-            "content_json": &content_json,
-        }),
-    );
+    emit_trail_content_op(&engine, &conn, &lineage_id, &page_id, &content_json);
+    emit_pin_cache_changes(&engine, &conn, &pins);
     // Continuous-trail docs can grow to 50k+ words under one canonical
     // page — this was save_page_content's sibling gap: the debounced
     // wake existed only on the discrete/untrailed save path, so trail
@@ -3280,12 +3464,37 @@ pub fn save_trail_content(
     Ok(())
 }
 
+/// The op a continuous-trail save sends: a `page_blob` named
+/// `save_trail_content`, carrying the whole doc. This — not `page_yjs` — is
+/// what every continuous save on both clients emits today, because both
+/// route a continuous trail's saves through `saveTrailContent`
+/// (Page.svelte passes `isTrailMode={mode === "continuous"}`). Its own
+/// function so the sync tests drive the exact wire shape the command sends.
+pub fn emit_trail_content_op(
+    engine: &op_log::OpLog,
+    conn: &rusqlite::Connection,
+    lineage_id: &str,
+    page_id: &str,
+    content_json: &str,
+) {
+    op_log::emit_page(
+        engine,
+        conn,
+        page_id,
+        "save_trail_content",
+        serde_json::json!({
+            "lineage_id": lineage_id,
+            "content_json": content_json,
+        }),
+    );
+}
+
 pub fn save_trail_content_inner(
     db: &Db,
     _lineage_id: &str,
     page_id: &str,
     content_json: &str,
-) -> Result<(), String> {
+) -> Result<Vec<PinCacheChange>, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -3317,11 +3526,11 @@ pub fn save_trail_content_inner(
         params![page_id, &text_content, &page.what_matters_now, &page.what_shifted, &page.voice_memo_transcript],
     );
 
-    refresh_pin_caches(&conn, page_id, content_json)?;
+    let pins = refresh_pin_caches(&conn, page_id, content_json)?;
     refresh_page_refs(&conn, page_id, content_json)?;
     refresh_pin_refs(&conn, page_id, content_json)?;
 
-    Ok(())
+    Ok(pins)
 }
 
 /// Plain text from a TipTap doc, for the EMPTINESS question only.
@@ -3694,6 +3903,7 @@ pub fn get_pin_for_reference(
                     updated_at: row.get::<_, String>(3)?,
                     scope_label: row.get::<_, Option<String>>(5)?
                         .unwrap_or_else(|| "global".to_string()),
+                    lineage_id: row.get::<_, Option<String>>(4)?,
                 })
             },
         )
@@ -3767,6 +3977,7 @@ pub fn search_pins_for_mention(
                     updated_at: row.get::<_, String>(3)?,
                     scope_label: row.get::<_, Option<String>>(5)?
                         .unwrap_or_else(|| "global".to_string()),
+                    lineage_id: row.get::<_, Option<String>>(4)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -3781,6 +3992,7 @@ pub fn search_pins_for_mention(
                     updated_at: row.get::<_, String>(3)?,
                     scope_label: row.get::<_, Option<String>>(5)?
                         .unwrap_or_else(|| "global".to_string()),
+                    lineage_id: row.get::<_, Option<String>>(4)?,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -4028,33 +4240,179 @@ pub fn setup_encryption(
 
 #[tauri::command]
 pub fn unlock(db: State<'_, Db>, passphrase: String) -> Result<bool, String> {
+    unlock_inner(db.inner(), &passphrase)
+}
+
+/// The file `lock` closed, for `unlock` to reopen: a locked connection is
+/// in memory and has no path of its own to ask for.
+static LOCKED_DB_PATH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn main_db_path(conn: &rusqlite::Connection) -> Result<String, String> {
+    conn.query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2))
+        .map_err(|e| e.to_string())
+}
+
+pub fn unlock_inner(db: &Db, passphrase: &str) -> Result<bool, String> {
     // Try to verify passphrase by opening a test connection
     let conn = db.lock().map_err(|e| e.to_string())?;
-    let db_path: String = conn
-        .query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2))
-        .map_err(|e| e.to_string())?;
+    let mut db_path = main_db_path(&conn)?;
     drop(conn);
+    if db_path.is_empty() {
+        db_path = LOCKED_DB_PATH.lock().map_err(|e| e.to_string())?.clone().unwrap_or_default();
+    }
+    if db_path.is_empty() {
+        return Ok(false);
+    }
 
     let path = std::path::PathBuf::from(&db_path);
-    match crate::crypto::open_encrypted(&path, &passphrase) {
+    match crate::crypto::open_encrypted(&path, passphrase) {
         Ok(new_conn) => {
             new_conn
                 .execute_batch("PRAGMA journal_mode=WAL;")
                 .map_err(|e| e.to_string())?;
+            // A file first opened here, after a launch that could not open
+            // it, has not been migrated by this version yet.
+            crate::db::run_migrations(&new_conn)?;
             let mut conn = db.lock().map_err(|e| e.to_string())?;
             *conn = new_conn;
+            *LOCKED_DB_PATH.lock().map_err(|e| e.to_string())? = None;
+            *STARTUP_FAILURE.lock().map_err(|e| e.to_string())? = None;
             Ok(true)
         }
         Err(_) => Ok(false),
     }
 }
 
+/// Why the launch could not open the writer's file, while it could not.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct StartupFailure {
+    pub message: String,
+    pub db_path: String,
+    /// The file is encrypted and no passphrase was found for it: the lock
+    /// screen can open it. Otherwise the file is damaged or unreadable.
+    pub needs_passphrase: bool,
+}
+
+static STARTUP_FAILURE: std::sync::Mutex<Option<StartupFailure>> = std::sync::Mutex::new(None);
+
+/// Called once from setup, when `init_db` failed and the app is running on
+/// the placeholder. Until 2026-10-15 that failure was an `.expect`: the app
+/// closed at launch with no word, even when all it needed was the passphrase.
+pub fn record_startup_failure(db_path: &str, message: &str, needs_passphrase: bool) {
+    if needs_passphrase {
+        if let Ok(mut p) = LOCKED_DB_PATH.lock() { *p = Some(db_path.to_string()); }
+    }
+    if let Ok(mut f) = STARTUP_FAILURE.lock() {
+        *f = Some(StartupFailure { message: message.to_string(), db_path: db_path.to_string(), needs_passphrase });
+    }
+}
+
+pub fn startup_failure_now() -> Option<StartupFailure> {
+    STARTUP_FAILURE.lock().ok().and_then(|f| f.clone())
+}
+
+/// The screen asks this first: if the launch could not open the file,
+/// nothing may be written (the database is the placeholder) until it is.
 #[tauri::command]
-pub fn lock(_db: State<'_, Db>) -> Result<(), String> {
-    // In a full implementation, this would clear the db connection
-    // and require unlock before further access.
-    // For now, this is a placeholder that the frontend uses to trigger lock UI.
+pub fn startup_failure() -> Option<StartupFailure> {
+    startup_failure_now()
+}
+
+/// Close the writing until the passphrase is given again.
+///
+/// Until 2026-10-15 this was an empty placeholder: the lock screen covered
+/// the window while the database stayed open behind it, so every other way
+/// in (the desktop search providers, a command fired by anything in the
+/// webview) still read the pages. Now an encrypted database's connection is
+/// swapped for an empty in-memory one; every query fails until `unlock`
+/// reopens the file with the right passphrase. A plaintext database is left
+/// open: there is no passphrase to reopen it with, and closing it would
+/// lock the writer out of their own pages.
+#[tauri::command]
+pub fn lock(db: State<'_, Db>) -> Result<(), String> {
+    lock_inner(db.inner())
+}
+
+pub fn lock_inner(db: &Db) -> Result<(), String> {
+    let mut conn = db.lock().map_err(|e| e.to_string())?;
+    let path = main_db_path(&conn)?;
+    if path.is_empty() || !crate::crypto::check_db_encrypted(std::path::Path::new(&path)) {
+        return Ok(());
+    }
+    *LOCKED_DB_PATH.lock().map_err(|e| e.to_string())? = Some(path);
+    *conn = rusqlite::Connection::open_in_memory().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Same minimum the setup screen asks for (SetupEncryption.svelte).
+const MIN_PASSPHRASE_CHARS: usize = 8;
+
+/// Give the lock a new passphrase. Until 0.8 there was no way to: the
+/// settings row only said "on".
+#[tauri::command]
+pub fn change_passphrase(db: State<'_, Db>, current: String, next: String) -> Result<(), String> {
+    change_passphrase_inner(db.inner(), &current, &next)?;
+    // The launch opens the file with the stored key, so it has to follow.
+    // If it cannot, the file is still re-keyed and the lock screen asks for
+    // the new passphrase at the next launch, which is why this says so.
+    crate::crypto::store_key(&next)
+        .map_err(|e| format!("the passphrase changed, but it could not be kept for the next launch, which will ask for it: {e}"))
+}
+
+/// Take the lock off: the database becomes a plain file again and the
+/// stored key is deleted.
+#[tauri::command]
+pub fn remove_encryption(db: State<'_, Db>, current: String) -> Result<(), String> {
+    remove_encryption_inner(db.inner(), &current)?;
+    crate::crypto::delete_key()
+}
+
+pub fn change_passphrase_inner(db: &Db, current: &str, next: &str) -> Result<(), String> {
+    if next.chars().count() < MIN_PASSPHRASE_CHARS {
+        return Err(format!("the new passphrase needs at least {MIN_PASSPHRASE_CHARS} characters"));
+    }
+    rekey_inner(db, current, Some(next))
+}
+
+pub fn remove_encryption_inner(db: &Db, current: &str) -> Result<(), String> {
+    rekey_inner(db, current, None)?;
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('encryption_enabled', 'false')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Re-key the open database file and reopen it, holding the connection's
+/// mutex throughout so no other command reads or writes mid-swap. Whatever
+/// happens to the file, the app is left on a real connection: the new key
+/// when the re-key worked, the current one when it did not (rekey_file puts
+/// the original back on failure).
+fn rekey_inner(db: &Db, current: &str, next: Option<&str>) -> Result<(), String> {
+    let mut conn = db.lock().map_err(|e| e.to_string())?;
+    let db_path = main_db_path(&conn)?;
+    if db_path.is_empty() {
+        return Err("unlock the app first".into());
+    }
+    let path = std::path::PathBuf::from(&db_path);
+    crate::crypto::open_encrypted(&path, current)
+        .map_err(|_| "that is not the current passphrase".to_string())?;
+
+    // Release the file: rekey_file needs it to itself.
+    *conn = rusqlite::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    let result = crate::crypto::rekey_file(&path, current, next);
+
+    let reopen_with = if result.is_ok() { next } else { Some(current) };
+    let reopened = match reopen_with {
+        Some(key) => crate::crypto::open_encrypted(&path, key),
+        None => crate::crypto::open_unencrypted(&path),
+    }
+    .map_err(|e| format!("failed to reopen the db: {e}"))?;
+    reopened.execute_batch("PRAGMA journal_mode=WAL;").map_err(|e| e.to_string())?;
+    *conn = reopened;
+    result
 }
 
 #[tauri::command]
@@ -4156,7 +4514,7 @@ pub async fn export_pages_gui(
 }
 
 #[tauri::command]
-pub async fn backup_database_gui(app: tauri::AppHandle) -> Result<String, String> {
+pub async fn backup_database_gui(app: tauri::AppHandle, db: State<'_, Db>) -> Result<String, String> {
     use crate::export;
     // Desktop only: Android never opens a save dialog (see below).
     #[cfg(not(target_os = "android"))]
@@ -4164,12 +4522,6 @@ pub async fn backup_database_gui(app: tauri::AppHandle) -> Result<String, String
 
     let now = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let default_name = format!("shizumu-backup-{now}.db");
-
-    let db_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    let db_path = db_dir.join("settles.db");
 
     // Same Android story as export_pages_gui: the SAF hands back a
     // `content://` URI that `as_path()` reports as None, so backup answered
@@ -4180,7 +4532,12 @@ pub async fn backup_database_gui(app: tauri::AppHandle) -> Result<String, String
         let staged_dir = cache_dir.join("shared");
         std::fs::create_dir_all(&staged_dir).map_err(|e| format!("create share dir: {e}"))?;
         let staged = staged_dir.join(&default_name);
-        export::backup_database(&db_path, &staged)?;
+        {
+            // Through the app's own connection: it holds the key when the
+            // database is encrypted (export::backup_from).
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            export::backup_from(&conn, &staged)?;
+        }
         crate::attachments::share::share_via_intent(
             &staged.to_string_lossy(),
             "application/octet-stream",
@@ -4201,7 +4558,12 @@ pub async fn backup_database_gui(app: tauri::AppHandle) -> Result<String, String
             None => return Err("backup cancelled".to_string()),
         };
 
-        export::backup_database(&db_path, &path)?;
+        {
+            // Through the app's own connection: it holds the key when the
+            // database is encrypted (export::backup_from).
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            export::backup_from(&conn, &path)?;
+        }
         Ok(path.display().to_string())
     }
 }
@@ -4990,7 +5352,7 @@ pub async fn sync_setup(
             db.clone(),
             engine.clone(),
             crate::sync::worker::DEFAULT_TICK,
-            crate::sync::worker::WorkerCallbacks::default(),
+            crate::sync::worker::WorkerCallbacks::for_app(),
         )?;
         let mut slot = worker_slot.lock().map_err(|e| e.to_string())?;
         *slot = new_handle;
@@ -5113,8 +5475,7 @@ pub async fn sync_self_enroll(
                      WHERE state IN ('committed', 'pending_upload'); \
                      UPDATE sync_state SET last_seen_user_seq = 0;"
                 ).map_err(|e| e.to_string())?;
-                conn.execute("DELETE FROM op_log_meta WHERE key = 'backfill_complete'", [])
-                    .ok();
+                start_over_in_a_new_sequence_space(&conn)?;
             }
         }
 
@@ -5130,11 +5491,11 @@ pub async fn sync_self_enroll(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        {
-            let conn = db.lock().map_err(|e| e.to_string())?;
-            crate::sync::config::set_enrollment(&conn, &resp.user_id, &resp.device_id, now_ms)
-                .map_err(|e| e.to_string())?;
-        }
+        // Usually the first device of a fresh relay, where nothing is
+        // pulled and nothing may be deleted; re-claiming a relay that
+        // already holds this identity's history is a join, and then the
+        // first pull can start from its newest snapshot (finish_enrollment).
+        crate::sync::snapshot::finish_enrollment(&db, &relay_url, &device_keys, &resp.user_id, &resp.device_id, now_ms, false)?;
 
         // Best-effort, unlike sync_recover's hard error: this path is
         // pre-existing (self-enroll predates phrase recovery) and a
@@ -5158,7 +5519,7 @@ pub async fn sync_self_enroll(
             db.clone(),
             engine.clone(),
             crate::sync::worker::DEFAULT_TICK,
-            crate::sync::worker::WorkerCallbacks::default(),
+            crate::sync::worker::WorkerCallbacks::for_app(),
         )?;
         let mut slot = worker_slot.lock().map_err(|e| e.to_string())?;
         *slot = new_handle;
@@ -5238,8 +5599,7 @@ async fn bootstrap_hosted_account(
                      WHERE state IN ('committed', 'pending_upload'); \
                      UPDATE sync_state SET last_seen_user_seq = 0;"
                 ).map_err(|e| e.to_string())?;
-                conn.execute("DELETE FROM op_log_meta WHERE key = 'backfill_complete'", [])
-                    .ok();
+                start_over_in_a_new_sequence_space(&conn)?;
             }
         }
 
@@ -5263,7 +5623,12 @@ async fn bootstrap_hosted_account(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        {
+        if matches!(verb, BootstrapVerb::Recover) {
+            // Recovery joins an account that may hold history; a brand-new
+            // account (Init) has none, and its open page stays where the
+            // writer left it.
+            crate::sync::snapshot::finish_enrollment(&db, &relay_url, &device_keys, &resp.user_id, &resp.device_id, now_ms, false)?;
+        } else {
             let conn = db.lock().map_err(|e| e.to_string())?;
             crate::sync::config::set_enrollment(&conn, &resp.user_id, &resp.device_id, now_ms)
                 .map_err(|e| e.to_string())?;
@@ -5287,7 +5652,7 @@ async fn bootstrap_hosted_account(
             db.clone(),
             engine.clone(),
             crate::sync::worker::DEFAULT_TICK,
-            crate::sync::worker::WorkerCallbacks::default(),
+            crate::sync::worker::WorkerCallbacks::for_app(),
         )?;
         let mut slot = worker_slot.lock().map_err(|e| e.to_string())?;
         *slot = new_handle;
@@ -5935,8 +6300,118 @@ pub fn sync_reset_inner(db: &Db) -> Result<(), String> {
          DELETE FROM sync_keys; \
          UPDATE op_log SET state='local_only', ciphertext=NULL, user_seq=NULL \
          WHERE state IN ('committed', 'pending_upload'); \
-         DELETE FROM op_log_meta WHERE key='backfill_complete'; \
          DELETE FROM settings WHERE key = 'sync_revoked';"
+    ).map_err(|e| e.to_string())?;
+    start_over_in_a_new_sequence_space(&conn)?;
+    Ok(())
+}
+
+/// Ops this device RECEIVED from others keep the `user_seq` the relay
+/// gave them, and the pull skips any incoming op whose `user_seq` a row
+/// already holds (the fast duplicate check in `pull::ingest_one`, made
+/// before the blob is fetched). Every path that points the device at a
+/// fresh sequence space (a reset, a new relay, a new identity) zeroes the
+/// cursor and clears `user_seq` on the device's OWN ops, and until
+/// 2026-10-14 left the received ones alone. On the new relay, seq 1..N
+/// then all looked already held, and every op from every other device was
+/// skipped as a duplicate: sync said it was working and nothing arrived.
+/// Found by pairing a phone that had synced on an earlier relay.
+///
+/// Not run by `sync_force_reupload`, which stays on the same relay: there
+/// the old numbers are still true, and they are what keeps a replay from
+/// zero from merging every op a second time.
+const FORGET_RECEIVED_SEQS: &str = "UPDATE op_log SET user_seq = NULL WHERE state = 'received';";
+
+/// Everything a device forgets when it starts over in a fresh sequence
+/// space: a reset, a new relay, a new identity. Besides the received
+/// numbers above:
+///
+/// - **It sends its state, not its history.** Every op from before is
+///   retired: kept in the log, sent nowhere. Re-sending this device's own
+///   history without the ops other devices sent it after (their deletes,
+///   moves, folds) gave a new device creates with nothing after them, and
+///   a fresh laptop joining a reset A16 got back a trail the laptop had
+///   folded and a page on the trail it had left (2026-10-23). Inline
+///   attachment ops still go: they are how a photo reaches the account, and
+///   `delivered_inline` reads a committed one as delivered. Reference ops
+///   do not: see `retire_reference_attachment_ops`.
+/// - **The backfill runs again, over every row**, and is the account's
+///   whole record of this device: each row's current state, every synced
+///   field. `backfill_since` tells it that rows already holding ops from
+///   before now still need one. Clearing `backfill_complete` alone did
+///   nothing: the cursor stayed at "done" and the next run marked itself
+///   complete.
+/// - **The snapshot throttle.** `snapshot_last_seq` is a number on the old
+///   relay; left in place, a fresh relay's sequence had to pass it before
+///   any snapshot was published there, so new devices replayed everything.
+///
+/// Found 2026-10-16 pairing a reset A16 with a fresh laptop: the laptop
+/// crawled through dozens of edits it could never apply.
+/// An attachment op that went out as a REFERENCE carries no bytes, only the
+/// address of an object on the relay it was uploaded to. In a new sequence
+/// space that address names nothing: re-sent, a fresh device stored it, kept
+/// it over the re-upload's new one (a reference fills `object_key` only when
+/// empty), and never fetched the photo (sync journey J9.7 on the A16,
+/// 2026-10-24). Retired like the rest of the history; the object backfill
+/// re-uploads the file, since start-over clears `object_key`, and sends a
+/// reference to the new relay's copy. Inline ops carry their bytes and still
+/// go. A payload that does not parse is left queued: unsure is not stale.
+fn retire_reference_attachment_ops(conn: &rusqlite::Connection) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT op_id, payload_blob FROM op_log \
+             WHERE op_kind = 'attachment_blob' AND state IN ('local_only', 'pending_upload')",
+        )
+        .map_err(|e| e.to_string())?;
+    let stale: Vec<String> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .filter(|(_, payload)| {
+            serde_json::from_slice::<crate::sync::wire::attachment_blob::AttachmentBlobPayload>(payload)
+                .map(|p| crate::sync::wire::attachment_blob::payload_is_reference(&p))
+                .unwrap_or(false)
+        })
+        .map(|(id, _)| id)
+        .collect();
+    for id in stale {
+        conn.execute(
+            "UPDATE op_log SET state = 'committed', ciphertext = NULL, user_seq = NULL WHERE op_id = ?",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn start_over_in_a_new_sequence_space(conn: &rusqlite::Connection) -> Result<(), String> {
+    conn.execute_batch(FORGET_RECEIVED_SEQS).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "UPDATE op_log SET state = 'committed', ciphertext = NULL, user_seq = NULL \
+         WHERE state IN ('local_only', 'pending_upload') AND op_kind != 'attachment_blob';",
+    ).map_err(|e| e.to_string())?;
+    retire_reference_attachment_ops(conn)?;
+    // THE NEXT ACCOUNT STARTS AT EPOCH 0. The keys are gone, but the old
+    // account's epoch was not: every op this device then wrote was stamped
+    // with an epoch it held no key for, and upload refused all of them ("no
+    // content key for epoch 3 on emit", the A16 on 2026-10-21, after its
+    // owner moved it to a new account and paired an iPhone). Epoch 0 is the
+    // phrase's own key, which the next account always has; a recovered
+    // account fetches its later epochs from the relay as usual. Its own
+    // unsent ops go with it, and its attachments forget the old relay's
+    // address and epoch so they are sent again.
+    conn.execute_batch(
+        "UPDATE sync_state SET current_epoch = 0 WHERE id = 1; \
+         UPDATE op_log SET epoch = 0 WHERE state = 'local_only'; \
+         UPDATE attachments SET object_key = NULL, object_epoch = NULL, upload_attempts = 0, upload_retry_at_ms = 0;",
+    ).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "DELETE FROM settings WHERE key = 'snapshot_last_seq'; \
+         DELETE FROM op_log_meta WHERE key IN ('backfill_complete', 'backfill_cursor');",
+    ).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO op_log_meta (key, value) VALUES ('backfill_since', ?)",
+        params![chrono::Utc::now().timestamp_millis().to_string()],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -5950,6 +6425,14 @@ pub fn sync_switch_relay(
     worker_slot: State<'_, SyncWorkerSlot>,
     new_url: String,
 ) -> Result<(), String> {
+    sync_switch_relay_inner(db.inner(), &new_url)?;
+    let mut slot = worker_slot.lock().map_err(|e| e.to_string())?;
+    *slot = None;
+    Ok(())
+}
+
+/// `sync_switch_relay`'s DB-only body, split out so tests can drive it.
+pub fn sync_switch_relay_inner(db: &Db, new_url: &str) -> Result<(), String> {
     let url = new_url.trim();
     crate::sync::config::validate_relay_url(url)?;
     let conn = db.lock().map_err(|e| e.to_string())?;
@@ -5961,9 +6444,7 @@ pub fn sync_switch_relay(
          WHERE state IN ('committed', 'pending_upload');",
         url.replace('\'', "''")
     )).map_err(|e| e.to_string())?;
-    drop(conn);
-    let mut slot = worker_slot.lock().map_err(|e| e.to_string())?;
-    *slot = None;
+    start_over_in_a_new_sequence_space(&conn)?;
     Ok(())
 }
 
@@ -6451,35 +6932,38 @@ pub async fn pair_new_complete(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::sync::config::set_enrollment(
-            &conn,
-            &assigned_user_id,
-            &assigned_device_id,
-            now_ms,
-        )
-        .map_err(|e| e.to_string())?;
         // Auto-enable: a successful pair flow's whole point is to start
         // syncing immediately. sync_setup leaves enabled=false on purpose
         // because the caller is mid-onboarding; pair_new_complete runs
         // after the user has explicitly typed a pair code, so we don't
         // need a second "are you sure" gate.
-        crate::sync::config::set_enabled(&conn, true)
-            .map_err(|e| e.to_string())?;
+        //
+        // finish_enrollment also removes the blank page the app made at
+        // launch when it is all this device holds and the account has
+        // history, so the first pull starts from the newest snapshot
+        // instead of replaying everything (snapshot.rs
+        // `clear_placeholder_pages`).
+        crate::sync::snapshot::finish_enrollment(
+            &db,
+            &payload.relay,
+            &new_device_keys,
+            &assigned_user_id,
+            &assigned_device_id,
+            now_ms,
+            true,
+        )?;
     }
 
     // 6. Spawn the worker. The user keys + device keys + sync_state
     //    are all on disk now, so `spawn_if_configured` reloads them
     //    cleanly. Replaces any prior worker handle.
     //
-    // NOTE: see sync_setup — mid-session respawns lose the Tauri-event
-    // hookup. Polling-fallback covers it until next process restart.
     let _ = device_label; // currently unused on the new-device side; the existing device sent the label to the relay's pair_finalize.
     let new_handle = crate::sync::worker::spawn_if_configured(
         db.clone(),
         engine.clone(),
         crate::sync::worker::DEFAULT_TICK,
-        crate::sync::worker::WorkerCallbacks::default(),
+        crate::sync::worker::WorkerCallbacks::for_app(),
     )
     .ok()
     .flatten();
@@ -6512,6 +6996,38 @@ mod tests {
         std::sync::Arc::new(
             crate::op_log::OpLogEngine::load(&db.lock().unwrap()).unwrap(),
         )
+    }
+
+    /// A word on more pages than the old cut of 200: every page comes back,
+    /// and the newest come first, because memory lists by day.
+    #[test]
+    fn search_returns_every_match_newest_first() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        for d in 0..250 {
+            let date = (chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()
+                + chrono::Duration::days(d))
+            .format("%Y-%m-%d")
+            .to_string();
+            let id = insert_page(&conn, &date, 1);
+            conn.execute(
+                "UPDATE pages SET content_json = ? WHERE id = ?",
+                params![
+                    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"down to the harbour again"}]}]}"#,
+                    &id
+                ],
+            )
+            .unwrap();
+            crate::search::reindex_page(&conn, &id);
+        }
+        let expr = crate::search::fts_match_query("harbour").unwrap();
+        let ids = search_page_ids(&conn, &expr).unwrap();
+        assert_eq!(ids.len(), 250);
+        let date_of = |id: &str| -> String {
+            conn.query_row("SELECT date FROM pages WHERE id = ?", params![id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(date_of(&ids[0]), "2026-02-05", "the newest match leads");
+        assert_eq!(date_of(&ids[249]), "2025-06-01");
     }
 
     fn doc_with(text: &str) -> String {
@@ -6570,6 +7086,28 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A page holding only its focus line is found by it. The focus write
+    /// used to UPDATE a search row that a new page does not have until its
+    /// body is saved, so it matched nothing; an editor save on load hid
+    /// that, and that save was removed because it emptied other devices'
+    /// pages (A16, 2026-10-19: J6.5's page could not be found by its focus).
+    #[test]
+    fn a_page_holding_only_its_focus_line_is_found_by_it() {
+        let db = test_db();
+        let engine = engine_for(&db);
+        let pwl = create_new_page_inner(&db, &engine, "2026-08-02").unwrap();
+        update_what_matters_now_inner(&db, &engine, &pwl.page.id, "the outline of part one quillwort").unwrap();
+        let conn = db.lock().unwrap();
+        let hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pages_fts WHERE pages_fts MATCH ? AND page_id = ?",
+                params!["quillwort", &pwl.page.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "a focus-only page must be in the search index under its focus words");
     }
 
     /// INV-NAV-5/6 — a page written on a trail is reachable through that
@@ -6859,6 +7397,90 @@ mod tests {
         );
     }
 
+    /// "Delete all writing" promises it wipes every page, pin, trail,
+    /// attachment and setting. It left the attachments index, the mention
+    /// back-references and every image's bytes on disk (found by
+    /// scripts/desktop/scenarios/attachment-lifecycle.mjs).
+    #[test]
+    fn delete_all_takes_attachments_their_files_and_stale_references() {
+        let db = test_db();
+        let dir = std::env::temp_dir().join(format!("shizumu-wipe-{}", uuid::Uuid::new_v4()));
+        let blobs = crate::attachments::store::blobs_root(&dir);
+        std::fs::create_dir_all(blobs.join("ab")).unwrap();
+        std::fs::write(blobs.join("ab").join("abcd"), b"a private photo").unwrap();
+        {
+            let c = db.lock().unwrap();
+            let page = insert_page(&c, "2026-09-03", 1);
+            c.execute(
+                "INSERT INTO attachments (blob_hash, filename, size_bytes, created_at, last_seen_at)
+                 VALUES ('abcd', 'photo.png', 15, 't', 't')", []).unwrap();
+            c.execute("INSERT INTO page_refs (source_page_id, target_page_id, created_at) VALUES (?, 'gone', 't')",
+                params![&page]).unwrap();
+        }
+
+        delete_all_data_inner(&db.lock().unwrap(), Some(&blobs)).unwrap();
+
+        let c = db.lock().unwrap();
+        let count = |t: &str| c.query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!((count("attachments"), count("page_refs"), count("pin_refs"), count("pages")), (0, 0, 0, 0));
+        assert!(!blobs.exists(), "the image bytes are gone from disk too");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A snapshot claims the tables reflect everything up to the pull cursor
+    /// (snapshot.rs `publish`). Delete all emptied the tables and kept the
+    /// cursor, so twenty seconds later the wiped laptop published an empty
+    /// account tagged with its head, and every device joining after would
+    /// have started empty (sync journey J10.4, 2026-10-24). The cursor goes
+    /// back to zero: the claim is true again, and the device pulls the
+    /// account back, which is what a wipe of one device promises.
+    #[test]
+    fn delete_all_sends_the_pull_back_to_the_start() {
+        let db = test_db();
+        {
+            let c = db.lock().unwrap();
+            c.execute("INSERT OR IGNORE INTO sync_state (id) VALUES (1)", []).unwrap();
+            c.execute("UPDATE sync_state SET last_seen_user_seq = 1385 WHERE id = 1", []).unwrap();
+        }
+        delete_all_data_inner(&db.lock().unwrap(), None).unwrap();
+        let cursor: i64 = db.lock().unwrap()
+            .query_row("SELECT last_seen_user_seq FROM sync_state WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(cursor, 0);
+    }
+
+    /// An @-mention of a pin is a `pinRef` node, and it carries the pin's id
+    /// in the same `pinId` attr the pinned block does. The cache walk took
+    /// the mention for the pin: saving the page that mentioned it rewrote
+    /// the pin's content with the mention node and moved the pin to that
+    /// page (found by scripts/desktop/scenarios/mentions-backlinks.mjs).
+    #[test]
+    fn mentioning_a_pin_on_another_page_leaves_the_pin_alone() {
+        let db = test_db();
+        let (home, other) = {
+            let c = db.lock().unwrap();
+            (insert_page(&c, "2026-09-03", 1), insert_page(&c, "2026-09-03", 2))
+        };
+        let pin = untrailed_pin(&db, &home, "note", "grocery list");
+        let home_doc = serde_json::json!({ "type": "doc", "content": [
+            { "type": "paragraph", "attrs": { "pinId": &pin },
+              "content": [{ "type": "text", "text": "milk, bread" }] } ] }).to_string();
+        save_page_content_inner(&db, &home, &home_doc, None).unwrap();
+        let row = |db: &Db| -> (String, String, String) {
+            db.lock().unwrap().query_row(
+                "SELECT content, source_page_id, status FROM shared_objects WHERE id = ?",
+                params![&pin], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+        };
+        let before = row(&db);
+
+        let mentioning = serde_json::json!({ "type": "doc", "content": [
+            { "type": "paragraph", "content": [
+                { "type": "text", "text": "see " },
+                { "type": "pinRef", "attrs": { "pinId": &pin, "labelSnapshot": "grocery list" } } ] } ] }).to_string();
+        save_page_content_inner(&db, &other, &mentioning, None).unwrap();
+
+        assert_eq!(row(&db), before, "content, owner and status are the pinned block's, not the mention's");
+    }
+
     /// The other half of the same rule: a BOARD node does own a
     /// `blockTitle` slot, it is what the user sees on the page, and the doc
     /// stays authoritative for it — including when it is cleared. Without
@@ -6903,6 +7525,217 @@ mod tests {
             None,
             "emptying the slot must still clear the row — the key is present, so the doc has a vote"
         );
+    }
+
+    /// Sync journey J2.8: an edit to a pinned block — typed on the page, or
+    /// spliced into it from the pins panel — reached the other device's
+    /// page and never its pin. The save rewrote this device's pin row from
+    /// the node (refresh_pin_caches) and sent only the page; the receiver's
+    /// merge applies a page without touching pin rows. The save now hands
+    /// back what it rewrote and the command sends it as `update_pin_content`.
+    ///
+    /// This drives the whole trip on two databases: a save on one, the ops
+    /// it emits, and the merge of those ops on the other.
+    #[test]
+    fn an_edit_to_a_pinned_block_reaches_the_other_devices_pin() {
+        use crate::op_log::{self, OpLogEngine};
+        use std::sync::Arc;
+
+        let doc = |text: &str, pin: &str| {
+            serde_json::json!({ "type": "doc", "content": [
+                { "type": "paragraph", "attrs": { "pinId": pin },
+                  "content": [{ "type": "text", "text": text }] } ] })
+            .to_string()
+        };
+
+        // The laptop: a page holding the pinned line, saved once so the
+        // row's cache is the node.
+        let laptop = test_db();
+        let page = { insert_page(&laptop.lock().unwrap(), "2026-10-16", 1) };
+        let pin = untrailed_pin(&laptop, &page, "note", "renamed on the phone");
+        save_page_content_inner(&laptop, &page, &doc("ibis on the mudflat", &pin), None).unwrap();
+
+        // Saving it unchanged sends nothing: the row already holds the node.
+        let same = save_page_content_inner(&laptop, &page, &doc("ibis on the mudflat", &pin), None).unwrap();
+        assert!(same.is_empty(), "an unchanged pin must not be re-sent on every save: {same:?}");
+
+        // The edit.
+        let engine: crate::op_log::OpLog =
+            Arc::new(OpLogEngine::load(&laptop.lock().unwrap()).unwrap());
+        let edited = doc("ibis on the mudflat merlin", &pin);
+        let changes = save_page_content_inner(&laptop, &page, &edited, None).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].id, pin);
+        assert_eq!(changes[0].title, None, "a paragraph has no title slot, so it sends no title");
+        emit_pin_cache_changes(&engine, &laptop.lock().unwrap(), &changes);
+
+        let blobs: Vec<Vec<u8>> = {
+            let conn = laptop.lock().unwrap();
+            let mut st = conn
+                .prepare("SELECT payload_blob FROM op_log WHERE op_kind = 'pin_op' AND doc_id = ?")
+                .unwrap();
+            let rows = st.query_map(params![&pin], |r| r.get(0)).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(blobs.len(), 1, "one pin op for one changed pin");
+
+        // The phone: the same pin, still holding the line before the edit
+        // and the title it was renamed to there.
+        let phone = test_db();
+        {
+            let conn = phone.lock().unwrap();
+            conn.execute(
+                "INSERT INTO shared_objects (id, lineage_id, source_page_id, object_type, title, content, status, position, created_at, updated_at) \
+                 VALUES (?, NULL, NULL, 'note', 'renamed on the phone', ?, 'open', 0, '0', '0')",
+                params![&pin, r#"{"type":"paragraph","content":[{"type":"text","text":"ibis on the mudflat"}]}"#],
+            )
+            .unwrap();
+            for b in &blobs {
+                crate::sync::merge::apply(&conn, "pin_op", b).unwrap();
+            }
+            let (content, title): (String, Option<String>) = conn
+                .query_row(
+                    "SELECT content, title FROM shared_objects WHERE id = ?",
+                    params![&pin],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert!(content.contains("merlin"), "the phone's pin holds {content}");
+            assert_eq!(title.as_deref(), Some("renamed on the phone"), "the row's title is kept");
+        }
+    }
+
+    /// The book on a continuous trail, as both devices hold it before the
+    /// laptop writes into it: the trail, and its one page, empty. On the
+    /// receiver this is what the merged `create_lineage`, `create_new_page`
+    /// and `set_focus_lineage` ops leave — the state sync journey J5 found
+    /// on the A06 (trail and page row present, content_json an empty doc).
+    fn continuous_book(db: &Db, lineage: &str, page: &str) {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO lineages (id, name, mode, created_at) VALUES (?, 'the harbour book', 'continuous', '0')",
+            params![lineage],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, lineage_id, content_json, created_at, updated_at) \
+             VALUES (?, '2026-10-16', 1, ?, '{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\"}]}', '0', '0')",
+            params![page, lineage],
+        )
+        .unwrap();
+    }
+
+    /// The page_blob ops a device logged for one page, oldest first, as the
+    /// relay would hand them to the other device.
+    fn page_ops(db: &Db, page: &str) -> Vec<Vec<u8>> {
+        let conn = db.lock().unwrap();
+        let mut st = conn
+            .prepare("SELECT payload_blob FROM op_log WHERE op_kind = 'page_blob' AND doc_id = ? ORDER BY hlc_ts")
+            .unwrap();
+        let rows = st.query_map(params![page], |r| r.get(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    }
+
+    /// What the reading path shows for a continuous trail's doc: the
+    /// canonical page's content_json (get_canonical_trail_page's query, which
+    /// both the desktop and the shell open the book from).
+    fn canonical_content(db: &Db, lineage: &str) -> String {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT content_json FROM pages WHERE lineage_id = ? ORDER BY created_at ASC LIMIT 1",
+                params![lineage],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Sync journey J5 on the A06 (2026-10-16): the laptop pasted a week of
+    /// a book (5,054 words, seven day markers) into a continuous trail; the
+    /// phone got the trail and the page row, its cursor reached the head with
+    /// nothing parked, and the page stayed an empty doc for good.
+    ///
+    /// The cause: a continuous save goes out as `page_blob` /
+    /// `save_trail_content` (the desktop routes every continuous save through
+    /// saveTrailContent, and the yjs path is never reached), and the receive
+    /// side had no arm for that op name — `SkippedUnknownOp`, which pull.rs
+    /// counts as benign, so the op was neither applied nor parked. Every
+    /// continuous-trail edit was dropped on every receiver.
+    ///
+    /// Drives the real fixture through the real save + emit on one database
+    /// and the merge on another.
+    #[test]
+    fn a_continuous_book_written_on_one_device_is_readable_on_the_other() {
+        use crate::op_log::OpLogEngine;
+        use std::sync::Arc;
+
+        let fx: serde_json::Value =
+            serde_json::from_str(include_str!("../../scripts/sync/fixtures/novelist.json")).unwrap();
+        let week = serde_json::json!({ "type": "doc", "content": fx["content"] }).to_string();
+        let markers = |s: &str| s.matches(r#""type":"dayMarker""#).count();
+        assert_eq!(markers(&week), 7, "the fixture is the week J5 pastes");
+
+        let laptop = test_db();
+        continuous_book(&laptop, "book", "doc");
+        let engine: crate::op_log::OpLog = Arc::new(OpLogEngine::load(&laptop.lock().unwrap()).unwrap());
+        save_trail_content_inner(&laptop, "book", "doc", &week).unwrap();
+        emit_trail_content_op(&engine, &laptop.lock().unwrap(), "book", "doc", &week);
+
+        let phone = test_db();
+        continuous_book(&phone, "book", "doc");
+        for op in page_ops(&laptop, "doc") {
+            let out = crate::sync::merge::apply(&phone.lock().unwrap(), "page_blob", &op).unwrap();
+            assert_eq!(out, crate::sync::merge::MergeOutcome::Applied, "a continuous save must merge, not be skipped");
+        }
+
+        let got = canonical_content(&phone, "book");
+        assert_eq!(markers(&got), 7, "the phone's book holds {} bytes and {} markers", got.len(), markers(&got));
+        assert_eq!(got, week, "the phone reads the laptop's week, whole");
+
+        // And the receiver can find it: the content arm reindexes.
+        let hits: i64 = phone
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM pages_fts WHERE page_id = 'doc' AND pages_fts MATCH 'harbour'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hits, 1, "the book's words are searchable on the phone");
+    }
+
+    /// The other half of making `save_trail_content` a content op: the
+    /// device that saved must stamp `hlc_content` for it, as
+    /// `save_page_content` does, or the receive gate has nothing to protect
+    /// a local edit with — the laptop's OLDER save, arriving after the phone
+    /// typed into the book, would overwrite the phone's words.
+    #[test]
+    fn an_older_continuous_save_does_not_overwrite_a_newer_local_one() {
+        use crate::op_log::OpLogEngine;
+        use std::sync::Arc;
+        let doc = |t: &str| {
+            serde_json::json!({ "type": "doc", "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": t }] } ] })
+            .to_string()
+        };
+
+        let laptop = test_db();
+        continuous_book(&laptop, "book", "doc");
+        let lap: crate::op_log::OpLog = Arc::new(OpLogEngine::load(&laptop.lock().unwrap()).unwrap());
+        let old = doc("the laptop's line");
+        save_trail_content_inner(&laptop, "book", "doc", &old).unwrap();
+        emit_trail_content_op(&lap, &laptop.lock().unwrap(), "book", "doc", &old);
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let phone = test_db();
+        continuous_book(&phone, "book", "doc");
+        let ph: crate::op_log::OpLog = Arc::new(OpLogEngine::load(&phone.lock().unwrap()).unwrap());
+        let newer = doc("the laptop's line, and the phone's after it");
+        save_trail_content_inner(&phone, "book", "doc", &newer).unwrap();
+        emit_trail_content_op(&ph, &phone.lock().unwrap(), "book", "doc", &newer);
+
+        for op in page_ops(&laptop, "doc") {
+            let out = crate::sync::merge::apply(&phone.lock().unwrap(), "page_blob", &op).unwrap();
+            assert_eq!(out, crate::sync::merge::MergeOutcome::SkippedStaleHlc, "the older save is refused, and says so");
+        }
+        assert_eq!(canonical_content(&phone, "book"), newer, "the phone keeps the words it typed last");
     }
 
     /// Regression: `strip_pin_ids_in_place` (used by clone_page_for_new_day)
@@ -7244,6 +8077,49 @@ mod tests {
         assert_eq!(n, 1, "the page must survive when the foreign-touch check itself errors");
     }
 
+    // ─── sync_reset: a new account starts at epoch 0 ───────────────────
+
+    /// A device that leaves an account and sets up another must emit under
+    /// the NEW account's keys. The reset deletes every key, but kept the
+    /// old account's `current_epoch` (3 on the A16, 2026-10-21) and the epoch
+    /// stamped on its own unsent ops, so every new op asked for a key the
+    /// device no longer had: "no content key for epoch 3 on emit", and
+    /// nothing it wrote ever reached the new account. The owner hit it
+    /// moving the A16 to a new account and pairing an iPhone. Its
+    /// attachments kept their old relay address and epoch too, so none was
+    /// sent to the new relay.
+    #[test]
+    fn sync_reset_starts_the_next_account_at_epoch_zero_and_resends_attachments() {
+        let db = test_db();
+        {
+            let conn = db.lock().unwrap();
+            crate::sync::config::set_current_epoch(&conn, 3).unwrap();
+            conn.execute(
+                "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at, epoch)
+                 VALUES ('mine','attachment_blob','h1', ?, 1, '', 'committed', 0, 0, 3)",
+                rusqlite::params![b"{}".to_vec()],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO attachments (blob_hash, filename, mime_type, size_bytes, sync, has_local, created_at, last_seen_at, object_key, object_epoch)
+                 VALUES ('h1','a.jpg','image/jpeg',10,1,1,'t','t','users/old/attachments/h1',3)",
+                [],
+            ).unwrap();
+        }
+
+        sync_reset_inner(&db).unwrap();
+
+        let conn = db.lock().unwrap();
+        assert_eq!(crate::sync::config::get_current_epoch(&conn).unwrap(), 0, "the next account starts at epoch 0");
+        let epoch: i64 = conn.query_row("SELECT epoch FROM op_log WHERE op_id='mine'", [], |r| r.get(0)).unwrap();
+        // The attachment op is the one own op a reset still sends (the rest
+        // are retired, a_device_that_starts_over_sends_its_state_and_not_its_history).
+        assert_eq!(epoch, 0, "this device's own ops are sealed again under the next account's epoch");
+        let (key, aepoch): (Option<String>, Option<i64>) = conn
+            .query_row("SELECT object_key, object_epoch FROM attachments WHERE blob_hash='h1'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert!(key.is_none() && aepoch.is_none(), "an attachment is sent again to the next relay, not assumed already there");
+    }
+
     // ─── sync_reset: revoked flag ──────────────────────────────────────
 
     #[test]
@@ -7259,6 +8135,327 @@ mod tests {
         let conn = db.lock().unwrap();
         let v = crate::sync::config::get_setting_i64(&conn, "sync_revoked");
         assert!(v.is_none() || v == Some(0), "pair-again must clear the revoked flag");
+    }
+
+    // ─── lock closes an encrypted database ──────────────────────────────
+
+    /// lock_inner, unlock_inner and the launch failure share process-wide
+    /// state (the path a locked database is reopened from); tests that touch
+    /// it take turns.
+    static LOCK_STATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn temp_db_path() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("shizumu-lock-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("settles.db")
+    }
+
+    #[test]
+    fn lock_closes_an_encrypted_database_until_the_right_passphrase() {
+        let _turn = LOCK_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let path = temp_db_path();
+        let conn = crate::crypto::open_encrypted(&path, "the right one").unwrap();
+        conn.execute_batch("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('kept');").unwrap();
+        let db: Db = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        let read = |db: &Db| db.lock().unwrap().query_row("SELECT v FROM t", [], |r| r.get::<_, String>(0));
+
+        lock_inner(&db).unwrap();
+        assert!(read(&db).is_err(), "nothing reads the writing while locked");
+        assert!(!unlock_inner(&db, "a wrong one").unwrap());
+        assert!(read(&db).is_err(), "a wrong passphrase opens nothing");
+        assert!(unlock_inner(&db, "the right one").unwrap());
+        assert_eq!(read(&db).unwrap(), "kept");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_launch_that_needed_the_passphrase_opens_the_real_file_on_unlock() {
+        let _turn = LOCK_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        // The keyring lost the key: the app starts on the placeholder, the
+        // lock screen asks, and the right passphrase opens the writer's file.
+        let path = temp_db_path();
+        crate::crypto::open_encrypted(&path, "the right one").unwrap()
+            .execute_batch("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('kept');").unwrap();
+        let db = crate::db::init_placeholder().unwrap();
+        record_startup_failure(path.to_str().unwrap(), "database appears to be encrypted — passphrase required: x", true);
+        assert!(startup_failure_now().map(|f| f.needs_passphrase).unwrap_or(false));
+
+        assert!(unlock_inner(&db, "the right one").unwrap());
+        let v: String = db.lock().unwrap().query_row("SELECT v FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, "kept");
+        assert!(startup_failure_now().is_none(), "the screen stops blocking once the file is open");
+        db.lock().unwrap().query_row("SELECT count(*) FROM pages", [], |r| r.get::<_, i64>(0))
+            .expect("an old file opened late is migrated like one opened at launch");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    // ─── the lock can be changed and turned off ─────────────────────────
+    //
+    // Until 0.8 the settings row said "on" and offered nothing else: a writer
+    // who had set a passphrase could neither change it nor take the lock off
+    // again (reported from 0.7.8 on flathub). These hold the file half; the
+    // command wrappers keep the launch key in step and are not run here, so
+    // no test writes the system keyring.
+
+    fn encrypted_db_with_writing(passphrase: &str) -> (std::path::PathBuf, Db) {
+        let path = temp_db_path();
+        let conn = crate::crypto::open_encrypted(&path, passphrase).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO settings VALUES ('encryption_enabled', 'true');
+             CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('kept');",
+        )
+        .unwrap();
+        (path, std::sync::Arc::new(std::sync::Mutex::new(conn)))
+    }
+
+    fn read_kept(db: &Db) -> String {
+        db.lock().unwrap().query_row("SELECT v FROM t", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn changing_the_passphrase_keeps_the_writing_and_retires_the_old_one() {
+        let _turn = LOCK_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let (path, db) = encrypted_db_with_writing("the old one");
+
+        change_passphrase_inner(&db, "the old one", "the new one").unwrap();
+
+        assert_eq!(read_kept(&db), "kept", "the app keeps writing without a restart");
+        assert!(crate::crypto::open_encrypted(&path, "the old one").is_err());
+        assert!(crate::crypto::open_encrypted(&path, "the new one").is_ok());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_wrong_current_passphrase_changes_nothing() {
+        let _turn = LOCK_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let (path, db) = encrypted_db_with_writing("the old one");
+
+        assert!(change_passphrase_inner(&db, "a guess", "the new one").is_err());
+        assert!(remove_encryption_inner(&db, "a guess").is_err());
+
+        assert_eq!(read_kept(&db), "kept", "the open writing is untouched");
+        assert!(crate::crypto::open_encrypted(&path, "the old one").is_ok());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_new_passphrase_shorter_than_setup_allows_is_refused() {
+        let _turn = LOCK_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let (path, db) = encrypted_db_with_writing("the old one");
+
+        assert!(change_passphrase_inner(&db, "the old one", "short").is_err());
+        assert!(crate::crypto::open_encrypted(&path, "the old one").is_ok());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn turning_the_lock_off_leaves_the_writing_in_a_plain_file() {
+        let _turn = LOCK_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let (path, db) = encrypted_db_with_writing("the old one");
+
+        remove_encryption_inner(&db, "the old one").unwrap();
+
+        assert_eq!(read_kept(&db), "kept");
+        assert!(!crate::crypto::check_db_encrypted(&path), "the file opens without a key");
+        let flag: String = db.lock().unwrap()
+            .query_row("SELECT value FROM settings WHERE key = 'encryption_enabled'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(flag, "false", "the next launch does not ask for a passphrase");
+        // A lock with nothing to reopen it is the plaintext rule lock_inner
+        // already keeps: the writing stays open.
+        lock_inner(&db).unwrap();
+        assert_eq!(read_kept(&db), "kept");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn lock_leaves_a_plaintext_database_open() {
+        let _turn = LOCK_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        // No passphrase exists to reopen it with; closing it would lock the
+        // writer out of their own pages.
+        let path = temp_db_path();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('kept');").unwrap();
+        let db: Db = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        lock_inner(&db).unwrap();
+        let v: String = db.lock().unwrap().query_row("SELECT v FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, "kept");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    // ─── a fresh sequence space forgets the old relay's numbers ─────────
+
+    /// One op this device received from another at the old relay's seq 5.
+    fn seed_received_op_at_seq_5(db: &Db) {
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, payload_blob, hlc_ts, device_id, state, user_seq, applied_at, created_at) \
+             VALUES ('recv-1','page_blob', x'00', 1, 'other-device', 'received', 5, 0, 0)",
+            [],
+        ).unwrap();
+    }
+
+    fn seq_of_received_op(db: &Db) -> Option<i64> {
+        let conn = db.lock().unwrap();
+        conn.query_row("SELECT user_seq FROM op_log WHERE op_id='recv-1'", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn sync_reset_forgets_the_old_relays_seq_on_received_ops() {
+        // Left at 5, the next relay's op 5 is skipped by pull's
+        // "a row already holds this user_seq" check, whoever wrote it.
+        let db = test_db();
+        seed_received_op_at_seq_5(&db);
+        sync_reset_inner(&db).unwrap();
+        assert_eq!(seq_of_received_op(&db), None);
+    }
+
+    #[test]
+    fn switching_relay_forgets_the_old_relays_seq_on_received_ops() {
+        let db = test_db();
+        seed_received_op_at_seq_5(&db);
+        sync_switch_relay_inner(&db, "http://localhost:8788").unwrap();
+        assert_eq!(seq_of_received_op(&db), None);
+        let conn = db.lock().unwrap();
+        let (state,): (String,) = conn
+            .query_row("SELECT state FROM op_log WHERE op_id='recv-1'", [], |r| Ok((r.get(0)?,)))
+            .unwrap();
+        assert_eq!(state, "received", "the op is still one this device was sent, not one to upload");
+    }
+
+    /// A trail, a page on it and a pin, all created on ANOTHER device
+    /// (received), and the page since edited on this one (local history).
+    /// This is a phone that synced with a laptop. Returns the three ids.
+    fn seed_rows_another_device_created(db: &Db) -> (String, String, String) {
+        let engine = std::sync::Arc::new(crate::op_log::OpLogEngine::load(&db.lock().unwrap()).unwrap());
+        let (lin, page, pin) = {
+            let conn = db.lock().unwrap();
+            let lin = crate::test_helpers::insert_lineage(&conn, "the book", "discrete");
+            let page = crate::test_helpers::insert_page(&conn, "2026-10-14", 1);
+            let pin = crate::test_helpers::insert_pin(&conn, &lin, &page, "text", "the spine");
+            (lin, page, pin)
+        };
+        // Their creates arrived from the other device...
+        crate::op_log::backfill::run(db, &engine).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute("UPDATE op_log SET state='received', device_id='laptop', user_seq=rowid", []).unwrap();
+        // ...and this device then edited the page itself.
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at) \
+             VALUES ('edit-1','page_blob', ?1, CAST('{\"op\":\"save_page_content\"}' AS BLOB), 1, 'phone', 'committed', 0, 1)",
+            params![page],
+        ).unwrap();
+        (lin, page, pin)
+    }
+
+    /// The ids that got a backfill op after the reset.
+    fn backfilled_since_reset(db: &Db) -> Vec<String> {
+        let conn = db.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT doc_id FROM op_log WHERE state != 'received' AND doc_id IS NOT NULL \
+             AND CAST(payload_blob AS TEXT) LIKE '%\"op\":\"backfill%' ORDER BY doc_id").unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    /// After a reset the device re-uploads its own history to a relay that
+    /// has never seen what OTHER devices created, so a page another device
+    /// made reached the new relay only as this device's edits to it, and a
+    /// new device could never apply them. The backfill that a reset re-runs
+    /// is what has to carry every row's current state; until 2026-10-16 it
+    /// skipped any row with an op_log entry at all, and never ran anyway
+    /// (its cursor stayed at "done"). Found pairing a reset A16 with a
+    /// fresh laptop: the trail, page and pin below never arrived.
+    #[test]
+    fn after_a_reset_the_backfill_sends_rows_another_device_created() {
+        let db = test_db();
+        let (lin, page, pin) = seed_rows_another_device_created(&db);
+        sync_reset_inner(&db).unwrap();
+        let engine = std::sync::Arc::new(crate::op_log::OpLogEngine::load(&db.lock().unwrap()).unwrap());
+        crate::op_log::backfill::run(&db, &engine).unwrap();
+        let mut want = vec![lin, page, pin];
+        want.sort();
+        assert_eq!(backfilled_since_reset(&db), want);
+    }
+
+    #[test]
+    fn after_a_relay_switch_the_backfill_sends_rows_another_device_created() {
+        let db = test_db();
+        let (lin, page, pin) = seed_rows_another_device_created(&db);
+        sync_switch_relay_inner(&db, "http://localhost:8788").unwrap();
+        let engine = std::sync::Arc::new(crate::op_log::OpLogEngine::load(&db.lock().unwrap()).unwrap());
+        crate::op_log::backfill::run(&db, &engine).unwrap();
+        let mut want = vec![lin, page, pin];
+        want.sort();
+        assert_eq!(backfilled_since_reset(&db), want);
+    }
+
+    /// A device that starts over sends what it holds NOW, not what it did.
+    /// Its own history reached the new relay without the other devices'
+    /// ops that followed it (their deletes, moves, folds), so a new device
+    /// replayed a create with nothing after it: on 2026-10-23 a fresh laptop
+    /// joining a reset A16 got back a trail the laptop had folded and a page
+    /// on the trail it had left. The backfill carries every row's current
+    /// state; the old ops stay in the log, sent nowhere. Attachment ops are
+    /// the exception: they are how a photo's bytes reach the account, and
+    /// `delivered_inline` reads a committed one as "already delivered".
+    #[test]
+    fn a_device_that_starts_over_sends_its_state_and_not_its_history() {
+        for switch in [false, true] {
+            let db = test_db();
+            {
+                let conn = db.lock().unwrap();
+                // A photo sent inline carries its bytes and goes again. A photo
+                // sent as a reference carries only an address on the OLD relay:
+                // re-sent, a fresh device stored that address, kept it over the
+                // re-upload's new one (the receive side keeps the first key),
+                // and never fetched the bytes (J9.7, the A16, 2026-10-24).
+                let photo = |chunks: &str, key: &str| format!(
+                    "{{\"op\":\"attachment_blob\",\"blob_hash\":\"h\",\"mime_type\":\"image/jpeg\",\"size_bytes\":3,\"hlc_ts\":1,\"chunks_b64\":{chunks}{key}}}");
+                for (id, kind, payload, state) in [
+                    ("own-create", "lineage_op", "{\"op\":\"create_lineage\"}".to_string(), "committed"),
+                    ("own-delete", "tombstone", "{\"op\":\"delete_page\"}".to_string(), "committed"),
+                    ("own-unsent", "page_blob", "{\"op\":\"save_page_content\"}".to_string(), "local_only"),
+                    ("own-photo", "attachment_blob", photo("[\"YWJj\"]", ""), "committed"),
+                    ("own-photo-ref", "attachment_blob", photo("[]", ",\"object_key\":\"old-relay-key\""), "committed"),
+                ] {
+                    conn.execute(
+                        "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, user_seq, applied_at, created_at) \
+                         VALUES (?1, ?2, ?1, CAST(?3 AS BLOB), 1, 'phone', ?4, 7, 0, 1)",
+                        params![id, kind, payload, state],
+                    ).unwrap();
+                }
+            }
+            if switch { sync_switch_relay_inner(&db, "http://localhost:8788").unwrap(); }
+            else { sync_reset_inner(&db).unwrap(); }
+            let conn = db.lock().unwrap();
+            let queued: Vec<String> = conn
+                .prepare("SELECT op_id FROM op_log WHERE state IN ('local_only','pending_upload') ORDER BY op_id").unwrap()
+                .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+            assert_eq!(queued, vec!["own-photo".to_string()], "switch={switch}");
+            // Kept, not deleted: the log is still this device's own record.
+            let kept: i64 = conn.query_row("SELECT COUNT(*) FROM op_log", [], |r| r.get(0)).unwrap();
+            assert_eq!(kept, 5, "switch={switch}");
+        }
+    }
+
+    /// A snapshot is what lets a new device skip the history entirely, and
+    /// `snapshot_last_seq` throttles it to one per fifty ops. Left at the
+    /// old relay's number, every snapshot on the new relay waited for the
+    /// new sequence to pass the old one, which a fresh relay may never do.
+    #[test]
+    fn a_reset_or_relay_switch_lets_the_next_snapshot_publish() {
+        for switch in [false, true] {
+            let db = test_db();
+            db.lock().unwrap().execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('snapshot_last_seq','1500')", []).unwrap();
+            if switch { sync_switch_relay_inner(&db, "http://localhost:8788").unwrap(); }
+            else { sync_reset_inner(&db).unwrap(); }
+            let left: Option<String> = db.lock().unwrap().query_row(
+                "SELECT value FROM settings WHERE key='snapshot_last_seq'", [], |r| r.get(0)).optional().unwrap();
+            assert_eq!(left, None, "switch={switch}");
+        }
     }
 
     // ─── schedule_sync_wake / sync_wake_delay_ms ────────────────────────
@@ -7312,14 +8509,14 @@ mod tests {
         // reorder_lines, save_trail_content, create_pin,
         // update_pin_status, update_pin_scope, update_pin_content,
         // delete_pin, update_pin_auto_insert, reorder_pins,
-        // set_lock_timeout — 32 real call sites at the time this test was
-        // written, PLUS one for this test's own `needle` literal above
-        // (include_str! reads this whole file, itself included) = 33.
+        // set_lock_timeout, delete_focus — 33 real call sites, PLUS one
+        // for this test's own `needle` literal above (include_str! reads
+        // this whole file, itself included) = 34.
         // Bump both numbers (and the list above) when a new call site is
         // deliberately added; don't loosen this to a `>=`, which would
         // stop catching the regression it exists for.
         assert_eq!(
-            call_sites, 33,
+            call_sites, 34,
             "expected call count changed — update this test's count (and the \
              comment listing every wired command) if a command was added or \
              removed, don't just bump the number blind"

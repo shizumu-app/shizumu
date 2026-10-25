@@ -143,6 +143,64 @@ pub fn fts_match_query(raw: &str) -> Option<String> {
     Some(parts.join(" AND "))
 }
 
+// ─── one page, reindexed from the row ────────────────────────────────────
+
+/// Rewrite one page's FTS row from what the `pages` row NOW holds.
+///
+/// THE DEFECT THIS EXISTS FOR, measured on a paired phone and desktop: a
+/// page written on one device arrived on the other — the row was there,
+/// with the words in `content_json` — and the receiving device's own
+/// search could not find it. Nothing on the sync apply path touched
+/// `pages_fts`. Two shapes of the same hole: a page that arrives whole
+/// gets no FTS row at all, and a page that already existed locally keeps
+/// the row it was created with, which for a page created empty that
+/// morning is an empty one. `reindex_once` repairs neither, because it is
+/// guarded to run once per install and already has.
+///
+/// It reads the ROW rather than taking the text it is about to index,
+/// which is `rearm_swept_attachments_of_row`'s rule in the same file for
+/// the same reason: every apply site here is gated — on HLC, on
+/// emptiness, on the row existing — and a caller that indexed the payload
+/// would write the FTS row for a write that did not land. What the row
+/// holds is true whatever the gate decided.
+///
+/// Every failure is logged and swallowed. A search index that could not be
+/// updated is a page that is harder to find; a propagated error here would
+/// park the op and stop the whole pull, which is a page that never
+/// arrives. The first is recoverable by the next edit or a reindex; the
+/// second is not.
+pub fn reindex_page(conn: &Connection, page_id: &str) {
+    let row: Result<(Option<String>, Option<String>, Option<String>, Option<String>), _> = conn
+        .query_row(
+            "SELECT content_json, what_matters_now, what_shifted, voice_memo_transcript
+               FROM pages WHERE id = ?",
+            params![page_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        );
+    let Ok((content_json, wmn, shifted, transcript)) = row else {
+        // No row: a gate refused the write, or a tombstone removed it.
+        // Nothing to index, and the stale FTS row (if any) belongs to the
+        // delete path, not here.
+        return;
+    };
+    let text = content_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| extract_search_text(&v))
+        .unwrap_or_default();
+    if let Err(e) = conn.execute("DELETE FROM pages_fts WHERE page_id = ?", params![page_id]) {
+        log::warn!("fts: could not clear the row for page {page_id}: {e}");
+        return;
+    }
+    if let Err(e) = conn.execute(
+        "INSERT INTO pages_fts (page_id, content, what_matters_now, what_shifted, voice_memo_transcript)
+         VALUES (?, ?, ?, ?, ?)",
+        params![page_id, &text, &wmn, &shifted, &transcript],
+    ) {
+        log::warn!("fts: could not reindex page {page_id}: {e}");
+    }
+}
+
 // ─── one-shot reindex ────────────────────────────────────────────────────
 
 /// Rewrite every page's FTS row from its stored `content_json` using

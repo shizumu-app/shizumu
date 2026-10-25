@@ -448,6 +448,13 @@ pub fn tick(
                 // recovered merges this tick, and both should fire on_pull.
                 ops_received += stats.ops_received;
             }
+            // A snapshot applied with no op after it fetched nothing, yet
+            // the local tables changed (and a placeholder page a screen
+            // had open may be gone): on_pull must fire, so it counts. Not
+            // `did_work` — this tick stays quiet for snapshot::publish.
+            if stats.bootstrapped {
+                ops_received += 1;
+            }
             // Only mark ok if BOTH passes succeeded.
             if wire_failure.is_none() {
                 if let Ok(conn) = db.lock() {
@@ -656,6 +663,32 @@ pub struct WorkerCallbacks {
     /// Distinct from `on_error`/`on_quota`: the UI routes this to a
     /// re-pairing prompt, not a transient-failure popover.
     pub on_revoked: Option<Box<dyn Fn() + Send>>,
+}
+
+/// How the app builds a worker's callbacks, set once at launch.
+///
+/// Every worker started after launch (sync setup, self-enroll, recover,
+/// pairing) used to get `WorkerCallbacks::default()`, which is none: those
+/// commands have no app handle to emit with. So a device that set up or
+/// joined sync mid-session never sent `sync-pulled` until it was relaunched,
+/// and every screen that listens for it (the open page, memory, the header,
+/// the pins) kept what it had. Sync journeys 17-19 found it on a laptop
+/// that had joined by pairing: the phone's line in its database for a
+/// minute and a half, not on its screen. 2026-10-14.
+static APP_CALLBACKS: std::sync::OnceLock<Box<dyn Fn() -> WorkerCallbacks + Send + Sync>> =
+    std::sync::OnceLock::new();
+
+/// Called once, from the app's setup, with what each worker should emit.
+pub fn set_app_callbacks(make: Box<dyn Fn() -> WorkerCallbacks + Send + Sync>) {
+    let _ = APP_CALLBACKS.set(make);
+}
+
+impl WorkerCallbacks {
+    /// The app's callbacks when it registered them, none otherwise (tests,
+    /// and anything that runs before setup).
+    pub fn for_app() -> Self {
+        APP_CALLBACKS.get().map(|make| make()).unwrap_or_default()
+    }
 }
 
 impl WorkerHandle {
@@ -915,6 +948,12 @@ pub fn spawn_if_configured(
         device_keys.device_id,
         tick_every
     );
+    // A reset, a new relay or a new identity re-arms the backfill
+    // (`start_over_in_a_new_sequence_space` in commands.rs), and every one
+    // of them ends here, mid-session. Run it now rather than at the next
+    // launch: until it has, rows other devices created never reach the
+    // new relay. A no-op once it is complete.
+    crate::op_log::backfill::run_background(db.clone(), engine.clone());
     Ok(Some(spawn(
         db,
         user_keys,
@@ -932,6 +971,69 @@ mod tests {
     use crate::test_helpers::{test_db, test_db_at};
     use httpmock::prelude::*;
     use serde_json::json;
+
+    /// A worker a command starts mid-session (setup, self-enroll, recover,
+    /// pairing) must emit what the launch worker emits, or the device that
+    /// just joined sync shows nothing it pulls until it is relaunched. Read
+    /// from the source, because those commands need a running app and a
+    /// relay to call, and the defect was the one argument they passed.
+    #[test]
+    fn workers_started_by_commands_emit_what_the_launch_worker_emits() {
+        let src = include_str!("../commands.rs");
+        let spawns = src.matches("spawn_if_configured(").count();
+        let with_app = src.matches("WorkerCallbacks::for_app()").count();
+        assert!(spawns > 0, "the commands no longer start workers; this test is guarding nothing");
+        assert_eq!(with_app, spawns, "every worker a command starts takes the app's callbacks");
+        assert!(!src.contains("WorkerCallbacks::default()"), "a command starts a worker that emits nothing");
+    }
+
+    #[test]
+    fn for_app_hands_out_the_registered_callbacks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static PULLS: AtomicUsize = AtomicUsize::new(0);
+        set_app_callbacks(Box::new(|| WorkerCallbacks {
+            on_pull: Some(Box::new(|| { PULLS.fetch_add(1, Ordering::SeqCst); })),
+            ..WorkerCallbacks::default()
+        }));
+        let before = PULLS.load(Ordering::SeqCst);
+        (WorkerCallbacks::for_app().on_pull.expect("the app's on_pull"))();
+        assert_eq!(PULLS.load(Ordering::SeqCst), before + 1);
+    }
+
+    /// BYTES THAT LAND ON A TICK WITH NO NEW OPS ARE ANNOUNCED TOO. `on_pull`
+    /// fires only when `ops_received > 0`, and an image's bytes are a relay
+    /// object fetched on a tick of their own whenever the op that referenced
+    /// them came earlier (or a failed fetch is retried). An open page keeps
+    /// "image not on this device" unless something says the bytes are here
+    /// (sync journey J4.6). This tick merges no op and fetches one object;
+    /// the fetch hook must fire.
+    #[test]
+    fn a_tick_that_fetches_an_object_announces_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static FETCHED: AtomicUsize = AtomicUsize::new(0);
+        crate::attachments::backfill::set_fetched_callback(Box::new(|n| { FETCHED.fetch_add(n, Ordering::SeqCst); }));
+
+        let server = MockServer::start();
+        let (_dir, db) = file_backed_db();
+        active_db_config(&db, &server.base_url());
+        mock_empty_pull(&server);
+        let uk = user_keys_from_phrase(&generate_seed_phrase());
+        let dk = generate_device_keys();
+        let bytes = b"bytes that came a tick after their op".to_vec();
+        let hash = crate::attachments::store::hash_hex(&bytes);
+        let ciphertext = crate::sync::envelope::encrypt_op(&uk.content_master_key, &uuid::Uuid::new_v4(), &bytes);
+        let object_key = crate::sync::envelope::blob_hash_hex(&ciphertext);
+        insert_attachment(&db, &hash, true, false, Some(&object_key));
+        server.mock(|when, then| {
+            when.method(GET).path(format!("/v1/users/u/attachments/{object_key}"));
+            then.status(200).body(ciphertext.clone());
+        });
+
+        let before = FETCHED.load(Ordering::SeqCst);
+        let outcome = tick(&db, &uk, &dk, &engine_for(&db));
+        assert!(matches!(outcome, TickOutcome::Ok { ops_received: 0, .. }), "a tick with no ops: got {outcome:?}");
+        assert!(FETCHED.load(Ordering::SeqCst) > before, "the object was fetched and nothing announced it");
+    }
 
     /// tick() is a no-op when sync_state.enabled is false — the
     /// silent-engine invariant holds even when the worker is spawned.
@@ -1538,6 +1640,60 @@ mod tests {
     /// bootstrapped) tables but recorded `snapshot_last_seq = "0"` and
     /// shipped a stream-3 snapshot claiming `user_seq: 0` — a later
     /// bootstrapping device would take it and replay the whole account.
+    /// A JOIN WHOSE NEWEST OP IS THE SNAPSHOT IS ANNOUNCED. `on_pull`
+    /// fires when the tick's `ops_received > 0` (the spawn loop), and a
+    /// bootstrap that applied a snapshot with no op after it used to leave
+    /// that at 0: the joined device kept showing the placeholder page the
+    /// join had removed, and stale memory, until another device wrote.
+    #[test]
+    fn a_tick_that_bootstraps_from_a_snapshot_with_no_later_ops_counts_as_a_pull() {
+        let server = MockServer::start();
+        let db = test_db();
+        active_db_config(&db, &server.base_url());
+        let uk = user_keys_from_phrase(&generate_seed_phrase());
+        let dk = generate_device_keys();
+        let src = test_db();
+        let (ct, hash) = {
+            let c = src.lock().unwrap();
+            c.execute("INSERT INTO pages (id, date, page_number, what_matters_now, created_at, updated_at) VALUES ('from-snap','2026-08-22',1,'kept','0','0')", []).unwrap();
+            let snap = crate::sync::snapshot::capture(&c, 40).unwrap();
+            let bytes = crate::sync::snapshot::encode(&snap).unwrap();
+            let ck = crate::sync::epoch::content_master_key_for_epoch(&c, &uk, 0).unwrap().unwrap();
+            let sp = crate::sync::epoch::user_sign_priv_for_epoch(&c, &uk, 0).unwrap().unwrap();
+            let ct = crate::sync::op_auth::seal_authored(&ck, &uuid::Uuid::new_v4(), &bytes, &dk, &sp);
+            let hash = crate::sync::envelope::blob_hash_hex(&ct);
+            (ct, hash)
+        };
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("stream", "3");
+            then.status(200).json_body(json!({"ops": [
+                {"user_seq": 40, "blob_hash": hash, "blob_size": ct.len(), "doc_id_ct": "", "op_kind": "snapshot", "stream_id": 3, "device_id": "x", "created_at": 0, "epoch": 0}
+            ], "has_more": false}));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path(format!("/v1/users/u/blobs/{hash}"));
+            then.status(200).body(ct.clone());
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("since", "40");
+            then.status(200).json_body(json!({"ops": [], "has_more": false}));
+        });
+        server.mock(|when, then| {
+            when.method(PUT).path_matches(Regex::new(r"^/v1/users/u/blobs/[0-9a-f]{64}$").unwrap());
+            then.status(200).json_body(json!({"user_seq": 999}));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/users/u/ops");
+            then.status(200).json_body(json!({"need_upload": [], "ack": []}));
+        });
+
+        let outcome = tick(&db, &uk, &dk, &engine_for(&db));
+        assert!(
+            matches!(outcome, TickOutcome::Ok { ops_received, .. } if ops_received > 0),
+            "got {outcome:?}; a tick that applied a snapshot must fire on_pull"
+        );
+    }
+
     #[test]
     fn first_quiet_tick_after_bootstrap_publishes_the_bootstrapped_cursor_not_zero() {
         let server = MockServer::start();

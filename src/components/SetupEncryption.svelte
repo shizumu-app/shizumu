@@ -111,6 +111,8 @@
     >
       {submitting ? "encrypting..." : "encrypt"}
     </button>
+
+    <button class="cancel-btn label" disabled={submitting} onclick={onCancel}>cancel</button>
   </div>
 </div>
 
@@ -242,5 +244,21 @@
   .encrypt-btn:disabled {
     opacity: 0.15;
     cursor: default;
+  }
+
+  /* Escape works too, but a screen this size needs a way back you can see. */
+  .cancel-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--ink);
+    opacity: 0.4;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    padding: 4px 12px;
+  }
+
+  .cancel-btn:hover:not(:disabled) {
+    opacity: 0.7;
   }
 </style>

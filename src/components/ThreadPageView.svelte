@@ -1,5 +1,7 @@
 <script>
   import { onMount, onDestroy } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
+  import { mayReplaceWithPulled } from "../lib/editor/pull-reload.js";
   import { fade } from "svelte/transition";
   import { Editor } from "@tiptap/core";
   import { READONLY_EXTENSIONS } from "../lib/render/shared-extensions.js";
@@ -82,7 +84,42 @@
     }
   });
 
+  // THE OTHER DEVICE WRITES IN THE PAGE BEING READ. The view mounted its
+  // editor from the first read and never read the page again, so a task
+  // ticked on the phone stayed unticked here until the page was reopened
+  // (sync journey 21, 2026-10-14). Nothing is typed in a read-only view,
+  // so there is no pending save to protect: the stored copy wins whenever
+  // it differs.
+  let unlistenPull = null;
+  let alive = true;
+  onMount(() => {
+    listen("sync-pulled", reread)
+      .then((off) => { if (alive) unlistenPull = off; else off(); })
+      .catch((err) => console.error("page view: could not listen for sync pulls", err));
+  });
+
+  async function reread() {
+    try {
+      const result = await getPage(date, pageNumber, pageId ?? null);
+      if (!alive || !result?.page) return;
+      const fresh = result.page;
+      const current = previewEditor ? JSON.stringify(previewEditor.getJSON()) : null;
+      let parsed = null;
+      try { parsed = fresh.content_json ? JSON.parse(fresh.content_json) : null; } catch {}
+      page = fresh;
+      lines = result.lines;
+      if (previewEditor && parsed
+          && mayReplaceWithPulled({ pendingSave: false, current, incoming: JSON.stringify(parsed) })) {
+        previewEditor.commands.setContent(parsed, false);
+      }
+    } catch (err) {
+      console.error("page view: could not re-read the page after a sync pull", err);
+    }
+  }
+
   onDestroy(() => {
+    alive = false;
+    unlistenPull?.();
     if (previewEditor) { previewEditor.destroy(); previewEditor = null; }
   });
 
@@ -170,13 +207,6 @@
       {:else}
         <p class="pv-status label">no content</p>
       {/if}
-
-      {#if page.what_shifted}
-        <div class="pv-shifted">
-          <span class="pv-dot"></span>
-          <span>{page.what_shifted}</span>
-        </div>
-      {/if}
     {/if}
   </div>
 </div>
@@ -221,7 +251,7 @@
          (the .overlay it centers in doesn't itself clip content), and
          nothing here registers a navstack hideBar entry, so the fixed
          MobileActionBar can sit on top of it — reserve its height so the
-         last line / the "what shifted" note never sits underneath. Same
+         last line never sits underneath. Same
          clearance pattern as Memory.svelte and SidebarShell. */
       padding-bottom: calc(var(--mobile-bar-h) + 0.5rem);
     }
@@ -302,14 +332,8 @@
   /* Node-shape CSS lives in src/styles/prose.css under `.prose`; the
      surface wrapper above adds class="pv-content prose" so it picks
      them up. Only pv-specific chrome (modal overlay padding, header
-     row spacing, the "what shifted" dot) stays here. */
+     row spacing) stays here. */
 
   .pv-lines { margin-bottom: 1rem; }
   .pv-line { font-family: "Lora", serif; font-size: 1.0625rem; line-height: 1.7; color: var(--ink); opacity: 0.92; }
-
-  .pv-shifted {
-    display: flex; align-items: center; gap: 0.5rem; padding-top: 1rem;
-    font-family: "Lora", serif; font-style: italic; font-size: 0.875rem; color: var(--ink); opacity: 0.55;
-  }
-  .pv-dot { width: 0.3125rem; height: 0.3125rem; border-radius: 50%; background: var(--warm-accent); flex-shrink: 0; }
 </style>

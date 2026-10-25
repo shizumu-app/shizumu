@@ -20,8 +20,16 @@ pub fn init_db(app_data_dir: PathBuf, passphrase: Option<&str>) -> Result<Db, St
                     Err(_) => {
                         // Fall back to unencrypted (legacy db or failed migration)
                         log::info!("encrypted open failed, falling back to unencrypted");
-                        let c = crate::crypto::open_unencrypted(&db_path)
-                            .map_err(|e| format!("failed to open database: {e}"))?;
+                        let c = crate::crypto::open_unencrypted(&db_path).map_err(|e| {
+                            // Neither opened it. An encrypted file means the key
+                            // we found was not its key (stale, or another
+                            // profile's): ask for the passphrase.
+                            if looks_plaintext(&db_path) {
+                                format!("failed to open database: {e}")
+                            } else {
+                                format!("{NEEDS_PASSPHRASE}: {e}")
+                            }
+                        })?;
                         // Clean stale keyring entry since db is actually unencrypted
                         let _ = crate::crypto::delete_key();
                         c
@@ -32,10 +40,13 @@ pub fn init_db(app_data_dir: PathBuf, passphrase: Option<&str>) -> Result<Db, St
                 // No passphrase — try unencrypted, if that fails it might be encrypted
                 match crate::crypto::open_unencrypted(&db_path) {
                     Ok(c) => c,
+                    Err(e) if looks_plaintext(&db_path) => {
+                        // A plain file that will not open is damaged, not
+                        // locked: there is no passphrase to ask for.
+                        return Err(format!("failed to open database: {e}"));
+                    }
                     Err(e) => {
-                        return Err(format!(
-                            "database appears to be encrypted — passphrase required: {e}"
-                        ));
+                        return Err(format!("{NEEDS_PASSPHRASE}: {e}"));
                     }
                 }
             }
@@ -53,6 +64,36 @@ pub fn init_db(app_data_dir: PathBuf, passphrase: Option<&str>) -> Result<Db, St
     // Run migrations
     run_migrations(&conn)?;
 
+    Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// What `init_db` says when the file is encrypted and no passphrase was
+/// found for it. Matched by `needs_passphrase`, so keep the two together.
+const NEEDS_PASSPHRASE: &str = "database appears to be encrypted — passphrase required";
+
+/// A plain SQLite file starts with this header, and keeps it when the pages
+/// behind it are damaged; an encrypted one starts with random salt. The one
+/// way to tell "damaged" from "locked" without the key.
+fn looks_plaintext(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 16];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut head)).is_ok()
+        && &head == b"SQLite format 3\0"
+}
+
+/// Did the launch fail only for want of the passphrase? Then the lock
+/// screen can ask for it; anything else is a file the app could not open.
+pub fn needs_passphrase(err: &str) -> bool {
+    err.starts_with(NEEDS_PASSPHRASE)
+}
+
+/// What the app runs on when the real file could not be opened: an empty,
+/// migrated database in memory, so every subsystem starts, and nothing is
+/// ever written to the file the writer's pages are in. The screen blocks
+/// writing until the real one is open (commands.rs, `startup_failure`).
+pub fn init_placeholder() -> Result<Db, String> {
+    let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+    run_migrations(&conn)?;
     Ok(Arc::new(Mutex::new(conn)))
 }
 
@@ -95,7 +136,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         include_str!("../migrations/029_page_field_hlc.sql"),
 ];
 
-fn run_migrations(conn: &Connection) -> Result<(), String> {
+pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     let migrations = MIGRATIONS;
 
     for migration_sql in migrations {
@@ -183,6 +224,49 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
 mod tests {
     use crate::test_helpers::{insert_lineage, insert_page, insert_pin, test_db};
     use rusqlite::Connection;
+
+    // ─── a launch that cannot open the file says why ────────────────────
+
+    fn temp_data_dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("shizumu-init-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_damaged_plain_database_is_not_mistaken_for_a_locked_one() {
+        // The header survives, the pages behind it do not. Asking for a
+        // passphrase this file never had would send the writer looking for one.
+        let dir = temp_data_dir();
+        let mut bytes = b"SQLite format 3\0".to_vec();
+        bytes.extend(std::iter::repeat(0xA5u8).take(8192));
+        std::fs::write(dir.join("settles.db"), bytes).unwrap();
+        let err = super::init_db(dir.clone(), None).err().expect("a damaged file does not open");
+        assert!(!super::needs_passphrase(&err), "said: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_encrypted_database_without_its_passphrase_asks_for_it() {
+        let dir = temp_data_dir();
+        let path = dir.join("settles.db");
+        crate::crypto::open_encrypted(&path, "the right one").unwrap()
+            .execute_batch("CREATE TABLE t (v TEXT);").unwrap();
+        let none = super::init_db(dir.clone(), None).err().expect("no key, no open");
+        assert!(super::needs_passphrase(&none), "said: {none}");
+        let wrong = super::init_db(dir.clone(), Some("a stale one")).err().expect("wrong key, no open");
+        assert!(super::needs_passphrase(&wrong), "said: {wrong}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_placeholder_has_the_schema_and_no_file() {
+        let db = super::init_placeholder().unwrap();
+        let conn = db.lock().unwrap();
+        let path: String = conn.query_row("PRAGMA database_list", [], |r| r.get(2)).unwrap();
+        assert_eq!(path, "", "nothing the writer types can land in a file from here");
+        conn.query_row("SELECT count(*) FROM pages", [], |r| r.get::<_, i64>(0)).unwrap();
+    }
 
     // The migration loop adds `diverged` (020), then the needs_013 block
     // recreates shared_objects. That recreate ran AFTER 020 and, by omitting

@@ -1041,6 +1041,21 @@ where
     Ok(fetched)
 }
 
+/// Who hears that objects were fetched, set once at launch (lib.rs emits
+/// `attachments-fetched`). An image's bytes are a relay object fetched on a
+/// worker tick or by the startup sweep, often a tick after the op that
+/// referenced them, and `sync-pulled` only fires on a tick that merged ops.
+/// Without this an open page drew "image not on this device" after the
+/// bytes had landed (sync journey J4.6). Both fetch paths come through
+/// [`run_object_fetch_at`], so that is where it fires.
+static FETCHED_CALLBACK: std::sync::OnceLock<Box<dyn Fn(usize) + Send + Sync>> = std::sync::OnceLock::new();
+
+/// Register what to do after a fetch pass that wrote at least one object.
+/// The first registration wins.
+pub fn set_fetched_callback(cb: Box<dyn Fn(usize) + Send + Sync>) {
+    let _ = FETCHED_CALLBACK.set(cb);
+}
+
 /// Fetch every pending attachment object from the relay, verify it, and
 /// write it to the local blob store. Thin network-facing wrapper around
 /// [`object_fetch_with`] — mirrors [`run_sweep`] wrapping [`sweep_with`].
@@ -1106,7 +1121,15 @@ pub fn run_object_fetch_at(
             .map_err(|e| FetchSkip::Retryable(format!("decrypt object at epoch {object_epoch}: {e}")))?;
         Ok(plaintext)
     };
-    object_fetch_with(db, app_dir, &mut fetch)
+    let fetched = object_fetch_with(db, app_dir, &mut fetch);
+    if let Ok(n) = fetched {
+        if n > 0 {
+            if let Some(cb) = FETCHED_CALLBACK.get() {
+                cb(n);
+            }
+        }
+    }
+    fetched
 }
 
 /// One log line per epoch per process for "this device can't open

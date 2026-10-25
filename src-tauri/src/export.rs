@@ -237,16 +237,26 @@ pub fn export_pages(
     Ok(count)
 }
 
+/// Back up by path: for the CLI, which has no open connection of its own.
+/// Opens the file without a key, so it cannot back up an encrypted database;
+/// the app backs up through its own connection instead (`backup_from`).
 pub fn backup_database(db_path: &Path, output_path: &Path) -> Result<(), String> {
     let conn = rusqlite::Connection::open(db_path)
         .map_err(|e| format!("failed to open database for backup: {e}"))?;
+    backup_from(&conn, output_path)
+}
 
+/// Copy the open database to `output_path`, whole and consistent. Through
+/// the connection the app already holds, so an encrypted database (whose key
+/// that connection has) backs up too, and the copy keeps its passphrase.
+/// Until 2026-10-15 the app reopened the file without a key here, so a
+/// writer who turned encryption on had no working backup.
+pub fn backup_from(conn: &rusqlite::Connection, output_path: &Path) -> Result<(), String> {
     conn.execute_batch(&format!(
         "VACUUM INTO '{}';",
         output_path.display().to_string().replace('\'', "''")
     ))
     .map_err(|e| format!("backup failed: {e}"))?;
-
     Ok(())
 }
 
@@ -367,5 +377,48 @@ mod dialog_path_tests {
             dialog_save_path(picked).unwrap(),
             std::path::PathBuf::from("/tmp/shizumu-export.zip")
         );
+    }
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::backup_from;
+
+    fn temp_dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("shizumu-backup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_backup_opens_and_holds_every_page() {
+        let dir = temp_dir();
+        let conn = rusqlite::Connection::open(dir.join("settles.db")).unwrap();
+        conn.execute_batch("CREATE TABLE pages (id TEXT, content_json TEXT);
+            INSERT INTO pages VALUES ('p1', 'the kitchen'), ('p2', 'lisbon');").unwrap();
+        let out = dir.join("backup.db");
+        backup_from(&conn, &out).unwrap();
+        let copy = rusqlite::Connection::open(&out).unwrap();
+        let n: i64 = copy.query_row("SELECT count(*) FROM pages", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_encrypted_database_backs_up_and_stays_encrypted() {
+        // The backup used to open the file again with no key, so on an
+        // encrypted database it failed every time. It reads through the
+        // app's own connection now; the copy keeps the same passphrase.
+        let dir = temp_dir();
+        let conn = crate::crypto::open_encrypted(&dir.join("settles.db"), "the right one").unwrap();
+        conn.execute_batch("CREATE TABLE pages (id TEXT, content_json TEXT);
+            INSERT INTO pages VALUES ('p1', 'the kitchen');").unwrap();
+        let out = dir.join("backup.db");
+        backup_from(&conn, &out).unwrap();
+        assert!(crate::crypto::check_db_encrypted(&out), "the copy is not readable without the passphrase");
+        let copy = crate::crypto::open_encrypted(&out, "the right one").unwrap();
+        let v: String = copy.query_row("SELECT content_json FROM pages", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, "the kitchen");
+        std::fs::remove_dir_all(dir).ok();
     }
 }

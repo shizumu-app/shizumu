@@ -121,7 +121,7 @@
   });
 
   // Mark <body> while open so page chrome that wants to step aside (the
-  // page-content .bottom-bar what-settled strip) can hide itself — same
+  // page-content .bottom-bar) can hide itself — same
   // mechanism BottomSheet.svelte uses. Without it, .bottom-bar's own
   // stacking context (Page.svelte: position: relative; z-index: 1) can
   // paint OVER this modal despite the modal's much higher z-index (201):
@@ -129,8 +129,9 @@
   // .page, declared later, and this modal is nested inside .column's
   // stacking context — so the modal's own z-index is only compared
   // *within* .column, while .column-as-a-whole ties .bottom-bar at the
-  // parent level and loses on source order. Reported as "the page's what
-  // settled strip cuts into the chart builder's node rows".
+  // parent level and loses on source order. Reported, back when the bar
+  // still carried a closing strip, as "the page's what settled strip cuts
+  // into the chart builder's node rows".
   $effect(() => {
     if (typeof document === "undefined") return;
     if (open) {

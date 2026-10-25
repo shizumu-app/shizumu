@@ -61,6 +61,24 @@ describe("Popover", () => {
     expect(onClose).toHaveBeenCalledOnce();
     anchor.remove();
   });
+
+  // Escape closes the popover and nothing under it. A modal listens on the
+  // document too, and it was there first: settings' lock-timeout popover took
+  // the whole settings modal down with it on one Escape.
+  it("keeps its Escape from also closing the modal it was opened from", async () => {
+    const modalHeard = vi.fn();
+    document.addEventListener("keydown", modalHeard);
+    const onClose = vi.fn();
+    const anchor = document.createElement("button");
+    document.body.appendChild(anchor);
+    render(Popover, { anchor, open: true, onClose });
+    await tick();
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(modalHeard).not.toHaveBeenCalled();
+    document.removeEventListener("keydown", modalHeard);
+    anchor.remove();
+  });
 });
 
 // Regression for the phone/sheet-path dismissal bug: `handleDocClick` used

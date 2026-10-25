@@ -198,7 +198,10 @@ fn page_field_stamp_columns(op: &Op) -> Vec<&'static str> {
             })
     };
     match name {
-        "save_page_content" => vec!["hlc_content"],
+        // A continuous trail's save is a content save too; without its
+        // stamp the receive gate could not protect a local edit to the book
+        // from an older save arriving from the other device.
+        "save_page_content" | "save_trail_content" => vec!["hlc_content"],
         "update_what_matters_now" => vec!["hlc_focus"],
         "update_what_shifted" => vec!["hlc_shifted"],
         "set_focus_lineage" => vec!["hlc_lineage"],

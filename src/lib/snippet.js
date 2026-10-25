@@ -10,14 +10,29 @@ const DEFAULT_CONTEXT = 60; // chars before AND after the match
 /**
  * Walk a TipTap doc and collect text nodes into a single string. Skips
  * structural decorators that aren't prose (dayMarkers, pinned blocks).
+ *
+ * `keepPinned` keeps the pinned blocks, and the two callers want opposite
+ * things for the same good reason. A SEARCH snippet drops them because the
+ * pin holds its own copy of that text and a hit would be shown twice, once
+ * from the page and once from the pin. A PAGE ROW wants them most of all:
+ * the block a writer thought worth keeping is the most recognisable thing
+ * on the page, and a page whose only content is a pin would otherwise read
+ * as empty in the sheet that exists to tell pages apart.
+ *
+ * An option rather than a third walker — there are already two in this tree
+ * (this one and `docText` in api.js, each with its reason written down), and
+ * a third would be a third place to fix the day a node type is added.
+ *
+ * @param {object} doc  a parsed TipTap doc
+ * @param {{ keepPinned?: boolean }} [opts]
  */
-export function flattenDocText(doc) {
+export function flattenDocText(doc, { keepPinned = false } = {}) {
   if (!doc || typeof doc !== "object") return "";
   const parts = [];
   function walk(node) {
     if (!node || typeof node !== "object") return;
     if (node.type === "dayMarker") return;
-    if (node.attrs && node.attrs.pinId) return;
+    if (!keepPinned && node.attrs && node.attrs.pinId) return;
     if (typeof node.text === "string") {
       parts.push(node.text);
       return;

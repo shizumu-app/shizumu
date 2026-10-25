@@ -191,14 +191,16 @@ mod backend {
     }
 }
 
-#[cfg(any(test, all(not(desktop), not(target_os = "android"))))]
+#[cfg(test)]
 mod backend {
-    //! In-process backend. Used in two situations:
-    //!   - `cfg(test)` so unit tests don't touch the user's keyring
-    //!     and don't fail on machines without D-Bus.
-    //!   - non-desktop targets that aren't Android (i.e. iOS), where the
-    //!     `keyring` crate isn't compiled in and no file backend is wired
-    //!     yet. Android has its own file backend below.
+    //! In-process backend, for `cfg(test)` only, so unit tests don't touch
+    //! the user's keyring and don't fail on machines without D-Bus.
+    //!
+    //! It used to serve iOS too, and that was the bug: a store passed the
+    //! round-trip check in `keys::persist_user_*`, so the database copy was
+    //! cleared, and the next launch found neither. A paired iPhone forgot
+    //! its enrolment on every restart. No shipped target may use it
+    //! (tests/secret_store_backend_tests.rs).
     //!
     //! State is process-local. Tests that need an empty slate between
     //! cases call `super::reset_for_tests()`.
@@ -237,40 +239,41 @@ mod backend {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Android file backend. The `keyring` crate has no Android provider, so
-// the user-key bundle is written as a mode-0600 JSON file inside the
-// app's per-package private data dir (`app_local_data_dir`). The Android
-// sandbox isolates that directory per package; this is not OS-keystore
-// grade but is the realistic v1-mobile tradeoff. See
-// docs/v0.4-sync-mobile.md for the limitation.
+// Mobile file backend (Android and iOS). The `keyring` crate as built here
+// has no mobile provider, so the user-key bundle is written as a mode-0600
+// JSON file inside the app's private data dir (`app_local_data_dir`). The
+// OS sandbox isolates that directory per app; this is not keystore or
+// keychain grade but is the realistic v1-mobile tradeoff, and it is the
+// same assumption the SQLCipher passphrase file already makes on both.
+// See docs/v0.4-sync-mobile.md for the limitation.
 // ────────────────────────────────────────────────────────────────────
 
-/// Android-only: the directory under which the sync-secrets file lives.
+/// Mobile-only: the directory under which the sync-secrets file lives.
 /// Populated once at app setup from `app_handle.path().app_local_data_dir()`
 /// because the backend functions are zero-arg and have no `AppHandle` to
 /// resolve the sandbox path themselves. Desktop/iOS/test builds don't read
 /// it. `dead_code` is allowed because under `cfg(test)` on an Android
 /// target the file backend is replaced by the in-process one, leaving this
 /// unread.
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[allow(dead_code)]
-static ANDROID_SECRETS_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+static MOBILE_SECRETS_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
-/// Android-only: record the per-package private data directory used for
+/// Mobile-only: record the app's private data directory used for
 /// the sync-secrets file. Call once during app setup, before any sync
 /// command runs. Idempotent — a second call is a no-op (the first value
 /// wins).
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[allow(dead_code)]
-pub fn init_android_secrets_dir(dir: std::path::PathBuf) {
-    let _ = ANDROID_SECRETS_DIR.set(dir);
+pub fn init_mobile_secrets_dir(dir: std::path::PathBuf) {
+    let _ = MOBILE_SECRETS_DIR.set(dir);
 }
 
 /// Directory-scoped file I/O for the secret bundle. Factored out of the
-/// Android backend so the read / write / chmod logic is exercised by host
-/// unit tests (the `target_os = "android"` backend can't run on the dev
-/// box). Unix-only: it relies on `0o600` permission bits.
-#[cfg(all(unix, any(target_os = "android", test)))]
+/// mobile backend so the read / write / chmod logic is exercised by host
+/// unit tests (the mobile backend can't run on the dev box). Unix-only:
+/// it relies on `0o600` permission bits.
+#[cfg(all(unix, any(target_os = "android", target_os = "ios", test)))]
 mod file_io {
     use super::SecretStoreError;
     use std::io::{Read, Write};
@@ -329,15 +332,15 @@ mod file_io {
     }
 }
 
-#[cfg(all(target_os = "android", not(test)))]
+#[cfg(all(any(target_os = "android", target_os = "ios"), not(test)))]
 mod backend {
-    use super::{file_io, SecretStoreError, ANDROID_SECRETS_DIR};
+    use super::{file_io, SecretStoreError, MOBILE_SECRETS_DIR};
     use std::path::PathBuf;
 
     fn secrets_dir() -> Result<PathBuf, SecretStoreError> {
-        ANDROID_SECRETS_DIR.get().cloned().ok_or_else(|| {
+        MOBILE_SECRETS_DIR.get().cloned().ok_or_else(|| {
             SecretStoreError::Unavailable(
-                "android secrets dir not initialized — app setup did not run".into(),
+                "mobile secrets dir not initialized — app setup did not run".into(),
             )
         })
     }
@@ -345,7 +348,7 @@ mod backend {
     pub fn is_available() -> bool {
         // The file store is usable as soon as setup recorded the sandbox
         // dir; nothing OS-level can revoke it the way a locked keyring can.
-        ANDROID_SECRETS_DIR.get().is_some()
+        MOBILE_SECRETS_DIR.get().is_some()
     }
 
     pub fn set(payload: &str) -> Result<(), SecretStoreError> {

@@ -71,6 +71,18 @@ describe("SetupEncryption", () => {
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
+  // A full-screen screen with Escape as its only way out strands anyone who
+  // does not know to press it, and every pointer-only reader.
+  it("offers a visible way back", async () => {
+    const onCancel = vi.fn();
+    const { target } = render(SetupEncryption, { onComplete: vi.fn(), onCancel });
+    const back = [...target.querySelectorAll("button")].find((b) => b.textContent.trim() === "cancel");
+    expect(back).toBeTruthy();
+    back.click();
+    await tick();
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
   it("cancels on Escape", async () => {
     const onCancel = vi.fn();
     render(SetupEncryption, { onComplete: vi.fn(), onCancel });

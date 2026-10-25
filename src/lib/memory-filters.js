@@ -249,17 +249,35 @@ export function groupByDate(list) {
       : `${weekday} · ${day} ${month} ${year}`;
   }
 
-  const out = [];
-  let curLabel = null, arr = [];
+  // ONE GROUP PER LABEL, not one per RUN of them.
+  //
+  // This was run-length — a new group whenever the label changed — which is
+  // correct for a date-ordered list and silently wrong for any other. The
+  // list is not always date-ordered: `clear filters` resets the sort to
+  // `date` and re-reads, so for the turn between the reset and the answer
+  // the screen holds an updated_at-ordered list while believing otherwise.
+  //
+  // What that cost, measured on a phone: both surfaces key their markup on
+  // this label, two groups came back carrying the same one, and Svelte
+  // threw `each_key_duplicate` and stopped re-rendering the memory screen —
+  // reported as a filters sheet whose `clear filters` row would not go away
+  // after it was tapped. The callers key on an id now as well; this is the
+  // other half, and it also fixes the quieter version of the same bug, in
+  // which one day appears as two headings with the pages split between
+  // them.
+  //
+  // Insertion order is kept — first sighting of a day decides where its
+  // group sits. The list arrives in whatever order the writer's sort asked
+  // for, and re-sorting here would override that control rather than group
+  // underneath it.
+  const groups = new Map();
   for (const p of list) {
     const label = labelFor(p.date);
-    if (label !== curLabel) {
-      if (curLabel) out.push({ label: curLabel, pages: arr });
-      curLabel = label; arr = [p];
-    } else arr.push(p);
+    const held = groups.get(label);
+    if (held) held.push(p);
+    else groups.set(label, [p]);
   }
-  if (curLabel) out.push({ label: curLabel, pages: arr });
-  return out;
+  return [...groups].map(([label, pages]) => ({ label, pages }));
 }
 
 // Group pages and pins into one entry per date. Each entry has
@@ -499,4 +517,127 @@ export function dominantTrailSummary({ pages, pins, lineages, date }) {
   const pageById = buildPageById(pages);
   const pinCount = pins.filter((pin) => resolvePinDate(pin, pageById) === date).length;
   return { focusText, trailCount: breakdown.length, pageCount, pinCount };
+}
+
+/** What the heading says for pins that belong to no trail — last in the
+ *  list, and named: a group with no heading under a list of headed ones
+ *  reads as a rendering fault rather than as a category. */
+export const UNTRAILED_PINS_LABEL = "no trail";
+
+/** And for a pin whose trail is not in the list the screen was given —
+ *  deleted on another device, or a lineage list that has not re-read yet.
+ *  The writing is still the writer's, so the pin is shown and the heading
+ *  says what little is known. */
+export const UNKNOWN_TRAIL_LABEL = "a trail that is no longer listed";
+
+/**
+ * The pins list, in one group per trail.
+ *
+ * ASKED FOR, from a phone and for both surfaces: "when all trails selected
+ * the pins tab: pins should be grouped by trails to have clear vision in
+ * desktop allso". Across an account with several trails the flat list is
+ * every pin ever kept in one column with nothing saying which project each
+ * belongs to — the opposite of what pin x trail is for. The canon calls
+ * that cross-product the six-month executive summary; a summary that does
+ * not say what it is summarising is a list.
+ *
+ * ONLY WHEN NOTHING IS SCOPED. With one trail selected the screen is
+ * already showing one trail's pins, and a heading would repeat the control
+ * that scoped them — so the answer is a single unlabelled group, which is
+ * what both surfaces rendered before this existed and why neither needed a
+ * second branch at the call site.
+ *
+ * THE TRAIL LIST'S ORDER, not the pins'. `get_pins` returns them ordered by
+ * when each was made, so grouping by first sighting would reshuffle the
+ * headings whenever a pin was added, under a reader scanning for one of
+ * them. The lineage list is stable, so the headings are.
+ *
+ * A trail with no pins gets no heading: the writer did not ask which trails
+ * exist — the trail index answers that — but where their pins are.
+ *
+ * EACH GROUP CARRIES AN `id`, AND IT IS NOT THE LABEL. Two trails may be
+ * named the same thing, and a caller keying its markup on the heading would
+ * throw `each_key_duplicate` and stop re-rendering the screen. Measured on
+ * a phone, in the pages mode, keyed on `groupByDate`'s heading: it took the
+ * filters sheet down with it. A label is a label; an identity is an id.
+ *
+ * @param {object} input
+ * @param {any[]} [input.pins]  already filtered by scope, date and search
+ * @param {any[]} [input.lineages]
+ * @param {Set<string>|string|null} [input.scope]  null/empty is "all trails"
+ * @returns {{label: string, pins: any[]}[]}
+ */
+export function groupPinsByTrail({ pins = [], lineages = [], scope = null } = {}) {
+  const rows = Array.isArray(pins) ? pins : [];
+  if (rows.length === 0) return [];
+  if (scope) return [{ id: "scoped", label: "", pins: rows }];
+
+  const known = Array.isArray(lineages) ? lineages : [];
+  const byTrail = new Map();
+  for (const pin of rows) {
+    const id = pin?.lineage_id ?? null;
+    if (!byTrail.has(id)) byTrail.set(id, []);
+    byTrail.get(id).push(pin);
+  }
+
+  const groups = [];
+  for (const lineage of known) {
+    const held = byTrail.get(lineage.id);
+    if (!held) continue;
+    groups.push({ id: lineage.id, label: lineage.name || UNKNOWN_TRAIL_LABEL, pins: held });
+    byTrail.delete(lineage.id);
+  }
+  // Whatever is left names a trail this list does not carry. Gathered into
+  // ONE group rather than one per missing id: the reader cannot tell two
+  // unnamed trails apart, and several identical headings say less than one.
+  const unknown = [];
+  for (const [id, held] of byTrail) {
+    if (id === null) continue;
+    unknown.push(...held);
+  }
+  if (unknown.length > 0) {
+    groups.push({ id: "__unknown__", label: UNKNOWN_TRAIL_LABEL, pins: unknown });
+  }
+  const loose = byTrail.get(null);
+  if (loose) groups.push({ id: "__untrailed__", label: UNTRAILED_PINS_LABEL, pins: loose });
+  return groups;
+}
+
+// What a search in memory searches.
+//
+// Memory loads the hundred most recent pages (getThread(100, ..)) and used
+// to answer a search by intersecting the FTS hits with THAT list — so a
+// word written on page 101 was "nothing matches", while the backend had
+// found it in two milliseconds. The hits are the pool now. A hit memory
+// already holds keeps its richer row (pin and backlink counts, which the
+// search command does not compute); one it never loaded comes from the
+// search row itself.
+//
+// The hits arrive in relevance order and memory groups by day, so they are
+// put in memory's own order — the one get_thread uses for the same `sort` —
+// or a search for a common word lists September 2025 above July 2026.
+/**
+ * @param {Array<any>} pages - the rows memory loaded
+ * @param {Array<any>|null} searchResults - FTS hits, or null when not searching
+ * @param {"date"|"updated_at"} [sort]
+ */
+export function memoryPool(pages, searchResults, sort = "date") {
+  if (!searchResults) return pages;
+  const loaded = new Map(pages.map((p) => [p.id, p]));
+  const pool = searchResults.map((hit) => loaded.get(hit.id) || hit);
+  const key = sort === "updated_at" ? "updated_at" : "date";
+  return pool.sort((a, b) =>
+    String(b[key] || "").localeCompare(String(a[key] || "")) || (b.page_number || 0) - (a.page_number || 0));
+}
+
+// Memory opens on the last thirty days. That is a view, not a question the
+// writer asked, and applying it to a search hid every match older than a
+// month behind a filter nobody chose. While searching, the date window
+// applies only once the writer has picked one.
+/**
+ * @param {object|null} dateFilter
+ * @param {{searching: boolean, chosen: boolean}} state
+ */
+export function searchDateFilter(dateFilter, { searching, chosen }) {
+  return searching && !chosen ? null : dateFilter;
 }

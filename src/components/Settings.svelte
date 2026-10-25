@@ -4,6 +4,8 @@
   import { runExport } from "../lib/export/run.js";
   import { isYjsEnabled, setYjsEnabled } from "../lib/yjs/feature-flag.js";
   import SetupEncryption from "./SetupEncryption.svelte";
+  import LockPassphraseForm from "./LockPassphraseForm.svelte";
+  import { announceLockSettings } from "../lib/auto-lock.js";
   import Modal from "../lib/ui/Modal.svelte";
   import Row from "../lib/ui/Row.svelte";
   import Toggle from "../lib/ui/Toggle.svelte";
@@ -18,6 +20,7 @@
   import MobileNavRow from "../lib/ui/MobileNavRow.svelte";
   import SyncSettings from "./SyncSettings.svelte";
   import { isCoarsePointer, isPhoneViewport } from "../lib/responsive.js";
+  import { SHELL_SWITCH_KEY, shellSwitchChecked, shellSwitchValue } from "../shell/shell-switch.js";
   import { navPush, navClose } from "../lib/navstack.js";
 
   /** @type {{ currentTone: string, onToneChange: (tone: string) => void, currentFontFamily: string, onFontFamilyChange: (f: string) => void, currentFontSize: number, onFontSizeChange: (n: number) => void, onDeleteAll: () => void, onClose: () => void, initialTab?: "appearance"|"writing"|"data"|"encryption"|"sync"|"labs"|"danger"|"about" }} */
@@ -82,7 +85,31 @@
     try {
       yjsEnabled = await isYjsEnabled();
     } catch {}
+    if (offerLayoutSwitch) {
+      try {
+        layoutOn = shellSwitchChecked(await getSetting(SHELL_SWITCH_KEY));
+      } catch {}
+    }
   });
+
+  // THE WAY BACK TO THE PHONE LAYOUT. Its only switch lived in the phone
+  // layout's own labs section, and the layout it hands you is this screen,
+  // so turning it off was one-way (App.svelte's MobileActionBar note).
+  // Offered only where a device would boot it, and never in the browser
+  // demo, which hides the phone layout's switch for its own reason.
+  const offerLayoutSwitch = !import.meta.env.VITE_DEMO && (isPhoneViewport() || isCoarsePointer());
+  let layoutOn = $state(false);
+  let layoutChanged = $state(false);
+
+  async function toggleLayout(next) {
+    layoutOn = next;
+    layoutChanged = true;
+    try {
+      await setSetting(SHELL_SWITCH_KEY, shellSwitchValue(next));
+    } catch (err) {
+      console.error("Failed to save the phone layout switch:", err);
+    }
+  }
 
   async function toggleYjs(next) {
     yjsEnabled = next;
@@ -374,6 +401,7 @@
     try {
       await setLockTimeout(minutes);
       await setSetting("lock_timeout_minutes", String(minutes));
+      announceLockSettings({ timeoutMin: minutes });
     } catch (err) {
       console.error("Failed to save lock timeout:", err);
     }
@@ -382,15 +410,35 @@
   function handleEncryptionComplete() {
     showEncryptSetup = false;
     encrypted = true;
+    announceLockSettings({ encrypted: true });
+  }
+
+  // "change" or "off" while the lock form is open over settings.
+  let lockForm = $state(/** @type {null|"change"|"off"} */ (null));
+
+  function handleLockFormDone() {
+    if (lockForm === "off") {
+      encrypted = false;
+      lockTimeoutPopoverOpen = false;
+      announceLockSettings({ encrypted: false });
+    }
+    lockForm = null;
   }
 </script>
 
 {#if showEncryptSetup}
-  <Modal open title="encryption" onClose={() => (showEncryptSetup = false)}>
-    <SetupEncryption
-      onComplete={handleEncryptionComplete}
-      onCancel={() => (showEncryptSetup = false)}
-    />
+  <!-- On its own, not inside a Modal: the setup screen is a full-screen
+       fixed overlay, and a modal sizes to its in-flow content and clips —
+       in WebKitGTK the modal collapsed to its title and hid the fields'
+       hints and the encrypt button behind the scrim
+       (scripts/desktop/scenarios/lock-settings.mjs). -->
+  <SetupEncryption
+    onComplete={handleEncryptionComplete}
+    onCancel={() => (showEncryptSetup = false)}
+  />
+{:else if lockForm}
+  <Modal open title={lockForm === "change" ? "change passphrase" : "turn off the lock"} onClose={() => (lockForm = null)}>
+    <LockPassphraseForm mode={lockForm} onDone={handleLockFormDone} onCancel={() => (lockForm = null)} />
   </Modal>
 {:else if isPhoneViewport()}
   <Modal open title={pageTitle} {onClose} hideBar={false}>
@@ -525,7 +573,10 @@
             lock with password
             {#snippet trailing()}
               {#if encrypted}
-                <Chip variant="neutral">on</Chip>
+                <span class="lock-actions">
+                  <Button variant="ghost" onClick={() => (lockForm = "change")}>change passphrase</Button>
+                  <Button variant="ghost" onClick={() => (lockForm = "off")}>turn off</Button>
+                </span>
               {:else}
                 <Button variant="accent" onClick={() => (showEncryptSetup = true)}>set up</Button>
               {/if}
@@ -553,6 +604,14 @@
               <Toggle checked={yjsEnabled} onChange={toggleYjs} label="yjs for continuous trails" />
             {/snippet}
           </Row>
+          {#if offerLayoutSwitch}
+            <Row description={layoutChanged ? `${layoutOn ? "on" : "off"} when you reopen shizumu.` : "the layout made for phones: tabs at the bottom, sheets that rise from the edge."}>
+              new phone layout
+              {#snippet trailing()}
+                <Toggle checked={layoutOn} onChange={toggleLayout} label="new phone layout" />
+              {/snippet}
+            </Row>
+          {/if}
         {:else if mobileView === "danger"}
           {#if !showDeleteInput}
             <Row description="wipes every page, pin, trail, attachment, and setting. unrecoverable. back up first if you might want any of it later.">
@@ -725,7 +784,10 @@
           lock with password
           {#snippet trailing()}
             {#if encrypted}
-              <Chip variant="neutral">on</Chip>
+              <span class="lock-actions">
+                <Button variant="ghost" onClick={() => (lockForm = "change")}>change passphrase</Button>
+                <Button variant="ghost" onClick={() => (lockForm = "off")}>turn off</Button>
+              </span>
             {:else}
               <Button variant="accent" onClick={() => (showEncryptSetup = true)}>set up</Button>
             {/if}
@@ -753,6 +815,14 @@
             <Toggle checked={yjsEnabled} onChange={toggleYjs} label="yjs for continuous trails" />
           {/snippet}
         </Row>
+        {#if offerLayoutSwitch}
+          <Row description={layoutChanged ? `${layoutOn ? "on" : "off"} when you reopen shizumu.` : "the layout made for phones: tabs at the bottom, sheets that rise from the edge."}>
+            new phone layout
+            {#snippet trailing()}
+              <Toggle checked={layoutOn} onChange={toggleLayout} label="new phone layout" />
+            {/snippet}
+          </Row>
+        {/if}
       {:else if activeTab === "danger"}
         {#if !showDeleteInput}
           <Row description="wipes every page, pin, trail, attachment, and setting. unrecoverable. back up first if you might want any of it later.">
@@ -818,6 +888,12 @@
 {/if}
 
 <style>
+  .lock-actions {
+    display: inline-flex;
+    gap: 8px;
+    white-space: nowrap;
+  }
+
   .size-slider {
     flex: 1;
     min-width: 8rem;

@@ -593,6 +593,127 @@ export async function continuousTrail(invoke) {
   });
 }
 
+/** How many pins the trail already carries before this scene's driver adds
+ *  one. The pin toast counts the trail AFTER the write and renders
+ *  `total − 1` as the company the new pin joined (pin-toast.js), so eleven
+ *  here makes the breadcrumb read the spec's own example verbatim —
+ *  `joins 11 pins on the book trail` (§3 :225-227). Exported so the VR
+ *  driver's caption is derived from the seed rather than from a number
+ *  typed twice in two files that can drift apart. */
+export const TRAILED_DAY_PINS = 11;
+
+/**
+ * A day on a trail, which is the one shape the shell's own chrome needs and
+ * no existing fixture has (P2f Task 5).
+ *
+ * `emptyPage` — what `shell-page` is shot on — is an untrailed page alone
+ * on its day, and every header affordance P2f wired needs something that
+ * page does not have. The trail sheet needs trails; the pages sheet needs a
+ * second page on the day (PageHeader renders the dots as a CONTROL only
+ * above one page, P2a); the date sheet needs days with writing on them; and
+ * the pin toast needs a trail with a name and a count, because an untrailed
+ * page deliberately says nothing at all (pin-toast.js's own argument).
+ *
+ * Everything here is seeded through real mock commands, so the page arrives
+ * the way a writer's would: the pins were made from a page ON the trail,
+ * which is why `set_focus_lineage` runs on each source page BEFORE its pins
+ * are created — the mock re-homes a page's pins when its trail changes, so
+ * the other order would move them to whichever trail was assigned last.
+ *
+ * TODAY, and that is load-bearing rather than tidy. `pageReadonly` freezes
+ * any page whose date is not today on a discrete trail, so a fixture dated
+ * in the past renders an inert shell: no `+`, no insert rows, no pin.
+ * P2f Task 3 found every ShellApp and PageScreen
+ * fixture in the unit suite dated 1999 for exactly this reason, and a VR
+ * scene would have photographed the frozen page and read as broken chrome.
+ */
+export async function trailedDay(invoke) {
+  const today = getLocalDateStr();
+  const dayBefore = (n) => {
+    const d = new Date(`${today}T00:00:00.000Z`);
+    d.setUTCDate(d.getUTCDate() - n);
+    return d.toISOString().slice(0, 10);
+  };
+
+  // The trails the sheet chooses between. Three, because the sheet's rows
+  // come in three shapes and one of each is what makes the photograph say
+  // something: the page's own trail (inert, "this page"), another discrete
+  // trail (selectable), and a continuous one (listed and inert, "living
+  // doc") — which trail-sheet-model.js refuses to offer because assigning a
+  // page into a canonical is a merge the shell cannot perform.
+  const book = await invoke("create_lineage", { name: "the book", mode: "discrete", parentId: null });
+  await invoke("create_lineage", { name: "job search", mode: "discrete", parentId: null });
+  await invoke("create_lineage", { name: "field notes", mode: "continuous", parentId: null });
+
+  // Two earlier days with writing on them, so the date sheet has rows
+  // beyond the today it synthesises unconditionally. The older of the two
+  // carries the trail's pins: eleven pins that all appeared on the same
+  // afternoon would be a fixture, and these are meant to read as a trail
+  // somebody has been keeping.
+  const older = [];
+  for (const n of [1, 2]) {
+    const date = dayBefore(n);
+    const { page: p } = await invoke("create_new_page", { date });
+    await invoke("update_what_matters_now", {
+      pageId: p.id,
+      text: n === 1 ? "the middle chapters, and what they owe each other" : "what the book is for",
+    });
+    await invoke("save_page_content", {
+      pageId: p.id,
+      contentJson: doc([`the day's writing, ${dayBefore(n)}.`, "kept, because it went somewhere."]),
+    });
+    await invoke("set_focus_lineage", { pageId: p.id, lineageId: book.id });
+    older.push(p);
+  }
+
+  for (let i = 1; i <= TRAILED_DAY_PINS; i += 1) {
+    const title = `what chapter ${i} is actually about`;
+    await invoke("create_pin", {
+      lineageId: book.id,
+      sourcePageId: older[older.length - 1].id,
+      objectType: "note",
+      title,
+      content: doc([title]),
+    });
+  }
+
+  const { page } = await invoke("get_or_create_today", {});
+  await invoke("update_what_matters_now", {
+    pageId: page.id,
+    text: "chapter three, and whether it earns its place",
+  });
+  await invoke("save_page_content", {
+    pageId: page.id,
+    contentJson: doc([
+      "the page is where the thinking gets done.",
+      "a trail is for a project, not a day.",
+      "return, re-read, unpin what stopped mattering.",
+    ]),
+  });
+  // `what_shifted` is seeded even though no shell surface renders it: the
+  // column is still written by the backend and read by memory's presence
+  // data, so a fixture that leaves it null is a page shaped unlike the
+  // ones a writer actually has.
+  await invoke("update_what_shifted", {
+    pageId: page.id,
+    text: "the argument only holds if the reader already agrees",
+  });
+  await invoke("set_focus_lineage", { pageId: page.id, lineageId: book.id });
+
+  // A second page on the same day. The dots become a control here and not
+  // before it, which is the gate P2a wrote and the condition under which
+  // the pages sheet has anything to offer.
+  const { page: second } = await invoke("create_new_page", { date: today });
+  // Under `pageRows`' 32-character cut, deliberately: the ellipsis it adds
+  // past that is unit-tested in page-picker, and a row value the VR caption
+  // has to reproduce by hand is a caption that can be wrong about the
+  // photograph it describes.
+  await invoke("update_what_matters_now", {
+    pageId: second.id,
+    text: "a second thread, before lunch",
+  });
+}
+
 export const FIXTURES = {
   emptyPage,
   pageWithContent,
@@ -610,5 +731,6 @@ export const FIXTURES = {
   memoryWithPages,
   pinsRich,
   continuousTrail,
+  trailedDay,
   deadImageRef,
 };

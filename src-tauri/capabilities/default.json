@@ -22,12 +22,14 @@
     "core:window:allow-hide",
     "core:window:allow-unminimize",
     "core:window:allow-is-visible",
+    "core:window:allow-set-min-size",
     "notification:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-is-registered",
     "dialog:default",
     "clipboard-manager:allow-write-text",
-    "clipboard-manager:allow-write-html"
+    "clipboard-manager:allow-write-html",
+    "clipboard-manager:allow-read-image"
   ]
 }

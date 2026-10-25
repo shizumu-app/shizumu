@@ -1,0 +1,539 @@
+# macOS build: a signed, notarized, stapled DMG per architecture, for the
+# website's download buttons.
+#
+# WHY GITHUB. The GitLab jobs build-macos-x64 / build-macos-aarch64 need the
+# saas-macos runners, which are Premium-only, so they stay off. This workflow
+# runs where ios.yml runs: the private snapshot repo fed by
+# scripts/push-ios-snapshot.sh (and, later, the public mirror; nothing here is
+# private-repo-only). Owner's runbook: docs/macos-release.md in the GitLab repo.
+#
+# WHAT IT HANDS BACK. Two DMGs, named exactly as the GitLab `pages` job fetches
+# them from the generic package registry:
+#   shizumu_<version>_aarch64.dmg   -> latest.json "macos-dmg-arm"
+#   shizumu_<version>_x64.dmg       -> latest.json "macos-dmg-intel"
+# uploaded to packages/generic/shizumu/<version>/ on GitLab, so re-running the
+# pages job publishes them. They are also kept as workflow artifacts, with a
+# screenshot of the app running on the runner.
+#
+# HOW SIGNING IS SPLIT. tauri's own bundler does the app: given
+# APPLE_CERTIFICATE it imports the Developer ID .p12 into a throwaway keychain,
+# signs inside out with the hardened runtime and src-tauri/
+# entitlements.macos.plist, and given APPLE_API_KEY / APPLE_API_ISSUER /
+# APPLE_API_KEY_PATH it notarizes and staples the .app before building the
+# DMG, which it then signs. (Read off tauri-bundler 2.x, bundle/macos/app.rs
+# and dmg/mod.rs.) It does NOT notarize the DMG; this file does, and staples
+# it, so a download opens without a Gatekeeper warning even offline.
+#
+# The bundler's one quiet failure: with notarization credentials it cannot
+# use, it logs "skipping app notarization" and carries on. The verify step
+# fails the run if the app is not stapled, so that warning cannot ship.
+#
+# NOT UNDER TEST. Nothing in here has run on a Mac yet (written 2026-10-24
+# without one). Expect the first run to find something; the steps are split
+# so the log says which.
+#
+# Budget: on the private repo macOS minutes are metered at 10x (about 200
+# Mac-minutes a month on the free plan). Two cold builds in parallel are most
+# of that; `arch` builds one when only one needs rebuilding.
+
+name: macos
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Version to build. Leave empty to use src-tauri/tauri.conf.json. If
+          set it must MATCH tauri.conf.json: the bundler names the DMG from
+          the config, so a different value here would only mislabel it.
+        required: false
+        default: ''
+        type: string
+      arch:
+        description: Which architectures to build.
+        required: false
+        default: both
+        type: choice
+        options:
+          - both
+          - aarch64
+          - x86_64
+      upload:
+        description: >-
+          Upload the DMGs to the GitLab package registry after every check
+          passes. Off = build, verify and keep them as workflow artifacts only.
+        required: false
+        default: true
+        type: boolean
+      require_release:
+        description: >-
+          Refuse to upload unless this version's android bundle is already in
+          the GitLab registry, i.e. the v<version> tag pipeline has run. On by
+          default: the pages job on main offers the NEWEST version in the
+          registry, so DMGs uploaded first would turn every other download
+          button off at the next main push.
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Preflight, on Linux minutes ────────────────────────────────────────────
+  # Everything that can fail without a Mac fails here, before a metered macOS
+  # minute is spent: missing secrets, a version mismatch, a .p12 that is the
+  # wrong kind of certificate or does not open with its password, an API key
+  # that is not a private key.
+  preflight:
+    # The private snapshot repo only (ios.yml says why).
+    if: github.repository == 'shizumu-app/shizumu-mobile-shell'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the secrets are set
+        env:
+          # Compared to '' here so no value is ever echoed.
+          HAS_P12: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 != '' }}
+          HAS_P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD != '' }}
+          HAS_ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID != '' }}
+          HAS_ASC_ISSUER: ${{ secrets.APPSTORE_API_ISSUER_ID != '' }}
+          HAS_ASC_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY != '' }}
+          HAS_GL_PROJECT: ${{ secrets.GITLAB_PROJECT_ID != '' }}
+          HAS_GL_USER: ${{ secrets.GITLAB_DEPLOY_TOKEN_USER != '' }}
+          HAS_GL_TOKEN: ${{ secrets.GITLAB_DEPLOY_TOKEN != '' }}
+          UPLOAD: ${{ inputs.upload }}
+        run: |
+          set -euo pipefail
+          missing=""
+          check() {
+            printf '  %-30s %s\n' "$1" "$2"
+            [ "$2" = "true" ] || missing="$missing $1"
+          }
+          echo "signing and notarization:"
+          check MACOS_CERTIFICATE_P12_BASE64 "$HAS_P12"
+          check MACOS_CERTIFICATE_PASSWORD   "$HAS_P12_PASSWORD"
+          check APPSTORE_API_KEY_ID          "$HAS_ASC_KEY_ID"
+          check APPSTORE_API_ISSUER_ID       "$HAS_ASC_ISSUER"
+          check APPSTORE_API_PRIVATE_KEY     "$HAS_ASC_KEY"
+          if [ "$UPLOAD" = "true" ]; then
+            echo "upload to the GitLab package registry:"
+            check GITLAB_PROJECT_ID          "$HAS_GL_PROJECT"
+            check GITLAB_DEPLOY_TOKEN_USER   "$HAS_GL_USER"
+            check GITLAB_DEPLOY_TOKEN        "$HAS_GL_TOKEN"
+          else
+            echo "upload is off for this run: GitLab secrets not required"
+          fi
+          if [ -n "$missing" ]; then
+            echo
+            echo "::error::missing repository secrets:$missing"
+            echo "Set them under Settings -> Secrets and variables -> Actions,"
+            echo "spelled exactly as above. docs/macos-release.md (GitLab repo) says"
+            echo "where each one comes from."
+            exit 1
+          fi
+          echo "all required secrets are set"
+
+      - name: Check the certificate and the API key open
+        env:
+          P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          P12="$RUNNER_TEMP/cert.p12"
+          echo "$P12_BASE64" | base64 -d > "$P12" || {
+            echo "::error::MACOS_CERTIFICATE_P12_BASE64 is not valid base64"; exit 1; }
+          # Keychain Access may export with the legacy RC2 cipher, which
+          # OpenSSL 3 opens only with -legacy. Try both.
+          CERT="$RUNNER_TEMP/cert.pem"
+          if ! openssl pkcs12 -in "$P12" -nokeys -clcerts -passin env:P12_PASSWORD -out "$CERT" 2>/dev/null \
+             && ! openssl pkcs12 -legacy -in "$P12" -nokeys -clcerts -passin env:P12_PASSWORD -out "$CERT" 2>/dev/null; then
+            echo "::error::the .p12 does not open with MACOS_CERTIFICATE_PASSWORD"
+            rm -f "$P12" "$CERT"; exit 1
+          fi
+          # Piped into `openssl pkey -noout`, which parses the key and prints
+          # nothing, so the key never reaches the log or a shell variable.
+          if ! openssl pkcs12 -in "$P12" -nocerts -nodes -passin env:P12_PASSWORD 2>/dev/null | openssl pkey -noout 2>/dev/null \
+             && ! openssl pkcs12 -legacy -in "$P12" -nocerts -nodes -passin env:P12_PASSWORD 2>/dev/null | openssl pkey -noout 2>/dev/null; then
+            echo "::error::the .p12 holds a certificate but no private key."
+            echo "Export it from Keychain Access with the key: expand the certificate, select both, Export 2 items."
+            rm -f "$P12" "$CERT"; exit 1
+          fi
+          # The subject names the person and the team ID: test it, never print it.
+          SUBJECT="$(openssl x509 -in "$CERT" -noout -subject -nameopt multiline)"
+          rm -f "$P12"
+          if ! grep -q 'commonName *= *Developer ID Application:' <<<"$SUBJECT"; then
+            echo "::error::the .p12 is not a Developer ID Application certificate."
+            echo "An Apple Development / Apple Distribution / Developer ID Installer"
+            echo "certificate signs, but notarization of a downloadable app refuses it."
+            rm -f "$CERT"; exit 1
+          fi
+          if ! openssl x509 -in "$CERT" -noout -checkend 0 >/dev/null; then
+            echo "::error::the Developer ID Application certificate has expired"
+            rm -f "$CERT"; exit 1
+          fi
+          rm -f "$CERT"
+          echo "certificate: Developer ID Application, private key present, not expired"
+
+          KEY="$RUNNER_TEMP/asc.p8"
+          echo "$ASC_PRIVATE_KEY" | base64 -d > "$KEY" 2>/dev/null || {
+            echo "::error::APPSTORE_API_PRIVATE_KEY is not valid base64 (it is the .p8 file, base64-encoded, as for ios.yml)"
+            rm -f "$KEY"; exit 1; }
+          if ! openssl pkey -in "$KEY" -noout 2>/dev/null; then
+            echo "::error::APPSTORE_API_PRIVATE_KEY does not decode to a private key"
+            rm -f "$KEY"; exit 1
+          fi
+          rm -f "$KEY"
+          echo "App Store Connect API key: decodes to a private key"
+
+      - name: Settle the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          CONF="$(jq -r .version src-tauri/tauri.conf.json)"
+          if [ -n "$INPUT_VERSION" ] && [ "$INPUT_VERSION" != "$CONF" ]; then
+            echo "::error::input version $INPUT_VERSION does not match src-tauri/tauri.conf.json ($CONF)."
+            echo "The DMG is named from the config. Push a snapshot of the commit that"
+            echo "carries $INPUT_VERSION, or leave the input empty."
+            exit 1
+          fi
+          echo "building $CONF"
+          echo "version=$CONF" >> "$GITHUB_OUTPUT"
+
+      - name: Choose the architectures
+        id: matrix
+        env:
+          ARCH: ${{ inputs.arch }}
+        run: |
+          set -euo pipefail
+          # Each architecture builds natively on its own runner, so the smoke
+          # test launches the binary it ships rather than one under Rosetta.
+          # dmg_arch is tauri's spelling in the DMG name (x64, not x86_64).
+          ARM='{"arch":"aarch64","target":"aarch64-apple-darwin","runner":"macos-15","dmg_arch":"aarch64"}'
+          INTEL='{"arch":"x86_64","target":"x86_64-apple-darwin","runner":"macos-15-intel","dmg_arch":"x64"}'
+          case "$ARCH" in
+            both)    M="[$ARM,$INTEL]" ;;
+            aarch64) M="[$ARM]" ;;
+            x86_64)  M="[$INTEL]" ;;
+            *) echo "::error::unknown arch $ARCH"; exit 1 ;;
+          esac
+          echo "matrix={\"include\":$M}" >> "$GITHUB_OUTPUT"
+
+  # ── Build, sign, notarize, verify, smoke, upload ───────────────────────────
+  build:
+    needs: preflight
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    # A cold Rust build (sqlcipher + vendored openssl from source) plus two
+    # notarization round trips. Notarization is usually minutes, sometimes far
+    # more; the notarytool wait below has its own 30-minute ceiling.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      DMG_NAME: shizumu_${{ needs.preflight.outputs.version }}_${{ matrix.dmg_arch }}.dmg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: macos-${{ matrix.target }}
+          # Save even when a late step fails: the first runs are expected to
+          # fail at signing or notarization, after the expensive compile.
+          cache-on-failure: true
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Report the toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          rustc -V
+          node -v
+
+      - name: Write the App Store Connect API key
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          # No `set -x` anywhere in this file.
+          DIR="$RUNNER_TEMP/private_keys"
+          mkdir -p "$DIR"
+          KEY_PATH="$DIR/AuthKey_${ASC_KEY_ID}.p8"
+          echo "$ASC_PRIVATE_KEY" | base64 -d > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          # The path holds the key ID, which is a registered secret and so
+          # redacted wherever it is printed.
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      # The shizumu-cli binary is NOT built here, unlike the disabled GitLab
+      # jobs. Those copy it to src-tauri/resources/, but tauri.conf.json's
+      # bundle.resources names only the metainfo file, so the copy never
+      # reached any bundle on any platform. Building it would cost minutes for
+      # nothing. If it is ever bundled, the Mach-O check below fails the run
+      # until it is signed (tauri signs `externalBin` sidecars; a binary under
+      # Resources/ it would not).
+      - name: Build, sign and notarize the app (tauri)
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPSTORE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          # APPLE_API_KEY_PATH comes from GITHUB_ENV, set above.
+        run: |
+          set -euo pipefail
+          npx tauri build --target "$TARGET" --bundles app,dmg
+
+      - name: Locate the bundle
+        run: |
+          set -euo pipefail
+          BUNDLE="src-tauri/target/$TARGET/release/bundle"
+          APP="$BUNDLE/macos/shizumu.app"
+          DMG="$BUNDLE/dmg/$DMG_NAME"
+          if [ ! -d "$APP" ] || [ ! -f "$DMG" ]; then
+            echo "::error::expected $APP and $DMG. The bundler produced:"
+            find "$BUNDLE" -maxdepth 2 | sed 's/^/  /'
+            exit 1
+          fi
+          echo "APP=$PWD/$APP" >> "$GITHUB_ENV"
+          echo "DMG=$PWD/$DMG" >> "$GITHUB_ENV"
+          ls -lh "$DMG"
+
+      - name: Verify the app's signature, entitlements and notarization
+        run: |
+          set -euo pipefail
+          fail=0
+          # Every Mach-O in the bundle, not only the main binary: one unsigned
+          # helper is enough for notarization to reject the whole app, and
+          # `codesign --verify --deep` on the bundle does not catch a binary
+          # sitting under Resources/.
+          echo "Mach-O files in the bundle:"
+          while IFS= read -r -d '' f; do
+            file -b "$f" | grep -q 'Mach-O' || continue
+            rel="${f#"$APP"/}"
+            info="$(codesign -dvvv "$f" 2>&1 || true)"
+            ok=yes
+            codesign --verify --strict "$f" 2>/dev/null || ok="NO (does not verify)"
+            # Here-strings, not `printf | grep -q`: under pipefail an early
+            # grep exit can SIGPIPE the printf and read as a failed check.
+            grep -q '^Authority=Developer ID Application:' <<<"$info" || ok="NO (not Developer ID signed)"
+            grep -Eq '^CodeDirectory .*flags=.*runtime' <<<"$info" || ok="NO (no hardened runtime)"
+            grep -q '^Timestamp=' <<<"$info" || ok="NO (no secure timestamp)"
+            echo "  $rel: $ok"
+            [ "$ok" = yes ] || fail=1
+          done < <(find "$APP" -type f -print0)
+
+          codesign --verify --deep --strict --verbose=2 "$APP" || fail=1
+
+          # What the signature actually carries, against what was declared.
+          ENT="$RUNNER_TEMP/entitlements.plist"
+          codesign -d --entitlements - --xml "$APP" > "$ENT" 2>/dev/null || true
+          echo "signed entitlements:"
+          plutil -p "$ENT" || { echo "  (none readable)"; fail=1; }
+          if [ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.camera' "$ENT" 2>/dev/null)" != "true" ]; then
+            echo "::error::the camera entitlement is missing: tauri.macos.conf.json was not applied"
+            fail=1
+          fi
+          if ! /usr/libexec/PlistBuddy -c 'Print :NSCameraUsageDescription' "$APP/Contents/Info.plist" >/dev/null 2>&1; then
+            echo "::error::Info.plist has no NSCameraUsageDescription: the QR scanner would kill the app"
+            fail=1
+          fi
+          echo "minimum macOS: $(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist")"
+
+          # The bundler notarizes and staples only when it could use the
+          # credentials; otherwise it warns and continues. Not stapled = it
+          # skipped, and that must not ship.
+          if ! xcrun stapler validate "$APP"; then
+            echo "::error::the app is not stapled: tauri skipped notarization (look for 'skipping app notarization' above)"
+            fail=1
+          fi
+          # `origin=` names the person and the team ID; keep it out of the log.
+          SPCTL="$(spctl -a -vv -t exec "$APP" 2>&1 || true)"
+          printf '%s\n' "$SPCTL" | grep -v '^origin=' || true
+          grep -q 'source=Notarized Developer ID' <<<"$SPCTL" || {
+            echo "::error::Gatekeeper does not accept the app as Notarized Developer ID"; fail=1; }
+          exit "$fail"
+
+      - name: Notarize and staple the DMG
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          # tauri signed the DMG; check it before paying for a submission.
+          codesign --verify --strict --verbose=2 "$DMG"
+          OUT="$RUNNER_TEMP/notary-dmg.json"
+          xcrun notarytool submit "$DMG" \
+            --key "$APPLE_API_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" \
+            --wait --timeout 30m --output-format json > "$OUT" || true
+          # plutil reads JSON as well as plists.
+          STATUS="$(plutil -extract status raw -o - "$OUT" 2>/dev/null || echo unknown)"
+          ID="$(plutil -extract id raw -o - "$OUT" 2>/dev/null || echo '')"
+          echo "notarization: $STATUS (submission $ID)"
+          if [ "$STATUS" != "Accepted" ]; then
+            cat "$OUT" || true
+            if [ -n "$ID" ]; then
+              echo "--- notary log ---"
+              xcrun notarytool log "$ID" \
+                --key "$APPLE_API_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+            fi
+            echo "::error::the DMG was not accepted for notarization"
+            exit 1
+          fi
+          xcrun stapler staple "$DMG"
+
+      - name: Verify the DMG as a downloader would see it
+        run: |
+          set -euo pipefail
+          fail=0
+          xcrun stapler validate "$DMG" || fail=1
+          codesign --verify --strict --verbose=2 "$DMG" || fail=1
+          SPCTL="$(spctl -a -vv -t open --context context:primary-signature "$DMG" 2>&1 || true)"
+          printf '%s\n' "$SPCTL" | grep -v '^origin=' || true
+          grep -q 'source=Notarized Developer ID' <<<"$SPCTL" || {
+            echo "::error::Gatekeeper does not accept the DMG as Notarized Developer ID"; fail=1; }
+
+          # The app inside the DMG, which is the copy a user drags out.
+          MNT="$RUNNER_TEMP/dmg-mount"
+          mkdir -p "$MNT"
+          hdiutil attach -nobrowse -readonly -mountpoint "$MNT" "$DMG" > /dev/null
+          echo "DMG contents:"; find "$MNT" -maxdepth 1 | sed 's/^/  /'
+          INNER="$MNT/shizumu.app"
+          codesign --verify --deep --strict --verbose=2 "$INNER" || fail=1
+          xcrun stapler validate "$INNER" || fail=1
+          SPCTL="$(spctl -a -vv -t exec "$INNER" 2>&1 || true)"
+          printf '%s\n' "$SPCTL" | grep -v '^origin=' || true
+          grep -q 'source=Notarized Developer ID' <<<"$SPCTL" || fail=1
+          # The smoke test runs the copy out of the DMG, not the build tree.
+          SMOKE="$RUNNER_TEMP/smoke"
+          rm -rf "$SMOKE"; mkdir -p "$SMOKE"
+          ditto "$INNER" "$SMOKE/shizumu.app"
+          hdiutil detach "$MNT" > /dev/null
+          echo "SMOKE_APP=$SMOKE/shizumu.app" >> "$GITHUB_ENV"
+          exit "$fail"
+
+      - name: Smoke test - launch the app for 20 seconds
+        run: |
+          set -euo pipefail
+          EXE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$SMOKE_APP/Contents/Info.plist")"
+          LOG="$RUNNER_TEMP/smoke/app.log"
+          SHOT="$RUNNER_TEMP/smoke/screenshot-${{ matrix.arch }}.png"
+          "$SMOKE_APP/Contents/MacOS/$EXE" > "$LOG" 2>&1 &
+          PID=$!
+          alive=1
+          for i in $(seq 1 20); do
+            sleep 1
+            if ! kill -0 "$PID" 2>/dev/null; then alive=0; echo "the app exited after ${i}s"; break; fi
+          done
+          # Screen capture on a hosted runner may be refused by TCC; a missing
+          # screenshot is a warning, a dead process is the failure.
+          screencapture -x "$SHOT" || echo "::warning::screencapture failed"
+          if [ "$alive" = 1 ]; then
+            echo "the app is still running after 20s (pid $PID)"
+            kill "$PID" 2>/dev/null || true
+            sleep 2
+            kill -9 "$PID" 2>/dev/null || true
+          else
+            wait "$PID" && code=0 || code=$?
+            echo "exit code: $code"
+          fi
+          echo "--- app output (last 80 lines) ---"
+          tail -n 80 "$LOG" || true
+          [ "$alive" = 1 ] || { echo "::error::the app did not stay up for 20 seconds"; exit 1; }
+
+      - name: Keep the DMG, screenshot and log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shizumu-macos-${{ matrix.arch }}-${{ needs.preflight.outputs.version }}-run${{ github.run_number }}
+          path: |
+            ${{ env.DMG }}
+            ${{ runner.temp }}/smoke/*.png
+            ${{ runner.temp }}/smoke/app.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload the DMG to the GitLab package registry
+        if: inputs.upload
+        env:
+          GL_API: ${{ vars.GITLAB_API_URL || 'https://gitlab.com/api/v4' }}
+          GL_PROJECT: ${{ secrets.GITLAB_PROJECT_ID }}
+          GL_USER: ${{ secrets.GITLAB_DEPLOY_TOKEN_USER }}
+          GL_TOKEN: ${{ secrets.GITLAB_DEPLOY_TOKEN }}
+          REQUIRE_RELEASE: ${{ inputs.require_release }}
+        run: |
+          set -euo pipefail
+          PKG="$GL_API/projects/$GL_PROJECT/packages/generic/shizumu/$VERSION"
+          URL="$PKG/$DMG_NAME"
+          if [ "$REQUIRE_RELEASE" = "true" ]; then
+            # The android bundle, which every tag pipeline uploads. It was the
+            # linux .deb until 0.8.0 dropped the deb, rpm and tarball (linux
+            # is flathub only), which made this check refuse every upload.
+            MARK="app-universal-release.aab"
+            # Waited for, up to 40 minutes: a mac build started with the tag
+            # reaches this step before a cold android build has uploaded.
+            found=no
+            for i in $(seq 1 40); do
+              if curl --silent --fail --location --user "$GL_USER:$GL_TOKEN" -o /dev/null "$PKG/$MARK"; then found=yes; break; fi
+              echo "waiting for shizumu/$VERSION/$MARK ($i/40)"; sleep 60
+            done
+            if [ "$found" != yes ]; then
+              echo "::error::shizumu/$VERSION/$MARK is not in the registry yet (or the token cannot read it)."
+              echo "Run the v$VERSION tag pipeline on GitLab first, then re-run this job,"
+              echo "or dispatch with require_release off if this is deliberate."
+              exit 1
+            fi
+            echo "the v$VERSION release is in the registry: $MARK found"
+          fi
+          # A deploy token with write_package_registry, by HTTP basic auth
+          # (GitLab docs, generic packages). --fail-with-body prints GitLab's
+          # reason on a 401/403/404 instead of only the status.
+          curl --silent --show-error --fail-with-body --location \
+            --user "$GL_USER:$GL_TOKEN" \
+            --upload-file "$DMG" "$URL"
+          echo
+          # Read it back and compare, so "uploaded" means the bytes the pages
+          # job will fetch are these bytes.
+          BACK="$RUNNER_TEMP/readback.dmg"
+          curl --silent --show-error --fail --location \
+            --user "$GL_USER:$GL_TOKEN" -o "$BACK" "$URL"
+          A="$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
+          B="$(shasum -a 256 "$BACK" | cut -d' ' -f1)"
+          rm -f "$BACK"
+          if [ "$A" != "$B" ]; then
+            echo "::error::the registry returned different bytes for $DMG_NAME"
+            exit 1
+          fi
+          echo "uploaded and read back: shizumu/$VERSION/$DMG_NAME (sha256 $A)"
+
+      - name: Remove the API key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/private_keys"

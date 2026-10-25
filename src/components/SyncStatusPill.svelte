@@ -60,9 +60,9 @@
   // state for longer than the worker would have refreshed it. The
   // poll is a fallback now: the worker emits sync-pulled / sync-error
   // / sync-status-changed / sync-quota events that wake us up
-  // immediately. Polling still runs because mid-session worker
-  // respawns (sync_setup / pair_new_complete) lose the event
-  // channel — see the NOTE in commands.rs.
+  // immediately, including workers started mid-session (sync setup,
+  // pairing), which build their callbacks from the one the app set at
+  // launch (`WorkerCallbacks::for_app`). Polling stays as the fallback.
   const POLL_INTERVAL_MS = 30_000;
   // After this long without a successful sync we flip to "offline"
   // even if the relay never returned an error — covers the

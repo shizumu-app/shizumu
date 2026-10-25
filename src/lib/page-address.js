@@ -26,6 +26,21 @@
 // is present.
 export function pageAddress(row) {
   if (!row || typeof row !== "object") return [null, null, null];
+  // A PAGE-WITH-LINES HANDED IN BY MISTAKE, refused loudly. The backend
+  // answers page lookups with `{page, lines, session_markers}`, and the row
+  // this function wants is the `page` inside that — so a wrapper passed here
+  // has no `id` and no `date`, and used to produce a silent `[null, null,
+  // null]`. That reached a phone: the shell's page delete looked its
+  // neighbour up from the wrapper, `get_page` answered "date required when
+  // page_id is null", and the delete had already committed — leaving the
+  // writer looking at the page that was gone. Three nulls are a legitimate
+  // answer for a row that genuinely carries no identifiers; they are never
+  // the right answer for this, so this says so instead of passing it on.
+  if (!row.id && row.page && typeof row.page === "object") {
+    throw new TypeError(
+      "pageAddress: that is a page-with-lines, not a page row — pass its .page",
+    );
+  }
   const id = typeof row.id === "string" && row.id.trim() ? row.id : null;
   const date = typeof row.date === "string" && row.date ? row.date : null;
   const pageNumber = Number.isInteger(row.page_number) ? row.page_number : null;

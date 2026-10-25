@@ -49,3 +49,43 @@ describe("describeAttachmentOpenError", () => {
     );
   });
 });
+
+describe("describeAttachmentOpenError — the set the backend actually writes", () => {
+  // THE DEVICE REPORT, and the reason this block exists. The backend could
+  // fail seven ways and this module recognised two, so five of them showed
+  // one generic line about the original being missing — a line that is
+  // wrong about a file sitting right there, and that cannot be told apart
+  // from any of the others in a photograph. The hunt for a JPG that would
+  // not open spent a whole pass on that.
+  //
+  // Every string below is written in attachments/commands.rs or
+  // attachments/share.rs. Two statements of one rule, which is the only
+  // arrangement in which either can catch the other: change a message there
+  // without changing it here and the writer is back to the fallback.
+  const FROM_THE_BACKEND = [
+    "file not on this device",
+    "could not reach this app's own storage",
+    "could not find where this file is kept",
+    "could not make room for this file",
+    "could not make a copy of this file to open",
+    "could not hand this file to another app",
+    "this file lost track of itself",
+  ];
+
+  it("shows each of them as itself", () => {
+    for (const message of FROM_THE_BACKEND) {
+      expect(describeAttachmentOpenError(new Error(message)), message).toBe(message);
+    }
+  });
+
+  it("still collapses anything that reads like a machine", () => {
+    // The reason the allowlist is an allowlist rather than a denylist: a
+    // backend error added tomorrow leaks raw Rust or OS text otherwise.
+    expect(describeAttachmentOpenError(new Error("opener failed: os error 2"))).not.toContain(
+      "os error",
+    );
+    expect(
+      describeAttachmentOpenError(new Error("invalid args `filename`: invalid type: null")),
+    ).not.toContain("null");
+  });
+});

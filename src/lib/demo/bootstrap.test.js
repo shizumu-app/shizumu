@@ -272,6 +272,54 @@ describe("bootstrapDemo — flush on unload", () => {
   });
 });
 
+// The shell is merged, so the demo no longer pretends it has not shipped:
+// an unwritten `try_new_shell` lets the device pick the layout (the phone
+// shell on a phone-shaped viewport, the desktop tree on a wide mouse
+// screen). The demo UNSETS the key rather than forcing it, and does so on
+// every boot, because a returning visitor's stored snapshot from before this
+// change carries `"false"` - which would strand them on the desktop tree on a
+// phone, with no switch to leave it (the labs row is hidden in the demo).
+describe("bootstrapDemo — the device decides the layout", () => {
+  it("leaves try_new_shell unset on a fresh demo, so the device picks the layout", async () => {
+    vi.stubEnv("VITE_DEMO", "1");
+    const storage = fakeStorage();
+    vi.stubGlobal("localStorage", storage);
+
+    const { bootstrapDemo } = await import("./bootstrap.js");
+    await bootstrapDemo();
+
+    expect(await window.__DEMO_INVOKE__("get_setting", { key: "try_new_shell" })).toBeNull();
+  });
+
+  // A returning visitor never runs the fixture - their snapshot is restored
+  // through `__demo_import` - so the unset must happen on that path too, and
+  // must not cost them their pages.
+  it("unsets a returning visitor's stored opt-out and keeps their pages", async () => {
+    vi.stubEnv("VITE_DEMO", "1");
+    const storage = fakeStorage();
+    storage.setItem(DEMO_STORAGE_KEY, serialize(SEED_VERSION, {
+      pages: [["2026-01-01-1", { id: 7, date: "2026-01-01", page_number: 1, content_json: docWithText("kept"), lineage_id: null }]],
+      lines: [], lineages: [], blocks: [],
+      settings: { try_new_shell: "false", mobile_gestures_tip_seen: "true" },
+      onboardingComplete: true,
+    }));
+    vi.stubGlobal("localStorage", storage);
+
+    const { bootstrapDemo } = await import("./bootstrap.js");
+    await bootstrapDemo();
+
+    expect(await window.__DEMO_INVOKE__("get_setting", { key: "try_new_shell" })).toBeNull();
+    // Restored, not reseeded: the stored page is still there, and the
+    // fixture's lineages did not arrive.
+    expect(await window.__DEMO_INVOKE__("get_lineages", {})).toEqual([]);
+    const got = await window.__DEMO_INVOKE__("get_page", { date: "2026-01-01", pageNumber: 1 });
+    expect(got?.page.content_json).toContain("kept");
+
+    window.dispatchEvent(new Event("pagehide"));
+    expect(storage.getItem(DEMO_STORAGE_KEY)).not.toContain('"false"');
+  });
+});
+
 describe("bootstrapDemo — a stored payload that parses but is structurally wrong", () => {
   it("falls back to the fixture instead of throwing out of bootstrapDemo()", async () => {
     vi.stubEnv("VITE_DEMO", "1");

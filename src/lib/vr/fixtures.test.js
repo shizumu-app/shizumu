@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { createMockInvoke } from "../api.js";
-import { FIXTURES, pageWithContent, pinsRich, memoryWithPages, continuousTrail } from "./fixtures.js";
+import {
+  FIXTURES, pageWithContent, pinsRich, memoryWithPages, continuousTrail,
+  trailedDay, TRAILED_DAY_PINS,
+} from "./fixtures.js";
 import { installFixedClock, installSeqUuid, resetVrDeterminism } from "./clock.js";
 import { getLocalDateStr } from "../utils.js";
 
@@ -68,9 +71,69 @@ describe("vr fixtures", () => {
         "pageWithDecisionContent", "pageWithEmptyChart", "pageWithEmptyTable",
         "pageWithFileContent", "pageWithImageContent", "pageWithQaContent",
         "pageWithRecipeContent", "pageWithShortBoard", "pageWithTableContent",
-        "pinsRich",
+        "pinsRich", "trailedDay",
       ].sort()
     );
+  });
+
+  // Every claim `shell-trail-page`'s four drivers make about the page they
+  // are shot on, asserted where a failure names its own cause. A VR driver
+  // that finds one of these missing fails as "the sheet offers [] rows",
+  // which reads as a broken sheet rather than as a fixture that never
+  // seeded the thing the sheet lists.
+  it("trailedDay seeds a discrete trail on TODAY, with the day's second page", async () => {
+    installFixedClock("2026-01-15T09:00:00.000Z");
+    installSeqUuid("vr");
+    const invoke = createMockInvoke();
+    await trailedDay(invoke);
+
+    const lineages = await invoke("get_lineages", {});
+    const book = lineages.find((l) => l.name === "the book");
+    expect(book, "the scene's own trail must exist").toBeTruthy();
+    // Discrete, not continuous: ShellApp offers no trail control on a
+    // continuous canonical, so several of the states shot here would have
+    // nothing to tap.
+    expect(book.mode).toBe("discrete");
+    expect(lineages.some((l) => l.mode === "continuous")).toBe(true);
+    expect(lineages.length).toBe(3);
+
+    const today = await invoke("get_or_create_today", {});
+    // TODAY, or pageReadonly freezes the page and every control the four
+    // states press renders dead or absent.
+    expect(today.page.date).toBe(getLocalDateStr());
+    expect(today.page.lineage_id).toBe(book.id);
+    expect(today.page.content_json).toBeTruthy();
+    expect(today.page.what_shifted).toBeTruthy();
+
+    // More than one page on the day, which is the only condition under
+    // which PageHeader renders the dots as a control at all (P2a).
+    expect(await invoke("get_page_count_for_date", { date: today.page.date })).toBe(2);
+  });
+
+  it("trailedDay puts TRAILED_DAY_PINS pins on that trail, and earlier days behind it", async () => {
+    installFixedClock("2026-01-15T09:00:00.000Z");
+    installSeqUuid("vr");
+    const invoke = createMockInvoke();
+    await trailedDay(invoke);
+
+    const lineages = await invoke("get_lineages", {});
+    const book = lineages.find((l) => l.name === "the book");
+    const pins = await invoke("get_pins", { lineageId: book.id });
+    // The count IS the caption on the pin-toast baseline: the toast renders
+    // `total − 1` after the driver's own pin lands, so this number decides
+    // the sentence in the photograph.
+    expect(pins.length).toBe(TRAILED_DAY_PINS);
+
+    const today = getLocalDateStr();
+    for (const n of [1, 2]) {
+      const d = new Date(`${today}T00:00:00.000Z`);
+      d.setUTCDate(d.getUTCDate() - n);
+      const date = d.toISOString().slice(0, 10);
+      expect(
+        await invoke("get_page_count_for_date", { date }),
+        "the date sheet's rows past today come from days with writing on them",
+      ).toBe(1);
+    }
   });
 
   it("memoryWithPages seeds three distinct consecutive UTC-dated pages", async () => {

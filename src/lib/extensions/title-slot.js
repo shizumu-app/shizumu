@@ -364,11 +364,33 @@ export function bindTitleSlot({
   // this node's position. The one-frame retry handles the race where the
   // NodeView mounts before the slash command's transaction commits pendingFocusPos.
   // ---------------------------------------------------------------------------
+  // getPos() THROWS, and this runs from a requestAnimationFrame.
+  //
+  // ProseMirror resolves the NodeView's position when asked, so a view whose
+  // node has gone — or has not landed yet — makes it call doc.resolve(-1)
+  // and raise `RangeError: Position -1 out of range`. Out of a rAF callback
+  // there is nothing above it to catch that: it reaches the page as an
+  // uncaught exception. Caught twice on a device by the drive harness while
+  // tapping around a table, which is a NodeView that mounts its own title
+  // slot (table-shell-view.js) and so reaches this on every mount.
+  //
+  // A position we cannot read is not a position that matches, so bailing is
+  // the same answer the comparison below would give — the difference is
+  // only whether it is reached by returning or by throwing.
+  const posOrNull = () => {
+    if (typeof getPos !== "function") return null;
+    try {
+      const at = getPos();
+      return typeof at === "number" ? at : null;
+    } catch {
+      return null;
+    }
+  };
+
   const consumePendingFocus = () => {
     if (!ext?.storage) return;
     const wantedPos = ext.storage.pendingFocusPos;
-    if (typeof getPos !== "function") return;
-    const myPos = getPos();
+    const myPos = posOrNull();
     if (typeof wantedPos === "number" && typeof myPos === "number" && wantedPos === myPos) {
       ext.storage.pendingFocusPos = null;
       requestAnimationFrame(() => {
@@ -381,7 +403,7 @@ export function bindTitleSlot({
     requestAnimationFrame(() => {
       if (!ext?.storage) return;
       const retryWanted = ext.storage.pendingFocusPos;
-      const retryMine = typeof getPos === "function" ? getPos() : null;
+      const retryMine = posOrNull();
       if (typeof retryWanted === "number" && typeof retryMine === "number" && retryWanted === retryMine) {
         ext.storage.pendingFocusPos = null;
         try { enterEditMode(true); } catch {}

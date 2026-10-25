@@ -1,6 +1,7 @@
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Fragment, Slice } from "@tiptap/pm/model";
+import { holdsPin, isPinMention } from "../pin-node.js";
 
 const PINNABLE_TYPES = [
   "paragraph",
@@ -51,7 +52,7 @@ export const PinId = Extension.create({
               let found = false;
               fragment.forEach((node) => {
                 if (found) return;
-                if (node.attrs && node.attrs.pinId) { found = true; return; }
+                if (holdsPin(node)) { found = true; return; }
                 if (node.content && node.content.size > 0 && fragmentHasPinId(node.content)) {
                   found = true;
                 }
@@ -77,7 +78,9 @@ export const PinId = Extension.create({
             const stripPinIdFromNode = (node) => {
               if (node.isText) return node;
               const newContent = node.content.size > 0 ? stripFragment(node.content) : node.content;
-              if (node.attrs && node.attrs.pinId != null) {
+              // A pasted @-mention keeps its id: it points at the pin, it is
+              // not a second copy of it (src/lib/pin-node.js).
+              if (holdsPin(node)) {
                 return node.type.create({ ...node.attrs, pinId: null }, newContent, node.marks);
               }
               if (newContent !== node.content) {
@@ -101,7 +104,8 @@ export function stripPinIdsFromJSON(json) {
   if (!json || typeof json !== "object") return json;
   if (Array.isArray(json)) return json.map(stripPinIdsFromJSON);
   const out = { ...json };
-  if (out.attrs && "pinId" in out.attrs) {
+  // A mention keeps its id: it points at a pin and is not one.
+  if (out.attrs && "pinId" in out.attrs && !isPinMention(out)) {
     const { pinId, ...rest } = out.attrs;
     out.attrs = rest;
   }

@@ -1,10 +1,8 @@
 <!--
   WriteSlide — the page is the writing surface. Faithful miniature of
-  Page.svelte: what-matters above, editor body in the middle (highlighted
-  in warm-accent so the user maps "where you think" to a visible region),
-  what-settled closing the day below. The bottom region is hidden on
-  continuous trails in the actual app; we show it here because the slide
-  is the user's first look at the discrete-trail surface they'll write on.
+  Page.svelte: what-matters above, editor body below it (highlighted in
+  warm-accent so the user maps "where you think" to a visible region).
+  Two regions, matching the two the page actually asks for.
 -->
 <script>
   import MockupWindow from "../MockupWindow.svelte";
@@ -14,7 +12,7 @@
   <h1 class="slide-title">write</h1>
   <p class="slide-subtitle">
     the page is where you think.<br>
-    what matters sits above the page, what settled closes the day.
+    what matters sits above it, named when it becomes clear.
   </p>
 
   <MockupWindow title="shizumu" width="32rem" height="20rem">
@@ -29,9 +27,6 @@
           <div class="editor-line">the best ideas come when you stop trying to organize them.</div>
           <div class="editor-line">the act of filing kills the act of thinking.</div>
           <div class="editor-line">three things became clear today:</div>
-        </div>
-        <div class="region region-settled">
-          <span class="region-label">what settled</span>
         </div>
       </div>
     </div>

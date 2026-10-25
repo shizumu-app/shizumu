@@ -1,4 +1,5 @@
 <script>
+  import { holdsPin } from "../lib/pin-node.js";
   import { fade } from "svelte/transition";
   import { untrack, onMount, onDestroy } from "svelte";
   import { navPush, navClose } from "../lib/navstack.js";
@@ -8,12 +9,13 @@
     getPins, updatePinContent, updatePinScope, deletePin,
     getLineages, updatePinAutoInsert, reorderPins,
     loadPageContentForModal, savePageContentWithPinRefresh,
-    getBacklinksForPin,
+    getBacklinksForPin, getPinForReference,
     attachmentList,
   } from "../lib/api.js";
   import { attachmentLocality } from "../lib/attachment-locality.js";
   import { buildMentionLabel } from "../lib/mention-label.js";
-  import { pinFamily, pinDisplayTitle, pinSearchText, pinModalKind } from "../lib/pin-display.js";
+  import { pinFamily, pinDisplayTitle, pinSearchText } from "../lib/pin-display.js";
+  import { pinModalFor, pinForModal, writePinEdit, textIntoNode } from "../lib/pin-edit-route.js";
   import SidebarShell from "../lib/ui/SidebarShell.svelte";
   import SidebarNavRow from "../lib/ui/SidebarNavRow.svelte";
   import SectionHeader from "../lib/ui/SectionHeader.svelte";
@@ -34,8 +36,8 @@
     getActivePreviewOwner,
   } from "../lib/render/preview-card.js";
 
-  /** @type {{ lineageId: string|null, lineageName: string, pageId: string, editorDoc: any, onClose: () => void, onPinRemoved: (content: string) => void, onPinInject: (nodes: any[]) => void, onPinLocate: (pinId: string) => void, onSamePagePinSave: (pinId: string, newNode: any) => void, onNavigateToSource: (pageId: string) => void }} */
-  let { lineageId = null, lineageName = "", pageId, refreshToken = 0, editorDoc = null, openPinId = null, onPinOpened = () => {}, onClose, onPinRemoved = () => {}, onPinInject = () => {}, onPinLocate = () => {}, onSamePagePinSave = () => {}, onNavigateToSource = () => {} } = $props();
+  /** @type {{ lineageId: string|null, lineageName: string, pageId: string, editorDoc: any, onClose: () => void, onPinRemoved: (content: string) => void, onPinInject: (nodes: any[]) => void, onPinLocate: (pinId: string) => void, onSamePagePinSave: (pinId: string, newNode: any) => boolean|undefined, onBeforePageWrite: (pageId: string) => Promise<void>|void, onPageWritten: (pageId: string) => void, onNavigateToSource: (pageId: string) => void }} */
+  let { lineageId = null, lineageName = "", pageId, refreshToken = 0, editorDoc = null, openPinId = null, onPinOpened = () => {}, onClose, onPinRemoved = () => {}, onPinInject = () => {}, onPinLocate = () => {}, onSamePagePinSave = () => false, onBeforePageWrite = () => {}, onPageWritten = () => {}, onNavigateToSource = () => {} } = $props();
 
   // The panel is mounted/unmounted by the caller's {#if} (there's no
   // internal open prop to react to), so it registers on the navstack once
@@ -73,12 +75,36 @@
   function patchPin(id, mut) {
     pinsTrail = pinsTrail.map((p) => (p.id === id ? { ...p, ...mut } : p));
     pinsGlobal = pinsGlobal.map((p) => (p.id === id ? { ...p, ...mut } : p));
+    pinsReached = pinsReached.map((p) => (p.id === id ? { ...p, ...mut } : p));
   }
 
   /** Drop a pin everywhere it lives. Used by removePin. */
   function dropPin(id) {
     pinsTrail = pinsTrail.filter((p) => p.id !== id);
     pinsGlobal = pinsGlobal.filter((p) => p.id !== id);
+    pinsReached = pinsReached.filter((p) => p.id !== id);
+  }
+
+  // A pin opened through an @-mention from outside this page's trail chain:
+  // the panel's sections never list it, so the open effect below could not
+  // find it and opened nothing (mentions-backlinks.mjs). It is loaded from
+  // its own trail and held here, apart from the sections and their counts.
+  let pinsReached = $state([]);
+  let reachingFor = null;
+
+  async function reachPin(id) {
+    if (reachingFor === id) return;
+    reachingFor = id;
+    try {
+      const ref = await getPinForReference(id);
+      const rows = ref ? await getPins(ref.lineage_id ?? null) : [];
+      const row = rows.find((p) => p.id === id);
+      if (row) pinsReached = [row];
+      // Gone (deleted since the mention was written): stop asking.
+      else onPinOpened();
+    } catch {
+      onPinOpened();
+    }
   }
 
   // Same-page live pin contents: walk the current editor's doc once, build
@@ -88,7 +114,8 @@
     if (!editorDoc) return new Map();
     const map = new Map();
     function walk(node) {
-      if (node?.attrs?.pinId) map.set(node.attrs.pinId, node);
+      // A mention of a pin is not its live content (src/lib/pin-node.js).
+      if (holdsPin(node)) map.set(node.attrs.pinId, node);
       if (Array.isArray(node?.content)) {
         for (const child of node.content) walk(child);
       }
@@ -156,15 +183,20 @@
   // every render.
   $effect(() => {
     if (!openPinId || loading) return;
-    const target = [...pinsTrail, ...pinsGlobal].find((p) => p.id === openPinId);
-    if (!target) return;
+    const target = [...pinsTrail, ...pinsGlobal, ...pinsReached].find((p) => p.id === openPinId);
+    if (!target) {
+      reachPin(openPinId);
+      return;
+    }
     // pinModalKind, not isBoard: the modal fork asks about the CONTENT's
     // shape (a doc needs a doc renderer; only a real plain string belongs
     // in the note modal's textarea), while isBoard below is this panel's
     // bucketing/sorting question. They were the same list here and a
     // different one in Memory, which is how the same pin opened two
     // different modals depending on where it was clicked.
-    modal = { type: pinModalKind(target), pinId: target.id };
+    // pinModalFor: a pin whose node is in this editor always opens the
+    // artifact modal, whose save reaches the node (pin-edit-route.js).
+    modal = { type: pinModalFor(target, livePinNodes.get(target.id)), pinId: target.id };
     onPinOpened();
   });
   let allLineages = $state([]);
@@ -465,20 +497,40 @@
   // current pin row by id, so the modal child sees an always-up-to-date
   // pin (after patchPin mutations).
   function pinById(id) {
-    return allPins.find((p) => p.id === id) || null;
+    return allPins.find((p) => p.id === id) || pinsReached.find((p) => p.id === id) || null;
   }
 
-  // Save handler for the text-pin (note) modal. Mirrors the original
-  // finishEditNote semantics: optimistic local patch + persistence.
+  // Save handler for the text-pin (note) modal. The note modal opens only
+  // for a pin whose node is not in this editor (pinModalFor), so its text
+  // goes to the node in the stored page when a page still holds it, and to
+  // the row only when none does (pin-edit-route.js) — a row-only edit is
+  // overwritten by that page's next save. Same path as memory's.
   async function saveNote(pinId, newContent, newTitle, contentChanged, titleChanged) {
     const pin = pinById(pinId);
     if (!pin) return;
     if (!contentChanged && !titleChanged) return;
-    patchPin(pinId, {
-      content: contentChanged ? newContent : pin.content,
-      title: titleChanged ? newTitle : pin.title,
-    });
-    try { await updatePinContent(pinId, contentChanged ? newContent : pin.content, newTitle); } catch {}
+    const nextContent = contentChanged ? newContent : pin.content;
+    const nextTitle = titleChanged ? newTitle : pin.title;
+    let landed = null;
+    if (contentChanged) {
+      let written = null;
+      landed = await writePinEdit({
+        pin, liveNode: null, nodeFor: (n) => (written = textIntoNode(n, newContent)),
+        rowContent: nextContent, rowTitle: nextTitle, deps: pinEditDeps(),
+      });
+      // A note's title is the row's; a "source" landing wrote only the node.
+      if (landed === "source" && titleChanged) {
+        try { await updatePinContent(pinId, JSON.stringify(written), nextTitle); } catch (err) { console.error("pin title:", err); }
+      }
+    } else {
+      try { await updatePinContent(pinId, pin.content, nextTitle); landed = "row"; } catch (err) { console.error("pin title:", err); }
+    }
+    if (!landed) {
+      editNotice = "that edit did not save. the pin still holds what it held before.";
+      return;
+    }
+    editNotice = "";
+    patchPin(pinId, { content: nextContent, title: nextTitle });
   }
 
   async function toggleAutoInsert(obj) {
@@ -537,42 +589,34 @@
     // is what made a renamed note pin revert on the next save (issue #1).
     const liveNode = livePinNodes.get(p.id);
     if (pinTitleAuthority(p, liveNode) === "row") {
-      try { await updatePinContent(p.id, p.content, newTitle); } catch {}
+      try {
+        await updatePinContent(p.id, p.content, newTitle);
+        editNotice = "";
+      } catch (err) {
+        console.error("pin rename: the row write failed:", err);
+        patchPin(p.id, { title: current });
+        editNotice = "that rename did not save. the pin keeps its old name.";
+      }
       return;
     }
 
-    // For same-page pins, dispatch the title change onto the live editor's
-    // node so the canvas reflects it immediately. The editor's save path
-    // refreshes the pin cache via the Rust hook.
-    if (p.source_page_id === pageId) {
-      // The same-page splice path expects a whole node; build it from the
-      // live editor's current node by swapping in the new blockTitle attr.
-      if (liveNode) {
-        const next = { ...liveNode, attrs: { ...(liveNode.attrs || {}), blockTitle: newTitle } };
-        onSamePagePinSave(p.id, next);
-        return;
-      }
+    // A board's title is its node's blockTitle: written where the node is,
+    // the open editor, else the stored page, else (no page holds it) the
+    // row (pin-edit-route.js). Nothing taking it is said in the panel.
+    const landed = await writePinEdit({
+      pin: p,
+      liveNode,
+      nodeFor: (n) => ({ ...n, attrs: { ...(n.attrs || {}), blockTitle: newTitle } }),
+      rowContent: p.content,
+      rowTitle: newTitle,
+      deps: pinEditDeps(),
+    });
+    if (!landed) {
+      patchPin(p.id, { title: current });
+      editNotice = "that rename did not save. the pin keeps its old name.";
+    } else {
+      editNotice = "";
     }
-
-    // Cross-page rename: load source, splice the node with the new title
-    // attribute, save. Same refresh_pin_caches hook runs as a side effect.
-    try {
-      const sourceContent = await loadPageContentForModal(p.source_page_id);
-      const sourceDoc = JSON.parse(sourceContent || '{"type":"doc","content":[]}');
-      const updated = walkAndSetTitle(sourceDoc, p.id, newTitle);
-      await savePageContentWithPinRefresh(p.source_page_id, JSON.stringify(updated));
-    } catch (err) {
-      console.error("Inline rename failed for cross-page pin:", err);
-    }
-  }
-  function walkAndSetTitle(node, pinId, title) {
-    if (node?.attrs?.pinId === pinId) {
-      return { ...node, attrs: { ...(node.attrs || {}), blockTitle: title } };
-    }
-    if (Array.isArray(node?.content)) {
-      return { ...node, content: node.content.map((c) => walkAndSetTitle(c, pinId, title)) };
-    }
-    return node;
   }
   // ── source-page hover preview (E.3) ─────────────────────────────────────
   // Hovering a pin row's title for ~300ms mounts the same preview card
@@ -661,7 +705,7 @@
       longPressFired = false;
       return;
     }
-    if (pinModalKind(eff) === "artifact") {
+    if (pinModalFor(eff, livePinNodes.get(obj.id)) === "artifact") {
       openArtifactModal(eff);
     } else {
       openNoteModal(eff);
@@ -754,16 +798,23 @@
     if (obj.object_type !== "note") onPinLocate(obj.id);
   }
 
-  function spliceNodeByPinId(doc, pinId, newNode) {
-    function walk(node) {
-      if (node?.attrs?.pinId === pinId) return newNode;
-      if (Array.isArray(node?.content)) {
-        return { ...node, content: node.content.map(walk) };
-      }
-      return node;
-    }
-    return walk(doc);
+  // What writePinEdit (pin-edit-route.js) writes through, here. The editor
+  // step is the open page's splice; before the stored page is written, an
+  // open editor on it settles its pending save (onBeforePageWrite), and
+  // after, it re-reads the page (onPageWritten).
+  function pinEditDeps() {
+    return {
+      spliceInEditor: (id, node) => onSamePagePinSave(id, node),
+      beforeSourceWrite: (id) => onBeforePageWrite(id),
+      loadPage: loadPageContentForModal,
+      savePage: savePageContentWithPinRefresh,
+      updateRow: updatePinContent,
+      onPageWritten,
+    };
   }
+
+  // Shown in the panel when an edit or rename reached nowhere.
+  let editNotice = $state("");
 
   // Save handler for the artifact modal. The child has already produced
   // the spliced node (with the canonical blockTitle attr); we just decide
@@ -786,29 +837,27 @@
       titleChanged &&
       pinTitleAuthority(art, livePinNodes.get(art.id)) === "row";
 
-    try {
-      if (art.source_page_id === pageId) {
-        // Same-page: splice the new node into the MAIN editor's PM doc.
-        // The editor's onUpdate fires, debouncedSave runs save_page_content,
-        // and the Rust refresh_pin_caches hook updates this pin row's cache.
-        onSamePagePinSave(art.id, newNode);
-      } else {
-        // Cross-page: load source page, splice, save via Tauri command.
-        // Same refresh_pin_caches hook runs as a side effect of the save.
-        const sourceContent = await loadPageContentForModal(art.source_page_id);
-        const sourceDoc = JSON.parse(sourceContent || '{"type":"doc","content":[]}');
-        const updated = spliceNodeByPinId(sourceDoc, art.id, newNode);
-        await savePageContentWithPinRefresh(art.source_page_id, JSON.stringify(updated));
-      }
-    } catch (err) {
-      console.error("Failed to save pin edit:", err);
+    const landed = await writePinEdit({
+      pin: art,
+      liveNode: livePinNodes.get(art.id) || null,
+      nodeFor: () => newNode,
+      rowContent: JSON.stringify({ type: "doc", content: [newNode] }),
+      rowTitle: titleChanged ? newTitle : art.title,
+      deps: pinEditDeps(),
+    });
+    if (!landed) {
+      // Nothing took the edit. Say so, and leave the row showing what is
+      // stored rather than an edit that exists nowhere.
+      editNotice = "that edit did not save. the pin still holds what it held before.";
+      return;
     }
+    editNotice = "";
 
     // Write the row's title after the content splice, not before: the splice
     // triggers a page save whose refresh_pin_caches hook rewrites the
     // content cache, and this call carries the same content forward rather
-    // than an older copy of it.
-    if (titleToRow) {
+    // than an older copy of it. A "row" landing already wrote both.
+    if (titleToRow && landed !== "row") {
       const carried = contentChanged
         ? JSON.stringify({ type: "doc", content: [newNode] })
         : art.content;
@@ -929,6 +978,9 @@
       {/if}
     {/snippet}
 
+    {#if editNotice}
+      <p class="edit-notice label" role="status">{editNotice}</p>
+    {/if}
     {#if loading}
       <div class="empty-loading"><p class="empty-text label">loading…</p></div>
     {:else if visiblePins.length === 0}
@@ -1012,7 +1064,7 @@
      any previous open modal, so there is no path that yields stacked
      overlays (the bug class the v0.4 UI audit flagged). -->
 {#if modal?.type === "artifact"}
-  {@const pin = pinById(modal.pinId)}
+  {@const pin = pinForModal(pinById(modal.pinId), livePinNodes.get(modal.pinId))}
   {#if pin}
     <PinArtifactModal
       pin={pin}
@@ -1054,6 +1106,8 @@
 <style>
   /* Overlay */
   .overlay { position: fixed; inset: 0; z-index: 149; }
+
+  .edit-notice { margin: 8px 12px; color: var(--ink-soft); }
 
   /* Panel — right-anchored side panel; modal-scale shadow. The chrome
      inside (sidebar / toolbar / body / footer) is the SidebarShell from

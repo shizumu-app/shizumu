@@ -97,3 +97,48 @@ describe("FocusRail", () => {
     expect(onDelete).toHaveBeenCalledWith("f1");
   });
 });
+
+describe("FocusRail — a busy day", () => {
+  // MEASURED ON A DESKTOP: twenty-odd pages drew twenty-odd dots that ran into
+  // the header's chips. Past eight the dots give way to a count, as on the
+  // phone (lib/rail-dots.js) — and the count keeps the dots' other job,
+  // taking you to another page, as a step either side.
+  const many = Array.from({ length: 12 }, (_, i) => focus(`f${i + 1}`));
+
+  it("draws a count instead of twelve dots, and keeps the +", () => {
+    const { target } = render(FocusRail, { focuses: many, currentId: "f5", onSelect: vi.fn(), onNew: vi.fn() });
+    expect(target.querySelectorAll(".rail-dot").length).toBe(0);
+    expect(target.querySelector(".rail-count").textContent.trim()).toBe("5 / 12");
+    expect(addButton(target)).toBeTruthy();
+  });
+
+  it("steps to the page either side, and offers no step past the end", () => {
+    const onSelect = vi.fn();
+    const { target } = render(FocusRail, { focuses: many, currentId: "f12", onSelect, onNew: vi.fn() });
+    const [prev, next] = target.querySelectorAll(".rail-step");
+    prev.click();
+    expect(onSelect).toHaveBeenCalledWith("f11");
+    expect(next.disabled).toBe(true);
+  });
+
+  // The ×  on a dot was the desktop's only page delete, so on a day past
+  // eight pages no page could be deleted at all (sync journey J6.2,
+  // 2026-10-24). The count keeps that job too, for the page on screen.
+  it("still deletes the page on screen, behind the same two-tap confirm", async () => {
+    const onDelete = vi.fn();
+    const { target } = render(FocusRail, { focuses: many, currentId: "f5", onSelect: vi.fn(), onNew: vi.fn(), onDelete });
+    const del = target.querySelector(".rail-count-delete");
+    expect(del).toBeTruthy();
+    del.click();
+    await tick();
+    expect(onDelete).not.toHaveBeenCalled();
+    del.click();
+    expect(onDelete).toHaveBeenCalledWith("f5");
+  });
+
+  it("keeps the dots at eight", () => {
+    const { target } = render(FocusRail, { focuses: many.slice(0, 8), currentId: "f1", onSelect: vi.fn(), onNew: vi.fn() });
+    expect(target.querySelectorAll(".rail-dot").length).toBe(8);
+    expect(target.querySelector(".rail-count")).toBeNull();
+  });
+});

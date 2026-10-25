@@ -7,6 +7,7 @@ pub mod test_helpers;
 #[cfg(target_os = "linux")]
 mod dbus;
 pub mod export;
+pub mod gdk_backend;
 pub mod trail_export;
 #[cfg(target_os = "linux")]
 mod gnome_search;
@@ -44,61 +45,12 @@ pub fn run() {
                     .build(),
             )?;
 
-            // Auto-open devtools so the user can inspect the production webview.
-            // Same v0.2.2 diagnostic — gated behind the SHIZUMU_DEVTOOLS env var
-            // so it doesn't pop on every launch for normal users.
-            if std::env::var_os("SHIZUMU_DEVTOOLS").is_some() {
-                if let Some(webview) = app.get_webview_window("main") {
-                    webview.open_devtools();
-                }
-            }
-
-            // Set window icon (Linux needs this for taskbar/WM icon).
-            // set_icon is desktop-only — mobile platforms own the icon
-            // via the launcher manifest, so the rust call doesn't exist
-            // on android / ios builds.
-            #[cfg(desktop)]
-            if let Some(window) = app.get_webview_window("main") {
-                if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/icon.png")) {
-                    let _ = window.set_icon(icon);
-                }
-            }
-
             // Manage close-to-tray state before tray setup so the
             // CloseRequested handler can read it immediately.
             #[cfg(desktop)]
             app.manage(tray::CloseToTray(
                 std::sync::atomic::AtomicBool::new(false),
             ));
-
-            // Linux/webkit2gtk: auto-grant every webview permission
-            // request so getUserMedia (QR scanner camera) works without
-            // an engine-level prompt that webkit2gtk doesn't always
-            // surface cleanly under wry. The user already opted in to
-            // scanning when they opened the pair flow; a second prompt
-            // from the engine layer that can't be styled or routed to
-            // the OS chrome is worse than no prompt at all.
-            #[cfg(target_os = "linux")]
-            {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.with_webview(|webview| {
-                        use webkit2gtk::{PermissionRequestExt, WebViewExt};
-                        let wv: webkit2gtk::WebView = webview.inner();
-                        wv.connect_permission_request(|_, request| {
-                            request.allow();
-                            true
-                        });
-                    });
-                }
-            }
-
-            // Set up system tray — desktop only. Mobile platforms (iOS,
-            // Android) don't have a tray; the module isn't compiled
-            // there. Phase 11.8 gate.
-            #[cfg(desktop)]
-            if let Err(e) = tray::setup_tray(app.handle()) {
-                log::warn!("failed to set up system tray: {e}");
-            }
 
             // Register default global shortcut: Super+Shift+W to toggle window.
             // Desktop-only — iOS and Android don't expose a global-shortcut
@@ -138,15 +90,15 @@ pub fn run() {
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
 
-            // Android has no keyring provider the `keyring` crate supports,
-            // so the sync-secrets bundle is stored as a mode-0600 JSON file
-            // in the app's per-package private data dir. The secret_store
-            // backend is zero-arg and can't resolve that sandbox path itself,
-            // so capture it here before any sync command can run. See
-            // docs/v0.4-sync-mobile.md.
-            #[cfg(target_os = "android")]
+            // Android and iOS have no keyring provider the `keyring` crate
+            // supports as built here, so the sync-secrets bundle is stored
+            // as a mode-0600 JSON file in the app's private data dir. The
+            // secret_store backend is zero-arg and can't resolve that
+            // sandbox path itself, so capture it here before any sync
+            // command can run. See docs/v0.4-sync-mobile.md.
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             match app.handle().path().app_local_data_dir() {
-                Ok(dir) => sync::secret_store::init_android_secrets_dir(dir),
+                Ok(dir) => sync::secret_store::init_mobile_secrets_dir(dir),
                 Err(e) => {
                     log::error!("failed to resolve app_local_data_dir for sync secrets: {e}")
                 }
@@ -181,8 +133,25 @@ pub fn run() {
             let passphrase = crypto::retrieve_key();
 
             // Initialize database synchronously (rusqlite is sync — no deadlock risk)
-            let database = db::init_db(app_data_dir, passphrase.as_deref())
-                .expect("failed to initialize database");
+            // A file that will not open is said on screen, not a crash: the
+            // app runs on an empty in-memory placeholder that is never
+            // written to the real file, and the screen blocks writing until
+            // the file is open (commands.rs, `startup_failure`). Until
+            // 2026-10-15 this was an .expect, and the app closed at launch
+            // with no word, even when all it needed was the passphrase.
+            let db_path = app_data_dir.join("settles.db");
+            let database = match db::init_db(app_data_dir, passphrase.as_deref()) {
+                Ok(d) => d,
+                Err(e) => {
+                    log::error!("could not open the database at launch: {e}");
+                    commands::record_startup_failure(
+                        &db_path.to_string_lossy(),
+                        &e,
+                        db::needs_passphrase(&e),
+                    );
+                    db::init_placeholder().expect("an in-memory database always opens")
+                }
+            };
 
             // Phase 13: silent op-log engine. Loaded after the DB is up
             // so it can read the persisted hlc_state row. Failure here
@@ -202,6 +171,18 @@ pub fn run() {
             match op_log::stats::collect(&database.lock().expect("db mutex poisoned")) {
                 Ok(s) => log::info!("{}", op_log::stats::format_log_line(&s)),
                 Err(e) => log::warn!("op_log stats collect failed: {e}"),
+            }
+
+            // Bytes fetched for attachments a peer referenced (worker tick or
+            // the startup sweep) — its own event, not `sync-pulled`: a fetch
+            // changes no page row, and `sync-pulled` makes every listening
+            // screen re-read its rows. AttachmentBlock listens for this one.
+            // Registered before the startup sweep below is spawned.
+            {
+                let h = app.handle().clone();
+                attachments::backfill::set_fetched_callback(Box::new(move |_n| {
+                    let _ = h.emit("attachments-fetched", ());
+                }));
             }
 
             // Eager backfill: one-shot replay of existing v0.2.x data
@@ -264,38 +245,42 @@ pub fn run() {
             // Tauri event the SyncStatusPill subscribes to so it can
             // reflect a wire failure in < 1s instead of < 30s.
             let handle = app.handle().clone();
-            let cbs = sync::worker::WorkerCallbacks {
-                on_pull: Some({
-                    let h = handle.clone();
-                    Box::new(move || {
-                        let _ = h.emit("sync-pulled", ());
-                    })
-                }),
-                on_error: Some({
-                    let h = handle.clone();
-                    Box::new(move || {
-                        let _ = h.emit("sync-error", ());
-                    })
-                }),
-                on_status_changed: Some({
-                    let h = handle.clone();
-                    Box::new(move || {
-                        let _ = h.emit("sync-status-changed", ());
-                    })
-                }),
-                on_quota: Some({
-                    let h = handle.clone();
-                    Box::new(move || {
-                        let _ = h.emit("sync-quota", ());
-                    })
-                }),
-                on_revoked: Some({
-                    let h = handle.clone();
-                    Box::new(move || {
-                        let _ = h.emit("sync-revoked", ());
-                    })
-                }),
-            };
+            sync::worker::set_app_callbacks(Box::new(move || {
+                let handle = handle.clone();
+                sync::worker::WorkerCallbacks {
+                    on_pull: Some({
+                        let h = handle.clone();
+                        Box::new(move || {
+                            let _ = h.emit("sync-pulled", ());
+                        })
+                    }),
+                    on_error: Some({
+                        let h = handle.clone();
+                        Box::new(move || {
+                            let _ = h.emit("sync-error", ());
+                        })
+                    }),
+                    on_status_changed: Some({
+                        let h = handle.clone();
+                        Box::new(move || {
+                            let _ = h.emit("sync-status-changed", ());
+                        })
+                    }),
+                    on_quota: Some({
+                        let h = handle.clone();
+                        Box::new(move || {
+                            let _ = h.emit("sync-quota", ());
+                        })
+                    }),
+                    on_revoked: Some({
+                        let h = handle.clone();
+                        Box::new(move || {
+                            let _ = h.emit("sync-revoked", ());
+                        })
+                    }),
+                }
+            }));
+            let cbs = sync::worker::WorkerCallbacks::for_app();
             let worker_slot: commands::SyncWorkerSlot = std::sync::Arc::new(
                 match sync::worker::spawn_if_configured(
                     database.clone(),
@@ -363,10 +348,75 @@ pub fn run() {
                 }
             }
 
+            // THE WINDOW IS BUILT HERE, LAST, not by Tauri from the config
+            // (`"create": false` in tauri.conf.json). Tauri builds config
+            // windows BEFORE it calls this hook (tauri-2.10.3 app.rs:2373),
+            // so the page loaded while the database was still opening, and a
+            // command it sent in that gap failed with "state not managed for
+            // field `db`". App.svelte's `try_new_shell` read is one: rejected,
+            // it leaves the phone on the desktop tree for the whole session
+            // (seen on the A16, 2026-10-24: flag unset, coarse pointer, 384px
+            // wide, desktop tree). Every `app.manage` above has run by now, so
+            // no command the page sends can arrive before its state.
+            if let Some(config) = app.config().app.windows.first().cloned() {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?.build()?;
+            }
+
+            // Auto-open devtools so the user can inspect the production webview.
+            // Same v0.2.2 diagnostic — gated behind the SHIZUMU_DEVTOOLS env var
+            // so it doesn't pop on every launch for normal users.
+            if std::env::var_os("SHIZUMU_DEVTOOLS").is_some() {
+                if let Some(webview) = app.get_webview_window("main") {
+                    webview.open_devtools();
+                }
+            }
+
+            // Set window icon (Linux needs this for taskbar/WM icon).
+            // set_icon is desktop-only — mobile platforms own the icon
+            // via the launcher manifest, so the rust call doesn't exist
+            // on android / ios builds.
+            #[cfg(desktop)]
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/icon.png")) {
+                    let _ = window.set_icon(icon);
+                }
+            }
+
+            // Linux/webkit2gtk: auto-grant every webview permission
+            // request so getUserMedia (QR scanner camera) works without
+            // an engine-level prompt that webkit2gtk doesn't always
+            // surface cleanly under wry. The user already opted in to
+            // scanning when they opened the pair flow; a second prompt
+            // from the engine layer that can't be styled or routed to
+            // the OS chrome is worse than no prompt at all.
+            #[cfg(target_os = "linux")]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.with_webview(|webview| {
+                        use webkit2gtk::{PermissionRequestExt, WebViewExt};
+                        let wv: webkit2gtk::WebView = webview.inner();
+                        wv.connect_permission_request(|_, request| {
+                            request.allow();
+                            true
+                        });
+                    });
+                }
+            }
+
+            // Set up system tray — desktop only. Mobile platforms (iOS,
+            // Android) don't have a tray; the module isn't compiled
+            // there. Phase 11.8 gate.
+            #[cfg(desktop)]
+            if let Err(e) = tray::setup_tray(app.handle()) {
+                log::warn!("failed to set up system tray: {e}");
+            }
+
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_or_create_today,
+            commands::local_today,
             commands::get_page,
             commands::save_line,
             commands::create_new_page,
@@ -441,8 +491,11 @@ pub fn run() {
             commands::get_shukonin_sessions_for_date,
             commands::check_encryption_status,
             commands::setup_encryption,
+            commands::change_passphrase,
+            commands::remove_encryption,
             commands::unlock,
             commands::lock,
+            commands::startup_failure,
             commands::get_lock_timeout,
             commands::set_lock_timeout,
             commands::export_pages_gui,

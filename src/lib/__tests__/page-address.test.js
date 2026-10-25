@@ -37,4 +37,28 @@ describe("pageAddress", () => {
     expect(pageAddress(undefined)).toEqual([null, null, null]);
     expect(pageAddress("nope")).toEqual([null, null, null]);
   });
+  it("refuses a page-with-lines instead of addressing nothing", () => {
+    // THE BUG THIS WAS WRITTEN FOR, found on a device. get_adjacent_page and
+    // get_page both answer {page, lines, session_markers}; the row wanted
+    // here is the page inside it. Passing the wrapper used to return three
+    // nulls, which get_page answers with "date required when page_id is
+    // null" — and in the shell's page delete that arrived AFTER the delete
+    // had committed, so the writer was left on the page that was gone.
+    const wrapper = {
+      page: { id: "u1", date: "2026-10-08", page_number: 2 },
+      lines: [],
+      session_markers: [],
+    };
+    expect(() => pageAddress(wrapper)).toThrow(/page-with-lines/);
+    // And the right call still works, which is what the message asks for.
+    expect(pageAddress(wrapper.page)).toEqual(["2026-10-08", 2, "u1"]);
+  });
+
+  it("does not refuse a real page row that happens to carry a page field", () => {
+    // Narrow on purpose: the refusal keys on a MISSING id, because a row with
+    // an id is addressable whatever else hangs off it, and a preview row that
+    // carried both would otherwise stop working.
+    expect(pageAddress({ id: "u2", date: "d", page_number: 1, page: {} }))
+      .toEqual(["d", 1, "u2"]);
+  });
 });

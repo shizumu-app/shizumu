@@ -211,6 +211,12 @@ fn merge_page_yjs(
             // row is right either way, and stays right if this UPDATE
             // ever grows a gate.
             rearm_swept_attachments_of_row(conn, PAGE_CONTENT_SQL, page_id);
+            // THE SEARCH INDEX, which the snapshot above exists for: the
+            // comment on `snapshot_json` says receivers include it "so
+            // receivers can keep their FTS index fresh", and until this
+            // line nothing did. Without it the words are in the row and
+            // invisible to the device's own search.
+            crate::search::reindex_page(conn, page_id);
         }
         None => {
             conn.execute(
@@ -341,6 +347,14 @@ fn merge_page(
                 // snapshot this device may have moved on from.
                 rearm_swept_attachments_of_row(conn, PAGE_CONTENT_SQL, page_id);
             }
+            // Outside the `if let Some(c)`, because the FTS row is owed for
+            // the page and not for the content: a backfill that carried no
+            // content still created the row, and the focus line it may have
+            // carried is an indexed column. Reading the row makes the
+            // skipped-insert case right too — the index then matches
+            // whatever this device already had rather than the payload it
+            // has moved on from.
+            crate::search::reindex_page(conn, page_id);
             Ok(MergeOutcome::Applied)
         }
         "create_new_page" | "get_or_create_today" => {
@@ -354,9 +368,30 @@ fn merge_page(
                 conn, page_id, date, page_number, None,
                 None, None, None, hlc_ts, &now,
             )?;
+            // An empty page gets an empty FTS row, as it does locally. Not
+            // pointless: `save_page_content` arriving later rewrites it,
+            // and the alternative is a row this device's index has never
+            // heard of — which is the half of the defect that left a page
+            // with no FTS row at all.
+            crate::search::reindex_page(conn, page_id);
             Ok(MergeOutcome::Applied)
         }
-        "save_page_content" => {
+        // `save_trail_content` is a continuous trail's save: the same whole
+        // doc in the same `content_json` field, from the command both clients
+        // route every continuous save through (commands.rs
+        // `emit_trail_content_op`). It had no arm, so it fell to
+        // `SkippedUnknownOp` — benign to pull.rs, so neither applied nor
+        // parked — and no continuous-trail edit ever reached another device
+        // (sync journey J5, 2026-10-16). Its `lineage_id` field is NOT
+        // applied here: the trail travels on its own stamp
+        // (`set_focus_lineage`), and a content save must not move a page.
+        //
+        // Same whole-doc LWW on `hlc_content` as a discrete save. That is
+        // the honest rule for a continuous doc today because nothing on
+        // either client writes `yjs_state` (see `merge_page_yjs`): the doc
+        // IS content_json on both ends, so there is no CRDT state this
+        // write could fight.
+        "save_page_content" | "save_trail_content" => {
             let Some(content) = fields.get("content_json").and_then(|v| v.as_str()) else {
                 return Ok(MergeOutcome::SkippedMalformed);
             };
@@ -395,9 +430,18 @@ fn merge_page(
                 let missing = matches!(skip, MergeOutcome::SkippedMalformed);
                 let not_superseded = max_content_op_hlc(conn, page_id)
                     .map_or(true, |max| hlc_ts >= max);
+                let gc_guess_disproved = gc_tombstone_hlc(conn, page_id).is_some()
+                    && !crate::commands::is_page_empty(&Some(content.to_string()));
+                // A writer's delete is not a guess, so emptiness does not
+                // enter into it — order does, the same order the `delete_page`
+                // arm applies on the device that kept editing: a page written
+                // after the delete was issued keeps living there. Without
+                // this the deleting device refused that very edit for a page
+                // it no longer had, and the two devices disagreed for good.
+                let written_after_user_delete =
+                    user_delete_hlc(conn, page_id).is_some_and(|t| hlc_ts > t);
                 let resurrect = missing
-                    && gc_tombstone_hlc(conn, page_id).is_some()
-                    && !crate::commands::is_page_empty(&Some(content.to_string()))
+                    && (gc_guess_disproved || written_after_user_delete)
                     && not_superseded;
                 if resurrect {
                     if let Some((date, page_number)) = create_op_fields(conn, page_id) {
@@ -405,6 +449,14 @@ fn merge_page(
                             conn, page_id, &date, page_number, None,
                             Some(content), None, None, hlc_ts, &now,
                         )?;
+                        // The delete took the row's trail and focus line with
+                        // it, and the device that kept the page still has
+                        // both. Put back the newest of each the log saw, at
+                        // its own stamp, so the page lands on the same trail
+                        // here as there and memory does not treat it as an
+                        // untrailed stray.
+                        restore_page_field_from_log(conn, page_id, "set_focus_lineage", "lineage_id", "lineage_id", "hlc_lineage")?;
+                        restore_page_field_from_log(conn, page_id, "update_what_matters_now", "text", "what_matters_now", "hlc_focus")?;
                         // Mirror the backfill arm: a GC tombstone is precisely
                         // the event that orphaned this page's pins
                         // (shared_objects.status='orphaned') and swept its
@@ -417,6 +469,7 @@ fn merge_page(
                             log::warn!("pin orphan rescue failed for page {page_id}: {e}");
                         }
                         rearm_swept_attachments_of_row(conn, PAGE_CONTENT_SQL, page_id);
+                        crate::search::reindex_page(conn, page_id);
                         return Ok(MergeOutcome::Applied);
                     }
                 }
@@ -437,6 +490,7 @@ fn merge_page(
                 log::warn!("pin orphan rescue failed for page {page_id}: {e}");
             }
             rearm_swept_attachments(conn, content);
+            crate::search::reindex_page(conn, page_id);
             Ok(MergeOutcome::Applied)
         }
         "update_what_matters_now" | "update_what_shifted" => {
@@ -487,6 +541,12 @@ fn merge_page(
             if n == 0 {
                 return Ok(MergeOutcome::SkippedStaleHlc);
             }
+            // Both of these are INDEXED COLUMNS — `pages_fts` carries
+            // `what_matters_now` and `what_shifted` beside the content, and
+            // the second is the whole reason the dropped strip's data was
+            // kept reachable by search. A focus line that arrives from
+            // another device has to be findable the way a typed one is.
+            crate::search::reindex_page(conn, page_id);
             Ok(MergeOutcome::Applied)
         }
         "set_focus_lineage" => {
@@ -527,6 +587,11 @@ fn merge_page(
 /// Auto-create a page row if it doesn't exist. Used when a content op
 /// arrives before the corresponding create op (out-of-order delivery).
 fn ensure_page_exists(conn: &Connection, page_id: &str, hlc_ts: i64) -> rusqlite::Result<()> {
+    // Not a page the writer deleted after this op: the caller's UPDATE then
+    // matches nothing and reports the op stale.
+    if deleted_after(conn, PAGE_DELETES, page_id, hlc_ts) {
+        return Ok(());
+    }
     let now = chrono::Utc::now().to_rfc3339();
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let page_number = next_free_page_number(conn, &today)?;
@@ -559,8 +624,100 @@ fn gc_tombstone_hlc(conn: &Connection, page_id: &str) -> Option<i64> {
     .flatten()
 }
 
+/// The newest writer's delete (`delete_page` tombstone) logged for this
+/// page, from this device or a peer. None when the page was never deleted
+/// by hand — a GC sweep is `gc_tombstone_hlc`'s business, not this one's.
+fn user_delete_hlc(conn: &Connection, page_id: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT MAX(hlc_ts) FROM op_log
+          WHERE op_kind = 'tombstone'
+            AND json_extract(CAST(payload_blob AS TEXT), '$.op') = 'delete_page'
+            AND json_extract(CAST(payload_blob AS TEXT), '$.page_id') = ?1",
+        params![page_id],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+/// The writer's deletes that end a row, as (tombstone op, key naming the
+/// row). A fold ends its source trail exactly as a delete does.
+const PAGE_DELETES: &[(&str, &str)] = &[("delete_page", "$.page_id")];
+const PIN_DELETES: &[(&str, &str)] = &[("delete_pin", "$.pin_id")];
+const LINEAGE_DELETES: &[(&str, &str)] = &[("delete_lineage", "$.lineage_id"), ("fold_lineage", "$.source_id")];
+
+/// Did a writer delete this row AFTER the op at `hlc_ts` was made? Then that
+/// op is what the delete meant to end, and must not create or fabricate the
+/// row: an op held for a missing dependency is retried after the rest of its
+/// batch, by which time the delete further down the stream has already run
+/// against a row that was not there yet (replay_failed_merges in pull.rs).
+/// A GC sweep is not a writer's delete (`gc_tombstone_hlc`).
+fn deleted_after(conn: &Connection, deletes: &[(&str, &str)], id: &str, hlc_ts: i64) -> bool {
+    deletes.iter().any(|(op, key)| {
+        conn.query_row(
+            &format!(
+                "SELECT MAX(hlc_ts) FROM op_log
+                  WHERE op_kind = 'tombstone'
+                    AND json_extract(CAST(payload_blob AS TEXT), '$.op') = ?1
+                    AND json_extract(CAST(payload_blob AS TEXT), '{key}') = ?2"
+            ),
+            params![op, id],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
+        .is_some_and(|t| t > hlc_ts)
+    })
+}
+
+/// Write back one page field from the newest `op` the log holds for the
+/// page, stamped with that op's own HLC, so a later write to the field
+/// still wins or loses exactly as it would have against the original row.
+/// Nothing logged leaves the field as the insert left it. `column` and
+/// `stamp` are literals from the one caller, so `format!` is safe.
+fn restore_page_field_from_log(
+    conn: &Connection,
+    page_id: &str,
+    op: &str,
+    field: &str,
+    column: &'static str,
+    stamp: &'static str,
+) -> rusqlite::Result<()> {
+    let path = format!("$.fields.{field}");
+    let found: Option<(Option<String>, i64)> = conn
+        .query_row(
+            "SELECT json_extract(CAST(payload_blob AS TEXT), ?3), hlc_ts FROM op_log
+              WHERE op_kind = 'page_blob'
+                AND json_extract(CAST(payload_blob AS TEXT), '$.op') = ?2
+                AND json_extract(CAST(payload_blob AS TEXT), '$.page_id') = ?1
+              ORDER BY hlc_ts DESC LIMIT 1",
+            params![page_id, op, path],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((value, ts)) = found {
+        let mut value = value.filter(|v| !v.is_empty());
+        // A trail deleted since leaves the page untrailed rather than
+        // failing the whole resurrect on the foreign key.
+        if column == "lineage_id" {
+            if let Some(id) = value.as_deref() {
+                let exists: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM lineages WHERE id = ?", params![id], |r| r.get(0))?;
+                if exists == 0 {
+                    value = None;
+                }
+            }
+        }
+        conn.execute(
+            &format!("UPDATE pages SET {column} = ?, {stamp} = ? WHERE id = ?"),
+            params![value, ts, page_id],
+        )?;
+    }
+    Ok(())
+}
+
 /// The highest hlc_ts among all content-bearing ops (`save_page_content`,
-/// `backfill_page_initial_state`) ever logged for this page — the newest
+/// `save_trail_content`, `backfill_page_initial_state`) ever logged for this page — the newest
 /// content state any device has committed, independent of whether the
 /// tombstone later erased the row that held it. None when no content op
 /// has ever been logged.
@@ -581,7 +738,7 @@ fn max_content_op_hlc(conn: &Connection, page_id: &str) -> Option<i64> {
         "SELECT MAX(hlc_ts) FROM op_log
           WHERE op_kind = 'page_blob'
             AND json_extract(CAST(payload_blob AS TEXT), '$.op')
-                IN ('save_page_content', 'backfill_page_initial_state')
+                IN ('save_page_content', 'save_trail_content', 'backfill_page_initial_state')
             AND json_extract(CAST(payload_blob AS TEXT), '$.page_id') = ?1",
         params![page_id],
         |r| r.get::<_, Option<i64>>(0),
@@ -677,7 +834,7 @@ fn insert_page_with_collision_resolution(
             |r| r.get(0),
         )
         .optional()?;
-    if existing_id.is_some() {
+    if existing_id.is_some() || deleted_after(conn, PAGE_DELETES, page_id, hlc_ts) {
         return Ok(());
     }
     // Check for collision on (date, page_number).
@@ -806,7 +963,10 @@ fn rescue_orphaned_pins(
     let mut pin_ids: Vec<String> = Vec::new();
     fn walk(node: &Value, out: &mut Vec<String>) {
         if let Some(pid) = node.get("attrs").and_then(|a| a.get("pinId")).and_then(|v| v.as_str()) {
-            out.push(pid.to_string());
+            // A mention points at a pin; it does not bring an orphan back.
+            if !crate::commands::is_pin_mention(node) {
+                out.push(pid.to_string());
+            }
         }
         if let Some(arr) = node.get("content").and_then(|c| c.as_array()) {
             for child in arr {
@@ -862,6 +1022,9 @@ fn merge_lineage(
                 .and_then(|v| v.as_str())
                 .unwrap_or("discrete");
             let parent_id = fields.get("parent_id").and_then(|v| v.as_str());
+            if deleted_after(conn, LINEAGE_DELETES, lineage_id, hlc_ts) {
+                return Ok(MergeOutcome::SkippedStaleHlc);
+            }
             conn.execute(
                 "INSERT OR IGNORE INTO lineages
                    (id, name, created_at, mode, parent_id, applied_hlc_ts)
@@ -954,11 +1117,19 @@ fn merge_pin(
                 return Ok(MergeOutcome::SkippedMalformed);
             };
             let title = fields.get("title").and_then(|v| v.as_str());
+            if deleted_after(conn, PIN_DELETES, pin_id, hlc_ts) {
+                return Ok(MergeOutcome::SkippedStaleHlc);
+            }
+            // A backfill carries the pin's whole state (a device that starts
+            // over sends no history); a create names none of these.
+            let status = fields.get("status").and_then(|v| v.as_str()).unwrap_or("open");
+            let auto_insert = fields.get("auto_insert").and_then(|v| v.as_bool()).unwrap_or(false);
+            let position = fields.get("position").and_then(|v| v.as_i64()).unwrap_or(0);
             conn.execute(
                 "INSERT OR IGNORE INTO shared_objects
                    (id, lineage_id, source_page_id, object_type, title, content,
-                    status, position, created_at, updated_at, applied_hlc_ts)
-                 VALUES (?, ?, ?, ?, ?, ?, 'open', 0, ?, ?, ?)",
+                    status, auto_insert, position, created_at, updated_at, applied_hlc_ts)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     pin_id,
                     lineage_id,
@@ -966,6 +1137,9 @@ fn merge_pin(
                     object_type,
                     title,
                     content,
+                    status,
+                    auto_insert,
+                    position,
                     &now,
                     &now,
                     hlc_ts,
@@ -1098,13 +1272,24 @@ fn merge_tombstone(
                 return Ok(MergeOutcome::SkippedStaleHlc);
             }
             let target = payload.get("target_lineage_id").and_then(|v| v.as_str());
+            // Mirror `commands::delete_lineage_inner` exactly, or the two
+            // devices end up with different trees:
+            //   • pages        → target (None = unlink)
+            //   • child trails → the deleted trail's OWN parent (or top level)
+            //   • pins         → target if one was chosen, else that parent
+            // The op carries no parent, so it is read from this device's
+            // row before the row goes. If the row is already absent here
+            // the read yields NULL — the same fallback the local command's
+            // subquery has — and no child or pin can legitimately still
+            // point at a trail this device never had or already removed.
+            let parent = lineage_parent(conn, lineage_id)?;
             // Cascade reparent — gated per-child so a child that's
             // been moved by a newer op keeps its current lineage.
             conn.execute(
                 "UPDATE lineages
                     SET parent_id = ?, applied_hlc_ts = ?
                   WHERE parent_id = ? AND applied_hlc_ts < ?",
-                params![target, hlc_ts, lineage_id, hlc_ts],
+                params![parent, hlc_ts, lineage_id, hlc_ts],
             )?;
             conn.execute(
                 "UPDATE pages
@@ -1112,11 +1297,12 @@ fn merge_tombstone(
                   WHERE lineage_id = ? AND applied_hlc_ts < ?",
                 params![target, hlc_ts, lineage_id, hlc_ts],
             )?;
+            let pin_home = target.map(str::to_owned).or(parent);
             conn.execute(
                 "UPDATE shared_objects
                     SET lineage_id = ?, applied_hlc_ts = ?
                   WHERE lineage_id = ? AND applied_hlc_ts < ?",
-                params![target, hlc_ts, lineage_id, hlc_ts],
+                params![pin_home, hlc_ts, lineage_id, hlc_ts],
             )?;
             conn.execute("DELETE FROM lineages WHERE id = ?", params![lineage_id])?;
             Ok(MergeOutcome::Applied)
@@ -1143,11 +1329,15 @@ fn merge_tombstone(
                   WHERE lineage_id = ? AND applied_hlc_ts < ?",
                 params![target_id, hlc_ts, source_id, hlc_ts],
             )?;
+            // Subtrails go to the SOURCE's own parent, not the fold
+            // target — as `commands::fold_lineage_inner` does locally.
+            // Read before the row is deleted (absent row → NULL, as there).
+            let source_parent = lineage_parent(conn, source_id)?;
             conn.execute(
                 "UPDATE lineages
                     SET parent_id = ?, applied_hlc_ts = ?
                   WHERE parent_id = ? AND applied_hlc_ts < ?",
-                params![target_id, hlc_ts, source_id, hlc_ts],
+                params![source_parent, hlc_ts, source_id, hlc_ts],
             )?;
             conn.execute("DELETE FROM lineages WHERE id = ?", params![source_id])?;
             Ok(MergeOutcome::Applied)
@@ -1199,6 +1389,22 @@ fn merge_tombstone(
             )?;
             Ok(MergeOutcome::Applied)
         }
+        "delete_page" => {
+            // A writer deleted this page on another device. Unlike the GC
+            // tombstone above this is not a guess, so emptiness does not
+            // enter into it — only order does: a page touched here by an
+            // op newer than the delete keeps living (the same stale gate
+            // delete_lineage uses). The delete itself is the one the local
+            // command runs, pins orphaned with their cache intact.
+            let Some(page_id) = payload.get("page_id").and_then(|v| v.as_str()) else {
+                return Ok(MergeOutcome::SkippedMalformed);
+            };
+            if !row_is_stalable(conn, "pages", page_id, hlc_ts)? {
+                return Ok(MergeOutcome::SkippedStaleHlc);
+            }
+            crate::commands::delete_page_rows(conn, page_id).map_err(MergeError::Db)?;
+            Ok(MergeOutcome::Applied)
+        }
         "delete_pin" => {
             let Some(pin_id) = payload.get("pin_id").and_then(|v| v.as_str()) else {
                 return Ok(MergeOutcome::SkippedMalformed);
@@ -1243,6 +1449,19 @@ fn row_is_stalable(
         Some(ts) => ts < hlc_ts,
         None => true,
     })
+}
+
+/// This device's `parent_id` for a lineage; `None` for a root or a row
+/// that is not here.
+fn lineage_parent(conn: &Connection, lineage_id: &str) -> Result<Option<String>, MergeError> {
+    Ok(conn
+        .query_row(
+            "SELECT parent_id FROM lineages WHERE id = ?",
+            params![lineage_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
 }
 
 fn op_name(payload: &Value) -> &str {
@@ -1304,7 +1523,10 @@ fn check_pin_divergence(conn: &Connection, page_id: &str) -> rusqlite::Result<()
 fn collect_pin_ids(node: &serde_json::Value, out: &mut std::collections::HashSet<String>) {
     if let Some(attrs) = node.get("attrs").and_then(|a| a.as_object()) {
         if let Some(pin_id) = attrs.get("pinId").and_then(|v| v.as_str()) {
-            out.insert(pin_id.to_string());
+            // A mention of a diverged pin must not make it look live.
+            if !crate::commands::is_pin_mention(node) {
+                out.insert(pin_id.to_string());
+            }
         }
     }
     if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
@@ -1755,6 +1977,130 @@ mod tests {
         assert_eq!(got, new_content);
     }
 
+    /// Writing that arrives from another device is findable by the
+    /// receiving device's own search.
+    ///
+    /// MEASURED BEFORE THIS EXISTED, on a paired A06 and desktop: the
+    /// phone's page arrived whole, the row held the words, and the
+    /// desktop's `search_pages` returned nothing. Two shapes, both here —
+    /// a page that arrives whole had no `pages_fts` row at all, and a page
+    /// created empty that morning kept the empty row it was created with.
+    /// `reindex_once` repairs neither: it is guarded to one run per
+    /// install and has already had it.
+    #[test]
+    fn synced_writing_is_searchable_on_the_receiving_device() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        let text = "cormorant";
+        let content = format!(
+            r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{{"type":"text","text":"{text}"}}]}}]}}"#
+        );
+
+        // THE PAGE ARRIVES WHOLE, which is what a new device pulling an
+        // account's history sees for every page it has never had.
+        apply(
+            &conn,
+            "page_blob",
+            &payload_bytes(json!({
+                "op": "backfill_page_initial_state",
+                "page_id": "p-arrived",
+                "fields": {
+                    "date": "2026-10-12",
+                    "page_number": 1,
+                    "content_json": content,
+                },
+            })),
+        )
+        .unwrap();
+
+        let found: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pages_fts WHERE pages_fts MATCH ?",
+                params![text],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1, "a page that arrived whole is not in the search index");
+
+        // AND THE OTHER SHAPE: a row this device already had, created
+        // empty, filled in by a remote save. The stale FTS row is the one
+        // written at creation, so a fix that only inserted when missing
+        // would leave this one empty and pass the assertion above.
+        apply(
+            &conn,
+            "page_blob",
+            &payload_bytes(json!({
+                "op": "create_new_page",
+                "page_id": "p-local",
+                "fields": {"date": "2026-10-12", "page_number": 2},
+            })),
+        )
+        .unwrap();
+        let empty_first: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pages_fts WHERE page_id = 'p-local'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(empty_first, 1, "an empty page still gets an index row, as it does locally");
+
+        apply(
+            &conn,
+            "page_blob",
+            &payload_bytes(json!({
+                "op": "save_page_content",
+                "page_id": "p-local",
+                "fields": {"content_json": content},
+            })),
+        )
+        .unwrap();
+        let both: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pages_fts WHERE pages_fts MATCH ?",
+                params![text],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(both, 2, "a remote save did not rewrite the page's stale index row");
+    }
+
+    /// The focus line is an indexed column, and one that arrives from
+    /// another device has to be findable the way a typed one is.
+    #[test]
+    fn a_synced_focus_line_is_searchable() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        apply(
+            &conn,
+            "page_blob",
+            &payload_bytes(json!({
+                "op": "create_new_page",
+                "page_id": "p-focus",
+                "fields": {"date": "2026-10-12", "page_number": 1},
+            })),
+        )
+        .unwrap();
+        apply(
+            &conn,
+            "page_blob",
+            &payload_bytes(json!({
+                "op": "update_what_matters_now",
+                "page_id": "p-focus",
+                "fields": {"text": "kittiwake"},
+            })),
+        )
+        .unwrap();
+        let found: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pages_fts WHERE pages_fts MATCH ?",
+                params!["kittiwake"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1, "a focus line that arrived by sync is not in the search index");
+    }
+
     #[test]
     fn save_page_content_for_unknown_page_does_not_create_phantom_row() {
         let db = test_db();
@@ -1859,6 +2205,173 @@ mod tests {
             [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(status, "open", "resurrect must un-orphan a pin still referenced by the content");
         assert_eq!(source_page_id.as_deref(), Some("pgz"), "rescue_orphaned_pins re-stamps a NULL source_page_id to the page that now carries it");
+    }
+
+    /// An @-mention of a pin arriving on another page carries the pin's id
+    /// in `pinId`, like the pinned block. It is a pointer, not the pin: it
+    /// must not bring an orphaned pin back to open on a page that only
+    /// mentions it (commands::is_pin_mention).
+    #[test]
+    fn a_page_that_only_mentions_an_orphaned_pin_does_not_rescue_it() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO shared_objects (id, source_page_id, object_type, content, status, position, created_at, updated_at)
+             VALUES ('PIN1', NULL, 'note', 'x', 'orphaned', 0, '0', '0')",
+            [],
+        ).unwrap();
+        let mentioning = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"see "},{"type":"pinRef","attrs":{"pinId":"PIN1","labelSnapshot":"x"}}]}]}"#;
+        rescue_orphaned_pins(&conn, "pgm", mentioning).unwrap();
+        let (status, source): (String, Option<String>) = conn.query_row(
+            "SELECT status, source_page_id FROM shared_objects WHERE id='PIN1'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((status.as_str(), source), ("orphaned", None));
+    }
+
+    fn log_op(conn: &Connection, id: &str, kind: &str, hlc: i64, payload: serde_json::Value) {
+        conn.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, device_id, state, applied_at, created_at)
+             VALUES (?, ?, 'pgd', ?, ?, '', 'committed', 't', 't')",
+            params![id, kind, payload.to_string().into_bytes(), hlc],
+        ).unwrap();
+    }
+
+    /// The device that deleted a page by hand, receiving an edit made on the
+    /// other device after the delete was issued. That device kept the page
+    /// (`delete_page_does_not_erase_a_page_touched_since`); this one must
+    /// take it back, on the same trail and with the same focus line, or the
+    /// two disagree about whether the page exists for good.
+    #[test]
+    fn an_edit_newer_than_a_user_delete_brings_the_page_back_on_its_trail() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO lineages (id, name, created_at) VALUES ('trail-garden', 'garden', '0')", []).unwrap();
+        log_op(&conn, "c1", "page_blob", 50, json!({"op":"create_new_page","page_id":"pgd","fields":{"date":"2026-10-02","page_number":2}}));
+        log_op(&conn, "l1", "page_blob", 60, json!({"op":"set_focus_lineage","page_id":"pgd","fields":{"lineage_id":"trail-garden"}}));
+        log_op(&conn, "f1", "page_blob", 70, json!({"op":"update_what_matters_now","page_id":"pgd","fields":{"text":"the beds before frost"}}));
+        log_op(&conn, "d1", "tombstone", 100, json!({"op":"delete_page","page_id":"pgd"}));
+        let payload = json!({
+            "op": "save_page_content", "page_id": "pgd", "hlc_ts": 200,
+            "fields": { "content_json": r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"garlic in by friday"}]}]}"# }
+        });
+        let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
+        assert_eq!(out, MergeOutcome::Applied);
+        let row: (String, i64, Option<String>, Option<String>, i64, i64) = conn.query_row(
+            "SELECT date, page_number, lineage_id, what_matters_now, hlc_lineage, hlc_focus FROM pages WHERE id='pgd'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap();
+        assert_eq!(row.0, "2026-10-02");
+        assert_eq!(row.1, 2);
+        assert_eq!(row.2.as_deref(), Some("trail-garden"), "the page comes back on the trail it left");
+        assert_eq!(row.3.as_deref(), Some("the beds before frost"));
+        assert_eq!((row.4, row.5), (60, 70), "each field keeps its own op's stamp");
+    }
+
+    /// The other side of the same order: an edit made BEFORE the delete
+    /// was issued is the edit the delete meant to discard. The other device
+    /// dropped the page on that delete too, so both agree it is gone.
+    #[test]
+    fn an_edit_older_than_a_user_delete_stays_refused() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        log_op(&conn, "c1", "page_blob", 50, json!({"op":"create_new_page","page_id":"pgd","fields":{"date":"2026-10-02","page_number":2}}));
+        log_op(&conn, "d1", "tombstone", 100, json!({"op":"delete_page","page_id":"pgd"}));
+        let payload = json!({
+            "op": "save_page_content", "page_id": "pgd", "hlc_ts": 90,
+            "fields": { "content_json": r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"older words"}]}]}"# }
+        });
+        let out = apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
+        assert_eq!(out, MergeOutcome::SkippedMalformed);
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM pages WHERE id='pgd'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    // HELD OPS AND THE DELETES THAT OVERTOOK THEM. An op that cannot merge
+    // yet (its trail has not arrived) is parked and retried in sequence
+    // order once the batch is in (pull.rs, replay_failed_merges). By then
+    // the row's delete, later in the stream, has already run against a row
+    // that was never there. On 2026-10-23 a fresh laptop joining a reset
+    // phone got back a page, a pin and a trail the phone had deleted by
+    // hand: each one's held create or edit came back after its delete.
+
+    fn rows(conn: &Connection, table: &str, id: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE id = ?"), params![id], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_held_page_op_does_not_bring_back_a_page_deleted_after_it() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO lineages (id, name, created_at) VALUES ('trail-garden', 'garden', '0')", []).unwrap();
+        log_op(&conn, "d1", "tombstone", 100, json!({"op":"delete_page","page_id":"pgd"}));
+        for payload in [
+            json!({"op":"create_new_page","page_id":"pgd","hlc_ts":50,"fields":{"date":"2026-10-02","page_number":2}}),
+            json!({"op":"set_focus_lineage","page_id":"pgd","hlc_ts":60,"fields":{"lineage_id":"trail-garden"}}),
+            json!({"op":"update_what_matters_now","page_id":"pgd","hlc_ts":70,"fields":{"text":"the beds before frost"}}),
+        ] {
+            apply(&conn, "page_blob", payload.to_string().as_bytes()).unwrap();
+            assert_eq!(rows(&conn, "pages", "pgd"), 0, "{} recreated a deleted page", payload["op"]);
+        }
+    }
+
+    #[test]
+    fn a_held_pin_create_does_not_bring_back_a_pin_deleted_after_it() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        log_op(&conn, "d1", "tombstone", 100, json!({"op":"delete_pin","pin_id":"pin-knot"}));
+        let payload = json!({"op":"create_pin","pin_id":"pin-knot","hlc_ts":50,
+            "fields":{"object_type":"note","content":"the ferryman never speaks"}});
+        apply(&conn, "pin_op", payload.to_string().as_bytes()).unwrap();
+        assert_eq!(rows(&conn, "shared_objects", "pin-knot"), 0);
+    }
+
+    #[test]
+    fn a_held_trail_create_does_not_bring_back_a_trail_deleted_or_folded_after_it() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        log_op(&conn, "d1", "tombstone", 100, json!({"op":"delete_lineage","lineage_id":"trail-walk","target_lineage_id":null}));
+        log_op(&conn, "d2", "tombstone", 100, json!({"op":"fold_lineage","source_id":"trail-siteb","target_id":"trail-walk"}));
+        for id in ["trail-walk", "trail-siteb"] {
+            let payload = json!({"op":"create_lineage","lineage_id":id,"hlc_ts":50,"fields":{"name":id,"mode":"discrete"}});
+            apply(&conn, "lineage_op", payload.to_string().as_bytes()).unwrap();
+            assert_eq!(rows(&conn, "lineages", id), 0, "{id} came back");
+        }
+    }
+
+    /// A backfilled pin is the pin's whole state on an account that has no
+    /// history for it, so its status, carry-forward and position land with
+    /// it. A plain create names none of them and gets the defaults.
+    #[test]
+    fn a_backfilled_pin_lands_with_its_status_carry_forward_and_position() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        for (id, op, extra) in [
+            ("pin-full", "backfill_create_pin", json!({"status":"orphaned","auto_insert":true,"position":3})),
+            ("pin-bare", "create_pin", json!({})),
+        ] {
+            let mut fields = json!({"object_type":"note","content":"the quay floods twice"});
+            fields.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let payload = json!({"op":op,"pin_id":id,"hlc_ts":50,"fields":fields});
+            apply(&conn, "pin_op", payload.to_string().as_bytes()).unwrap();
+        }
+        let row = |id: &str| -> (String, i64, i64) {
+            conn.query_row("SELECT status, auto_insert, position FROM shared_objects WHERE id = ?", [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+        };
+        assert_eq!(row("pin-full"), ("orphaned".to_string(), 1, 3));
+        assert_eq!(row("pin-bare"), ("open".to_string(), 0, 0));
+    }
+
+    /// The order rule, not a blanket ban: a create stamped after the delete
+    /// is not the thing the delete meant, and goes ahead.
+    #[test]
+    fn a_create_newer_than_the_delete_still_lands() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        log_op(&conn, "d1", "tombstone", 40, json!({"op":"delete_pin","pin_id":"pin-knot"}));
+        let payload = json!({"op":"create_pin","pin_id":"pin-knot","hlc_ts":50,
+            "fields":{"object_type":"note","content":"the ferryman never speaks"}});
+        apply(&conn, "pin_op", payload.to_string().as_bytes()).unwrap();
+        assert_eq!(rows(&conn, "shared_objects", "pin-knot"), 1);
     }
 
     /// Without any GC tombstone in the log, a missing row for
@@ -2404,18 +2917,18 @@ mod tests {
     }
 
     #[test]
-    fn delete_lineage_with_null_target_makes_children_top_level() {
+    fn delete_lineage_with_null_target_moves_children_to_grandparent() {
+        // CLAUDE.md: "Deleting a parent trail re-parents its children to
+        // the grandparent (or null)". This test used to pin the opposite
+        // (children went top-level whenever the target was null), which is
+        // not what the deleting device did locally.
         let db = test_db();
         let conn = db.lock().unwrap();
         conn.execute(
-            "INSERT INTO lineages (id, name, created_at, mode) VALUES
-                ('lin-root', 'r', '0', 'discrete'),
-                ('lin-kid', 'k', '0', 'discrete')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE lineages SET parent_id = 'lin-root' WHERE id = 'lin-kid'",
+            "INSERT INTO lineages (id, name, created_at, mode, parent_id) VALUES
+                ('lin-grand', 'g', '0', 'discrete', NULL),
+                ('lin-root', 'r', '0', 'discrete', 'lin-grand'),
+                ('lin-kid', 'k', '0', 'discrete', 'lin-root')",
             [],
         )
         .unwrap();
@@ -2428,7 +2941,157 @@ mod tests {
         let p: Option<String> = conn
             .query_row("SELECT parent_id FROM lineages WHERE id='lin-kid'", [], |r| r.get(0))
             .unwrap();
-        assert!(p.is_none(), "child becomes top-level when target is null");
+        assert_eq!(p.as_deref(), Some("lin-grand"), "child moves to the deleted trail's parent");
+    }
+
+    #[test]
+    fn delete_root_lineage_with_null_target_makes_children_top_level() {
+        // The "(or null)" half of the rule: a deleted root has no parent.
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO lineages (id, name, created_at, mode, parent_id) VALUES
+                ('lin-root', 'r', '0', 'discrete', NULL),
+                ('lin-kid', 'k', '0', 'discrete', 'lin-root')",
+            [],
+        )
+        .unwrap();
+        let payload = json!({
+            "op": "delete_lineage",
+            "lineage_id": "lin-root",
+            "target_lineage_id": null
+        });
+        apply(&conn, "tombstone", &payload_bytes(payload)).unwrap();
+        let p: Option<String> = conn
+            .query_row("SELECT parent_id FROM lineages WHERE id='lin-kid'", [], |r| r.get(0))
+            .unwrap();
+        assert!(p.is_none(), "child of a deleted root becomes top-level");
+    }
+
+    // ---- two-device parity: the receiver's merge must leave the same
+    // tree the originating device's local command left. Device A runs the
+    // real command (`commands::*_inner`), device B applies the tombstone. ----
+
+    /// Seed one device: g > p > c, plus an unrelated root x. p owns a page
+    /// and a pin; c owns a pin of its own (it must not move).
+    fn seed_trail_tree(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO lineages (id, name, created_at, mode, parent_id) VALUES
+                ('lin-g', 'g', '0', 'discrete', NULL),
+                ('lin-p', 'p', '0', 'discrete', 'lin-g'),
+                ('lin-c', 'c', '0', 'discrete', 'lin-p'),
+                ('lin-x', 'x', '0', 'discrete', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, lineage_id, created_at, updated_at)
+             VALUES ('pg-p', '2026-10-01', 1, 'lin-p', '0', '0')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO shared_objects (id, lineage_id, source_page_id, object_type, content, status, position, created_at, updated_at)
+             VALUES ('pin-p', 'lin-p', NULL, 'note', 'x', 'open', 0, '0', '0'),
+                    ('pin-c', 'lin-c', NULL, 'note', 'y', 'open', 1, '0', '0')",
+            [],
+        )
+        .unwrap();
+    }
+
+    type TreeShape = (
+        Vec<(String, Option<String>)>,
+        Vec<(String, Option<String>)>,
+        Vec<(String, Option<String>)>,
+    );
+
+    fn tree_shape(conn: &Connection) -> TreeShape {
+        let pairs = |sql: &str| -> Vec<(String, Option<String>)> {
+            conn.prepare(sql)
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        (
+            pairs("SELECT id, parent_id FROM lineages ORDER BY id"),
+            pairs("SELECT id, lineage_id FROM pages ORDER BY id"),
+            pairs("SELECT id, lineage_id FROM shared_objects ORDER BY id"),
+        )
+    }
+
+    fn assert_delete_parity(target: Option<&str>) -> TreeShape {
+        let db_a = test_db();
+        let a = db_a.lock().unwrap();
+        seed_trail_tree(&a);
+        crate::commands::delete_lineage_inner(&a, "lin-p", target).unwrap();
+
+        let db_b = test_db();
+        let b = db_b.lock().unwrap();
+        seed_trail_tree(&b);
+        let payload = json!({
+            "op": "delete_lineage",
+            "lineage_id": "lin-p",
+            "target_lineage_id": target,
+        });
+        apply(&b, "tombstone", &payload_bytes(payload)).unwrap();
+
+        let (shape_a, shape_b) = (tree_shape(&a), tree_shape(&b));
+        assert_eq!(shape_b, shape_a, "receiver's tree must equal the originator's");
+        shape_a
+    }
+
+    #[test]
+    fn delete_lineage_merge_matches_local_children_go_to_grandparent() {
+        // Divergence 1: with a target chosen for the pages, the merge used
+        // to send child TRAILS to the target too; locally they go to the
+        // deleted trail's own parent.
+        let (lineages, pages, pins) = assert_delete_parity(Some("lin-x"));
+        assert!(lineages.contains(&("lin-c".into(), Some("lin-g".into()))));
+        // Pages and pins follow the chosen target, unchanged.
+        assert_eq!(pages, vec![("pg-p".into(), Some("lin-x".into()))]);
+        assert!(pins.contains(&("pin-p".into(), Some("lin-x".into()))));
+    }
+
+    #[test]
+    fn delete_lineage_unlink_merge_matches_local_pins_go_to_parent() {
+        // Divergence 2: on an unlink delete the merge used to make the
+        // deleted trail's pins global; locally they go to its parent.
+        // Children go to the grandparent too (divergence 1, null target).
+        let (lineages, pages, pins) = assert_delete_parity(None);
+        assert!(lineages.contains(&("lin-c".into(), Some("lin-g".into()))));
+        assert_eq!(pages, vec![("pg-p".into(), None)], "unlink clears the page's trail");
+        assert!(pins.contains(&("pin-p".into(), Some("lin-g".into()))));
+        assert!(pins.contains(&("pin-c".into(), Some("lin-c".into()))));
+    }
+
+    #[test]
+    fn fold_lineage_merge_matches_local_children_go_to_source_parent() {
+        // Divergence 3: the merge used to move the folded trail's children
+        // under the fold target; locally they go to the source's parent.
+        let db_a = test_db();
+        let a = db_a.lock().unwrap();
+        seed_trail_tree(&a);
+        let res = crate::commands::fold_lineage_inner(&a, "lin-p", "lin-x").unwrap();
+
+        let db_b = test_db();
+        let b = db_b.lock().unwrap();
+        seed_trail_tree(&b);
+        let payload = json!({
+            "op": "fold_lineage",
+            "source_id": "lin-p",
+            "target_id": "lin-x",
+            "pages_moved": res.pages_moved,
+            "pins_moved": res.pins_moved,
+        });
+        apply(&b, "tombstone", &payload_bytes(payload)).unwrap();
+
+        let (shape_a, shape_b) = (tree_shape(&a), tree_shape(&b));
+        assert_eq!(shape_b, shape_a, "receiver's tree must equal the originator's");
+        assert!(shape_a.0.contains(&("lin-c".into(), Some("lin-g".into()))));
+        assert_eq!(shape_a.1, vec![("pg-p".into(), Some("lin-x".into()))]);
+        assert!(shape_a.2.contains(&("pin-p".into(), Some("lin-x".into()))));
     }
 
     #[test]
@@ -2502,6 +3165,86 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    /// A page the writer deleted on another device goes here too. It used
+    /// to write no op at all, so the page stayed on every peer for good;
+    /// its pin survives orphaned with its cache, as it does locally.
+    #[test]
+    fn delete_page_removes_the_page_and_orphans_its_pin() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, content_json, created_at, updated_at)
+             VALUES ('p-del', '2026-10-01', 1, '{\"type\":\"doc\"}', '0', '0')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO shared_objects (id, source_page_id, object_type, content, status, position, created_at, updated_at)
+             VALUES ('pin-kept', 'p-del', 'note', 'kept words', 'open', 0, '0', '0')",
+            [],
+        )
+        .unwrap();
+        let out = apply(&conn, "tombstone", &payload_bytes(json!({"op":"delete_page","page_id":"p-del"}))).unwrap();
+        assert_eq!(out, MergeOutcome::Applied);
+        let pages: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pages WHERE id='p-del'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pages, 0, "the deleted page must leave this device too");
+        let (status, content, source): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT status, content, source_page_id FROM shared_objects WHERE id='pin-kept'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "orphaned");
+        assert_eq!(content, "kept words", "the pin keeps its cache");
+        assert!(source.is_none());
+    }
+
+    /// What delete_focus broadcasts is what this arm reads: the op the
+    /// command builds, merged as a peer would, removes the page.
+    #[test]
+    fn the_op_delete_focus_sends_is_one_a_peer_applies() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, created_at, updated_at)
+             VALUES ('p-sent', '2026-10-01', 1, '0', '0')",
+            [],
+        )
+        .unwrap();
+        let op = crate::commands::delete_page_op("p-sent");
+        assert_eq!(op.kind.as_str(), "tombstone");
+        let out = apply(&conn, op.kind.as_str(), &payload_bytes(op.payload)).unwrap();
+        assert_eq!(out, MergeOutcome::Applied);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pages WHERE id='p-sent'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    /// Order, not emptiness, decides a user delete: a page written here
+    /// after the delete was issued elsewhere keeps living.
+    #[test]
+    fn delete_page_does_not_erase_a_page_touched_since() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pages (id, date, page_number, created_at, updated_at, applied_hlc_ts)
+             VALUES ('p-live', '2026-10-01', 1, '0', '0', 100)",
+            [],
+        )
+        .unwrap();
+        let del = json!({"op":"delete_page","page_id":"p-live","hlc_ts": 50_i64});
+        let out = apply(&conn, "tombstone", &serde_json::to_vec(&del).unwrap()).unwrap();
+        assert_eq!(out, MergeOutcome::SkippedStaleHlc);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pages WHERE id='p-live'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "a stale delete must not erase newer writing");
     }
 
     /// page_yjs with a valid yjs update against an existing page row

@@ -16,6 +16,7 @@
   losing functionality.
 -->
 <script>
+  import { holdsPin } from "../../lib/pin-node.js";
   import { onMount, onDestroy } from "svelte";
   import { fade } from "svelte/transition";
   import { navPush, navClose } from "../../lib/navstack.js";
@@ -238,7 +239,9 @@
   // exactly what's now in the source page.
   function findNodeWithPinId(node, pinId) {
     if (!node || typeof node !== "object") return null;
-    if (node.attrs && node.attrs.pinId === pinId) return node;
+    // holdsPin, not a bare pinId match: an @-mention of this pin carries
+    // the same id and is not its content (src/lib/pin-node.js).
+    if (holdsPin(node, pinId)) return node;
     if (Array.isArray(node.content)) {
       for (const child of node.content) {
         const hit = findNodeWithPinId(child, pinId);

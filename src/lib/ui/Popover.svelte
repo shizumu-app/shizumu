@@ -118,7 +118,10 @@
     window.addEventListener("scroll", onScrollOrResize, true);
     window.addEventListener("resize", onScrollOrResize);
     document.addEventListener("pointerdown", handleDocClick);
-    document.addEventListener("keydown", handleKeydown);
+    // Capture phase: a modal under this popover also listens on the
+    // document, and registered first, so in the bubble phase it heard
+    // Escape before this one could stop it and closed as well.
+    document.addEventListener("keydown", handleKeydown, true);
     // Soft-keyboard open/close can shift what's visible without a window
     // resize event (resizes-visual mode) — re-place on every transition.
     // keyboardOpen is published by keyboard-state.js, the app's single
@@ -128,7 +131,7 @@
       window.removeEventListener("scroll", onScrollOrResize, true);
       window.removeEventListener("resize", onScrollOrResize);
       document.removeEventListener("pointerdown", handleDocClick);
-      document.removeEventListener("keydown", handleKeydown);
+      document.removeEventListener("keydown", handleKeydown, true);
       unsubKeyboardOpen();
     };
   });
@@ -152,7 +155,11 @@
 
 <style>
   .popover {
-    z-index: 100;
+    /* Above the modal (scrim 200, panel 201, Modal.svelte), because a
+       popover opened from inside one is still rendered outside its DOM:
+       at 100 the settings "lock after inactivity" popover opened under the
+       settings modal, so the chip looked dead (popover-layer.test.js). */
+    z-index: 202;
     min-width: 12rem;
     /* Size to the content, not to whatever room happens to be left of the
        viewport edge. Being position:fixed with width:auto, the panel

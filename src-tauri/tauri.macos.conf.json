@@ -1,0 +1,11 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "macOS": {
+      "hardenedRuntime": true,
+      "minimumSystemVersion": "10.15",
+      "entitlements": "./entitlements.macos.plist",
+      "infoPlist": "./Info.macos.plist"
+    }
+  }
+}

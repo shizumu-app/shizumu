@@ -14,7 +14,7 @@
   component doesn't have to poll editor state.
 -->
 <script>
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, untrack } from "svelte";
   import { findCountLabel } from "../lib/editor/find-count-label.js";
   import Button from "../lib/ui/Button.svelte";
 
@@ -57,21 +57,38 @@
 
   // Auto-focus the input when the bar opens.
   $effect(() => {
-    if (open && findInputEl) {
-      // Pre-populate from active selection if non-empty + on first open.
-      if (!query && editor) {
-        const sel = editor.state.selection;
-        if (!sel.empty) {
-          const text = editor.state.doc.textBetween(sel.from, sel.to, " ").trim();
-          if (text && text.length < 60) {
-            query = text;
-            editor.commands.setFindQuery(query);
-          }
+    if (open && findInputEl) untrack(onOpen);
+  });
+  // Untracked: it reads `query`, and an effect that tracked it would re-run
+  // on every keystroke, re-selecting the box under the writer's typing.
+  function onOpen() {
+    // Pre-populate from active selection if non-empty + on first open.
+    if (!query && editor) {
+      const sel = editor.state.selection;
+      if (!sel.empty) {
+        const text = editor.state.doc.textBetween(sel.from, sel.to, " ").trim();
+        if (text && text.length < 60) {
+          query = text;
+          editor.commands.setFindQuery(query);
         }
       }
-      requestAnimationFrame(() => findInputEl?.focus());
     }
-  });
+    // Reopened with words still in the box: show their matches again,
+    // since closing took the highlights away (close() below).
+    else if (query && editor) editor.commands.setFindQuery(query);
+    requestAnimationFrame(() => { findInputEl?.focus(); findInputEl?.select(); });
+  }
+
+  // Closing used to hide the bar and nothing else. The bar stays mounted, so
+  // its query kept every match highlighted on the page after Escape, and
+  // focus was left on an input that no longer existed — on the body, where
+  // mod+H (listened for inside the editor) could not be heard and typing
+  // went nowhere. Close takes the highlights away and hands the caret back.
+  function close() {
+    try { editor?.commands.setFindQuery(""); } catch {}
+    try { editor?.commands.focus(); } catch {}
+    onClose();
+  }
 
   function handleQueryInput(e) {
     query = e.target.value;
@@ -102,7 +119,7 @@
   function handleKeydown(e) {
     if (e.key === "Escape") {
       e.preventDefault();
-      onClose();
+      close();
       return;
     }
     if (e.key === "Enter") {
@@ -147,7 +164,7 @@
       <Button variant="subtle" onClick={replaceAll}>replace all</Button>
     {/if}
 
-    <button class="find-close" onclick={onClose} aria-label="close find">×</button>
+    <button class="find-close" onclick={close} aria-label="close find">×</button>
   </div>
 {/if}
 

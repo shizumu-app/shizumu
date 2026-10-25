@@ -107,6 +107,51 @@ export function createMockInvoke() {
     return key;
   }
 
+  function findPage(pageId) {
+    for (const p of store.pages.values()) if (p.id === pageId) return p;
+    return null;
+  }
+
+  // Mirrors refresh_pin_caches (src-tauri/src/commands.rs), which both
+  // save_page_content_with_pin_refresh and save_trail_content run after the
+  // write. Every node carrying a pinId rewrites that pin's cache, takes
+  // ownership of it (source_page_id follows the doc), and un-orphans it; an
+  // open pin this page owned whose node is no longer in the doc is orphaned
+  // with its cache left as it was. The title is written only when the node
+  // has a blockTitle slot at all (extract_block_title), so a paragraph pin
+  // keeps the title it had.
+  function refreshPinCaches(pageId, contentJson) {
+    let doc;
+    try { doc = JSON.parse(contentJson); } catch { return; }
+    const found = new Map();
+    (function walk(n) {
+      if (!n || typeof n !== "object") return;
+      const pinId = n.attrs?.pinId;
+      if (typeof pinId === "string" && !found.has(pinId)) found.set(pinId, n);
+      if (Array.isArray(n.content)) n.content.forEach(walk);
+    })(doc);
+    const pins = store.pins || [];
+    const now = new Date().toISOString();
+    for (const [pinId, node] of found) {
+      const pin = pins.find(x => x.id === pinId);
+      if (!pin) continue;
+      pin.content = JSON.stringify(node);
+      if (node.attrs && Object.prototype.hasOwnProperty.call(node.attrs, "blockTitle")) {
+        const t = typeof node.attrs.blockTitle === "string" ? node.attrs.blockTitle.trim() : "";
+        pin.title = t || null;
+      }
+      pin.source_page_id = pageId;
+      if (pin.status === "orphaned") pin.status = "open";
+      pin.updated_at = now;
+    }
+    for (const pin of pins) {
+      if (pin.source_page_id === pageId && pin.status === "open" && !found.has(pin.id)) {
+        pin.status = "orphaned";
+        pin.updated_at = now;
+      }
+    }
+  }
+
   // Builds the demo's exportable snapshot of the store. Shared by
   // __demo_export (async path, via the switch below) and __demoSnapshot
   // (the synchronous accessor attached to the returned invoke function) so
@@ -137,6 +182,9 @@ export function createMockInvoke() {
 
   const invokeFn = async (cmd, args = {}) => {
     switch (cmd) {
+      case "local_today": {
+        return getLocalDateStr();
+      }
       case "get_or_create_today": {
         const key = ensureToday();
         const page = store.pages.get(key);
@@ -927,11 +975,75 @@ export function createMockInvoke() {
         }
         return results;
       }
+      // Mirrors get_canonical_trail_page: a continuous trail's earliest page,
+      // PageWithLines-shaped, and null for any other mode. It does not create
+      // the page; a continuous trail with no page yet has no document, and
+      // the shell renders that row as unselectable. The page arrives when one
+      // is assigned to the trail (set_focus_lineage).
+      case "get_canonical_trail_page": {
+        const lin = store.lineages?.get(args.lineageId);
+        if (lin?.mode !== "continuous") return null;
+        const page = [...store.pages.values()]
+          .filter(p => p.lineage_id === args.lineageId)
+          .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))[0];
+        if (!page) return null;
+        return { page, lines: store.lines.get(page.id) || [], session_markers: [] };
+      }
+      // Rust maps a NULL content_json to "" and fails when the row is absent.
+      case "load_page_content_for_modal": {
+        const page = findPage(args.pageId);
+        if (!page) return Promise.reject("Query returned no rows");
+        return page.content_json ?? "";
+      }
+      // yjsState is accepted and dropped: the mock keeps no Yjs state.
+      case "save_page_content_with_pin_refresh":
+      case "save_trail_content": {
+        const page = findPage(args.pageId);
+        if (!page) return Promise.reject("Query returned no rows");
+        page.content_json = args.contentJson;
+        page.updated_at = new Date().toISOString();
+        refreshPinCaches(page.id, args.contentJson);
+        return null;
+      }
+      // Mirrors delete_lineage_inner: pages move to the target or unlink,
+      // child trails move to the deleted trail's own parent (whatever the
+      // target), pins move to the target else to that parent (null for a
+      // root). Deleting a trail that does not exist changes nothing.
+      case "delete_lineage": {
+        if (!store.lineages) store.lineages = new Map();
+        const lin = store.lineages.get(args.lineageId);
+        if (!lin) return null;
+        const parentId = lin.parent_id ?? null;
+        const target = args.targetLineageId ?? null;
+        const now = new Date().toISOString();
+        for (const p of store.pages.values()) {
+          if (p.lineage_id === args.lineageId) { p.lineage_id = target; p.updated_at = now; }
+        }
+        for (const l of store.lineages.values()) {
+          if (l.parent_id === args.lineageId) l.parent_id = parentId;
+        }
+        for (const pin of store.pins || []) {
+          if (pin.lineage_id === args.lineageId) {
+            pin.lineage_id = target ?? parentId;
+            pin.updated_at = now;
+          }
+        }
+        store.lineages.delete(args.lineageId);
+        return null;
+      }
+      case "update_pin_scope": {
+        const pin = store.pins?.find(x => x.id === args.id);
+        if (pin) { pin.lineage_id = args.lineageId ?? null; pin.updated_at = new Date().toISOString(); }
+        return null;
+      }
       case "check_encryption_status":
         return false;
       case "setup_encryption":
+      case "change_passphrase":
+      case "remove_encryption":
       case "unlock":
       case "lock":
+      case "startup_failure":
         return null;
       case "get_lock_timeout":
         return null;
@@ -943,7 +1055,9 @@ export function createMockInvoke() {
 
       // ── v0.4 surface: browser-dev stubs ─────────────────────────────
       // These commands are backed by the Tauri/Rust layer (sync engine,
-      // attachments, pin divergence, continuous-trail canonical docs).
+      // attachments, pin divergence). The continuous-trail and pin-modal
+      // commands that used to sit here are implemented above: the phone
+      // shell reaches them, and a null there pretended a write had landed.
       // The in-memory mock backs `npm run dev` without Tauri and isn't a
       // functional reimplementation of those subsystems — component and
       // flow tests mock `$lib/api` per-test (see src/lib/__tests__/api.test.js).
@@ -966,13 +1080,7 @@ export function createMockInvoke() {
       case "attachment_local_src":
       case "append_page_to_canonical":
       case "clone_page_for_new_day":
-      case "get_canonical_trail_page":
-      case "save_trail_content":
-      case "save_page_content_with_pin_refresh":
-      case "load_page_content_for_modal":
-      case "delete_lineage":
       case "resolve_pin_divergence":
-      case "update_pin_scope":
       case "save_image_bytes":
       case "save_image_file":
       case "op_log_stats":
@@ -1024,6 +1132,13 @@ export function createMockInvoke() {
 // Public API
 export async function getOrCreateToday() {
   return call("get_or_create_today");
+}
+
+/** Today as the backend's clock has it, YYYY-MM-DD. The clock that dates
+ *  pages, so the one to ask before calling a page today's or minting one
+ *  (commands.rs `local_today` says why the WebView's is not enough). */
+export async function getLocalToday() {
+  return call("local_today");
 }
 
 export async function getPage(date, pageNumber, pageId = null) {
@@ -1396,12 +1511,27 @@ export async function setupEncryption(passphrase) {
   return call("setup_encryption", { passphrase });
 }
 
+/** Re-key the lock under a new passphrase; rejects with the reason. */
+export async function changePassphrase(current, next) {
+  return call("change_passphrase", { current, next });
+}
+
+/** Take the lock off: the database becomes a plain file again. */
+export async function removeEncryption(current) {
+  return call("remove_encryption", { current });
+}
+
 export async function unlock(passphrase) {
   return call("unlock", { passphrase });
 }
 
 export async function lockApp() {
   return call("lock");
+}
+
+/** Why the launch could not open the writer's file, or null when it did. */
+export async function getStartupFailure() {
+  return call("startup_failure");
 }
 
 export async function getLockTimeout() {

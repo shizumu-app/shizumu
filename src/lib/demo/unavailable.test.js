@@ -17,6 +17,15 @@ describe("classifyCommand", () => {
     }
   });
 
+  it("notices the sync screen's switch, force pull and reset", () => {
+    // The phone shell's sync screen reaches these three. The mock used to
+    // answer null, so the switch looked like it worked and nothing happened.
+    for (const cmd of ["sync_set_enabled", "sync_force_pull", "sync_reset"]) {
+      expect(classifyCommand(cmd)).toBe("noticed");
+      expect(noticeFor(cmd).text).toMatch(/installed app/);
+    }
+  });
+
   it("lets everything else run against the mock", () => {
     for (const cmd of ["get_or_create_today", "save_page_content", "create_pin",
                        "search_pages", "delete_all_data"]) {

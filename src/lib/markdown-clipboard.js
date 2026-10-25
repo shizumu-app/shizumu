@@ -87,6 +87,49 @@ export function serializeSelection(editor) {
   return m ? m[1] : full;
 }
 
+/**
+ * What a plain-text target receives when a selection is copied.
+ *
+ * PLAIN TEXT IS NOT MARKDOWN WITH THE SYNTAX TAKEN OUT, and the defect this
+ * replaces is what happens when it is treated that way. The copy handler
+ * built `text/plain` by stripping `#`, `*`, backticks and `~~` out of the
+ * markdown `serializeSelection` had just produced — but that markdown is
+ * ESCAPED, because the exporter backslash-escapes ` \ ` * _ { } [ ] < > ` so
+ * a page survives a round trip through a file. The strip left every one of
+ * those backslashes in place, and where the escape was `\*` it took the
+ * asterisk and left the backslash alone, so the character the writer typed
+ * was destroyed:
+ *
+ *     typed  2*3 = 6      pasted into another app  2\3 = 6
+ *     typed  snake_case   pasted into another app  snake\_case
+ *
+ * Reported from a real paste ("when copying from shizumu and paste in
+ * another app it get \ for text"), and it is corruption rather than
+ * cosmetics: the second one is ugly, the first one is wrong.
+ *
+ * So this asks ProseMirror for the text instead. `textBetween` over the
+ * selection's own fragment is what TipTap's default clipboard serializer
+ * does, and it is the only answer that cannot disagree with what is on
+ * screen — there is no serializer in the path to disagree with.
+ *
+ * Blocks are joined by a blank line, which is the separator the editor's
+ * own exporter uses between paragraphs and what a reader expects when a
+ * multi-block selection lands in a mail composer.
+ *
+ * `text/markdown` is untouched by this: an app that reads markdown wants
+ * the escapes, which is why they are there.
+ *
+ * @param {{state?: {selection?: {content?: () => {content: any}}}}|null} editor
+ * @returns {string} "" when there is nothing to read, which tells the caller
+ *   to leave the clipboard to TipTap's own default rather than writing a
+ *   blank over it.
+ */
+export function selectionPlainText(editor) {
+  const fragment = editor?.state?.selection?.content?.()?.content;
+  if (!fragment || typeof fragment.textBetween !== "function") return "";
+  return fragment.textBetween(0, fragment.size, "\n\n", (leaf) => leaf?.textContent ?? "");
+}
+
 export function parseAndInsert(editor, md) {
   if (!editor || typeof md !== "string" || md.length === 0) return false;
   // parsePage expects frontmatter; synthesise a minimal one so the

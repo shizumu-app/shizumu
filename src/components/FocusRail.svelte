@@ -2,6 +2,7 @@
   import { onDestroy } from "svelte";
   import { getLocalDateStr } from "../lib/utils.js";
   import { isCoarsePointer } from "../lib/responsive.js";
+  import { railDots } from "../lib/rail-dots.js";
 
   /**
    * FocusRail — dots representing today's focuses (pages) the user is working on.
@@ -81,6 +82,14 @@
   });
 
   let visibleFocuses = $derived(focuses);
+  // Dots while they can be counted, a count after that (lib/rail-dots.js,
+  // which carries the measurement): twenty-odd dots ran into the header's
+  // chips. The count keeps the click-to-another-page the dots gave, as a
+  // step either side.
+  let shape = $derived(railDots({
+    count: visibleFocuses.length,
+    index: visibleFocuses.findIndex((f) => f.id === currentId),
+  }));
   let todayStr = $derived(getLocalDateStr());
 
   // "+" is available on today's rail regardless of trail mode. Discrete parity:
@@ -125,6 +134,33 @@
 </script>
 
 <div class="focus-rail" class:continuous={trailMode === "continuous"}>
+  {#if shape.kind === "count"}
+    <button
+      class="rail-step"
+      disabled={shape.prev === null}
+      onclick={() => shape.prev !== null && onSelect(visibleFocuses[shape.prev].id)}
+      aria-label="previous page"
+    >‹</button>
+    <span class="rail-count" aria-live="polite">{shape.label}</span>
+    <button
+      class="rail-step"
+      disabled={shape.next === null}
+      onclick={() => shape.next !== null && onSelect(visibleFocuses[shape.next].id)}
+      aria-label="next page"
+    >›</button>
+    <!-- The dots' × was the only page delete on a desktop, so past eight
+         pages none could be deleted (sync journey J6.2). The count keeps it,
+         for the page on screen, behind the same two-tap confirm. -->
+    {@const current = visibleFocuses.find((f) => f.id === currentId)}
+    {#if current && canDelete(current)}
+      <button
+        class="rail-delete rail-count-delete"
+        class:confirming={confirmDeleteId === current.id}
+        onclick={(e) => handleDelete(e, current.id)}
+        aria-label={confirmDeleteId === current.id ? "tap to delete this page" : "delete this page"}
+      >×</button>
+    {/if}
+  {:else}
   {#each visibleFocuses as focus (focus.id)}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -172,6 +208,7 @@
       {/if}
     </div>
   {/each}
+  {/if}
   {#if canAddFocus}
     <button class="rail-add" onclick={onNew} aria-label="new focus">+</button>
   {/if}
@@ -347,7 +384,8 @@
      The confirming chip still renders if the user holds the dot
      for ~500ms. Tooltip is also hidden on touch. */
   @media (pointer: coarse) {
-    .rail-delete:not(.confirming) {
+    /* Not the count's ×: there is no dot to long-press past eight pages. */
+    .rail-delete:not(.confirming):not(.rail-count-delete) {
       display: none;
     }
     .rail-delete.confirming {
@@ -408,6 +446,38 @@
     font-size: 0.6875rem;
   }
 
+  /* The count that replaces the dots past eight, and its two steps. Same
+     ink and the same quiet as the dots — it is the same indicator, saying
+     the same thing in a form that still fits. */
+  .rail-count {
+    font-family: "DM Mono", monospace;
+    font-size: 0.75rem;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .rail-step {
+    background: none;
+    border: none;
+    padding: 0 0.25rem;
+    font-size: 0.875rem;
+    line-height: 1;
+    color: var(--ink);
+    cursor: pointer;
+  }
+  /* Quiet for a pointer, visible for the keyboard: a clicked step drew the
+     platform's heavy blue ring, which nothing else in the rail uses. */
+  .rail-step:focus { outline: none; }
+  .rail-step:focus-visible {
+    outline: 1px solid color-mix(in srgb, var(--ink) 40%, transparent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+  .rail-step:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
   .rail-add {
     background: none;
     border: 1.5px dashed color-mix(in srgb, var(--ink) 35%, transparent);

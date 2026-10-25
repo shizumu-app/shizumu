@@ -23,7 +23,7 @@ export async function bootstrapVR() {
   if (!(import.meta.env.DEV || import.meta.env.VITE_VR)) return;
   if (!isVrRequested()) return;
 
-  const [{ installFixedClock, installSeqUuid }, { createSeededInvoke }, { getScene, THEMES, sceneStates }] =
+  const [{ installFixedClock, installSeqUuid }, { createSeededInvoke }, { getScene, THEMES, sceneStates, sceneSurface }] =
     await Promise.all([
       import("./clock.js"),
       import("./seed.js"),
@@ -60,7 +60,20 @@ export async function bootstrapVR() {
     scene: sceneId,
     theme,
     space: scene.space,
+    // Which TREE this scene photographs. Published because the capture spec
+    // has to wait on different markup for each, and `space` cannot tell it
+    // apart: a shell scene and a desktop scene both say "page".
+    //
+    // It earns its place on the gate. App.svelte imports ShellGate LAZILY,
+    // and `__VR_READY__` is set before that import lands — so a capture
+    // released on readiness alone can photograph a blank frame and, because
+    // toHaveScreenshot settles on two matching frames, commit it. Every
+    // other shell surface is behind the same lazy import and has always been
+    // covered by the editor wait; a gate renders no editor, so nothing was
+    // left holding the shutter. See gotoScene in tests/vr/visual.spec.js.
+    surface: sceneSurface(scene),
     onboarding: scene.onboarding,
+    sheetOpen: scene.sheetOpen,
     state,
     inset,
   };

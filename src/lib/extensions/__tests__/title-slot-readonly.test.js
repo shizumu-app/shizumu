@@ -91,3 +91,53 @@ describe("bindTitleSlot — a read-only page", () => {
     expect(view.dispatch).toHaveBeenCalled();
   });
 });
+
+describe("bindTitleSlot — a position that cannot be read", () => {
+  // CAUGHT ON A DEVICE, twice in one run, by scripts/device/drive.mjs while
+  // tapping around a table:
+  //
+  //   RangeError: Position -1 out of range
+  //     at getPos … at Object.consumePendingFocus
+  //
+  // ProseMirror resolves a NodeView's position when asked, so a view whose
+  // node has gone — or has not landed yet — makes getPos() call
+  // doc.resolve(-1) and throw. consumePendingFocus runs from a
+  // requestAnimationFrame, where nothing above it can catch that, so it
+  // reached the page as an uncaught exception. A table is a NodeView that
+  // mounts its own title slot (table-shell-view.js), which is why tapping
+  // one found it.
+  //
+  // The fake throws exactly as ProseMirror does, which is the whole fixture.
+  const throwing = () => { throw new RangeError("Position -1 out of range"); };
+
+  it("does not throw out of consumePendingFocus when getPos throws", () => {
+    const titleSlot = document.createElement("input");
+    const api = bindTitleSlot({
+      titleSlot,
+      view: fakeView({ editable: true }),
+      getPos: throwing,
+      ext: { storage: { pendingFocusPos: 0 } },
+      resolveContentPos: () => -1,
+      onTitleRender: () => {},
+    });
+    expect(() => api.consumePendingFocus()).not.toThrow();
+  });
+
+  it("leaves the pending arm alone rather than claiming it", () => {
+    // A position nobody can read is not a position that MATCHES, so the arm
+    // belongs to whichever NodeView can still answer. Consuming it here
+    // would take the focus away from the block the slash command meant.
+    const storage = { pendingFocusPos: 7 };
+    const titleSlot = document.createElement("input");
+    const api = bindTitleSlot({
+      titleSlot,
+      view: fakeView({ editable: true }),
+      getPos: throwing,
+      ext: { storage },
+      resolveContentPos: () => -1,
+      onTitleRender: () => {},
+    });
+    api.consumePendingFocus();
+    expect(storage.pendingFocusPos).toBe(7);
+  });
+});

@@ -42,6 +42,7 @@
   import QrScanner from "./QrScanner.svelte";
   import { parsePairingInfo } from "../lib/pair-info.js";
   import { deviceStaleness } from "../lib/device-staleness.js";
+  import { announceJoined } from "../lib/sync-joined.js";
   import {
     awayCount,
     AWAY_LABEL,
@@ -460,11 +461,15 @@
         // when no account matches, surfaced below as a plain sentence.
         if (phraseMode === "existing") {
           await syncRecover(phrase, url, label);
+          announceJoined();
         } else {
           await syncInit(phrase, url, label);
         }
       } else {
         await syncSelfEnroll(phrase, url, label);
+        // Usually the relay's first device, where the backend deletes
+        // nothing; re-reading the page then changes nothing either.
+        announceJoined();
       }
       phrase = "";
       existingPhrase = "";
@@ -832,6 +837,7 @@
         pairNewLabel.trim() || "this device",
         120,
       );
+      announceJoined();
       pairStep = "new_done";
       await refresh();
     } catch (e) {

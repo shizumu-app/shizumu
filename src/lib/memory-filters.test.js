@@ -439,3 +439,54 @@ describe("dominantTrailSummary", () => {
     expect(dominantTrailSummary({ pages: [], pins: [], lineages, date: "2026-05-17" })).toBeNull();
   });
 });
+
+import { memoryPool, searchDateFilter } from "./memory-filters.js";
+
+describe("memoryPool", () => {
+  const loaded = [{ id: "a", pin_count: 2 }, { id: "b", pin_count: 0 }];
+
+  it("searches every hit, not only the pages memory loaded", () => {
+    // THE regression: hits were intersected with the hundred most recent
+    // pages, so "z", written long before them, could never be found.
+    const pool = memoryPool(loaded, [{ id: "z", pin_count: 0 }, { id: "a", pin_count: 0 }]);
+    expect(pool.map((p) => p.id).sort()).toEqual(["a", "z"]);
+  });
+
+  it("puts the hits in memory's order, not relevance order", () => {
+    const hits = [
+      { id: "old", date: "2025-09-28", page_number: 1 },
+      { id: "new", date: "2026-07-25", page_number: 1 },
+      { id: "new2", date: "2026-07-25", page_number: 2 },
+    ];
+    expect(memoryPool([], hits).map((p) => p.id)).toEqual(["new2", "new", "old"]);
+    const edited = [{ id: "x", date: "2026-01-01", updated_at: "2026-10-01" }, { id: "y", date: "2026-05-01", updated_at: "2026-06-01" }];
+    expect(memoryPool([], edited, "updated_at").map((p) => p.id)).toEqual(["x", "y"]);
+  });
+
+  it("keeps the loaded row for a hit memory already holds", () => {
+    const pool = memoryPool(loaded, [{ id: "a", pin_count: 0 }]);
+    expect(pool[0].pin_count).toBe(2);
+  });
+
+  it("is the loaded list when nothing is being searched", () => {
+    expect(memoryPool(loaded, null)).toBe(loaded);
+  });
+});
+
+describe("searchDateFilter", () => {
+  const month = { kind: "thisMonth" };
+
+  it("drops the opening thirty-day window while searching", () => {
+    // THE other half: the default window hid every match older than a
+    // month behind a filter the writer never picked.
+    expect(searchDateFilter(month, { searching: true, chosen: false })).toBe(null);
+  });
+
+  it("keeps a window the writer chose", () => {
+    expect(searchDateFilter(month, { searching: true, chosen: true })).toBe(month);
+  });
+
+  it("keeps the opening window when not searching", () => {
+    expect(searchDateFilter(month, { searching: false, chosen: false })).toBe(month);
+  });
+});

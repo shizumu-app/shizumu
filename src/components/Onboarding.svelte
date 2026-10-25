@@ -25,9 +25,20 @@
     if (index < slides.length - 1) index++;
     else complete();
   }
-  async function complete() {
-    try { await markOnboardingComplete(); } catch {}
+  function complete() {
+    // ADVANCE FIRST, PERSIST AFTER, and never wait on the write — the shape
+    // ShellGate.svelte's `finish` took for the same defect. Awaiting it
+    // inside a try/catch guarded a write that THROWS, not one that never
+    // resolves (a locked database): the writer was left on the last slide
+    // with a dead button, and the flag was never written either. Nothing
+    // downstream needs the write to have landed — App.svelte's
+    // handleOnboardingComplete flips a flag in memory — and a dropped write
+    // costs only seeing onboarding once more. The catch stays for the
+    // rejection.
     onComplete?.();
+    Promise.resolve()
+      .then(() => markOnboardingComplete())
+      .catch((err) => console.warn("onboarding: could not record completion", err));
   }
   function onKeydown(e) {
     if (e.key === "ArrowLeft") back();

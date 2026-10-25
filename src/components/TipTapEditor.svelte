@@ -1,45 +1,18 @@
-<script module>
-  /**
-   * Decide where to insert a new dayMarker in a TipTap doc.
-   * - No existing markers → top (position 0). This positions the first marker
-   *   above any pre-trail content, so when a user creates a continuous trail
-   *   from a page that already had writing, the writing reads as "day-1
-   *   content" beneath the day-1 marker.
-   * - Existing markers present → end of doc. New day's content is typed
-   *   after the marker, so it sits beneath its own marker.
-   */
-  export function chooseMarkerInsertPosition({ markersExist, docSize }) {
-    return markersExist ? docSize : 0;
-  }
-</script>
-
 <script>
-  // Aliased: `blockAlreadyPinned` is already this component's $state flag
-  // for the CURRENT block, and the import is the rule that decides it.
-  import { blockAlreadyPinned as isBlockKept } from "../lib/editor/block-already-pinned.js";
-  import { onMount, onDestroy, tick } from "svelte";
+  import { pinAlreadyHolds } from "../lib/editor/block-already-pinned.js";
+  import { onMount, onDestroy } from "svelte";
   import { fade } from "svelte/transition";
-  import { Editor } from "@tiptap/core";
   import { DOMSerializer, Fragment } from "@tiptap/pm/model";
   import { TextSelection, NodeSelection } from "@tiptap/pm/state";
-  import { migrateListSchema } from "../lib/extensions/migrate-list-schema.js";
-  import { migrateRecipeSchema } from "../lib/extensions/migrate-recipe-schema.js";
-  import { migrateQASchema } from "../lib/extensions/migrate-qa-schema.js";
-  import { stripPinIdsFromJSON } from "../lib/extensions/pin-id.js";
   import { isBoardType } from "../lib/extensions/block-title.js";
   import { resolveHoveredMouseBlock, hoverClassTarget, isTrustedMouseHover } from "../lib/extensions/block-hover-guard.js";
   import { hoverPlan, HOVER_HIDE_DELAY_MS } from "../lib/editor/hover-reveal.js";
-  import { caretScrollDelta, isDegenerateCaretRect, CARET_SCROLL_MARGIN_PX } from "../lib/editor/caret-scroll.js";
   import { deleteBlockAt, resolveBlockPos } from "../lib/extensions/block-delete.js";
   import { writeClipboard } from "../lib/clipboard-write.js";
-  import { sanitizePastedHtml } from "../lib/paste-sanitize.js";
   import { resolveCopyTarget } from "../lib/extensions/block-copy-target.js";
-  import { serializeBlockToHtml, parseBlockFromHtml } from "../lib/block-clipboard.js";
-  import { buildEditingExtensions } from "../lib/render/shared-extensions.js";
-  import { savePageContent, saveTrailContent, createPin, getPins, attachmentAddBytes, updatePinContent, updatePinStatus, getSetting, setSetting } from "../lib/api.js";
-  import { looksLikeMarkdown, parseAndInsert, serializeSelection } from "../lib/markdown-clipboard.js";
-  import { hydrateDoc, encodeState, bytesFromTauri, docFromTipTapJson } from "../lib/yjs/page-doc.js";
-  import { isYjsEnabled } from "../lib/yjs/feature-flag.js";
+  import { serializeBlockToHtml } from "../lib/block-clipboard.js";
+  import { getPins, getSetting, setSetting } from "../lib/api.js";
+  import { serializeSelection } from "../lib/markdown-clipboard.js";
   import { isCoarsePointer } from "../lib/responsive.js";
   import { blockActionsFor, BLOCK_ACTION_LABELS } from "../lib/editor/block-actions.js";
   import { mayPinBlock, isAttachmentBlockNode, soleAttachmentNode } from "../lib/editor/block-pin-guard.js";
@@ -47,25 +20,22 @@
   import { showsGutterCard } from "../lib/editor/touch-block-handle.js";
   import { shouldDismissOnBlur, isAffordanceTarget } from "../lib/editor/touch-reveal-dismiss.js";
   import { getViewportHeight, keyboardOpen } from "../lib/keyboard-state.js";
-  import { getSchema } from "@tiptap/core";
   import SharePopup from "./SharePopup.svelte";
   import FindBar from "./FindBar.svelte";
   import ChartBuilder from "./ChartBuilder.svelte";
   import EditorToast from "./EditorToast.svelte";
   import BottomSheet from "../lib/ui/BottomSheet.svelte";
+  import EditorCore from "./editor/EditorCore.svelte";
 
   /** @type {{ pageId: string, initialContent: any, initialYjsState: any, readonly: boolean, placeholder: string, lineageId: string|null, onPinCreated: () => void, onCreateSubtrail: (name: string, kind: "subtrail" | "toplevel", trailMode?: "discrete" | "continuous") => void, onMentionNavigate: (pageId: string) => void, onPinRefNavigate: (pinId: string) => void, trailMode: "continuous" | "discrete" | null, currentLineageId: string|null, currentLineageName: string }} */
   let { pageId, initialContent = null, initialYjsState = null, readonly = false, placeholder = "write one thought, then return", lineageId = null, onPinCreated = () => {}, onWordCount = () => {}, onDocChange = () => {}, onCreateSubtrail = () => {}, onMentionNavigate = () => {}, onPinRefNavigate = () => {}, isTrailMode = false, trailLineageId = null, trailMode = null, currentLineageId = null, currentLineageName = "" } = $props();
 
+  // The core owns the editor; chrome receives it through onEditor and keeps
+  // the same local names so every handler below reads as before the split.
+  let core = $state(null);
   let editorEl = $state(null);
   let wrapperEl = $state(null);
   let editor = $state(null);
-  let saveTimer = $state(null);
-  // Y.Doc handle when this editor is bound to a CRDT. Null for
-  // discrete-trail pages and any session with `enable_yjs` off.
-  // debouncedSave checks this to decide whether to ship yjs_state
-  // alongside the content_json.
-  let yjsDoc = $state(/** @type {import('yjs').Doc | null} */ (null));
 
   // Bubble menu: positioned by the same coord math as selectionPin.
   let bubbleMenuVisible = $state(false);
@@ -261,35 +231,11 @@
   // title slot; pin time still uses the pin popup to force a title.
 
   // Pin cache for display-time filtering
-  let existingPinContents = $state(new Set());
   let blockAlreadyPinned = $state(false);
 
   // Selection pin state (multi-block)
   let selectionPinVisible = $state(false);
   let selectionPinPosition = $state({ top: 0, left: 0 });
-
-  async function loadPinCache() {
-    try {
-      const pins = await getPins(lineageId || null);
-      existingPinContents = new Set(pins.map(p => p.content));
-    } catch { existingPinContents = new Set(); }
-  }
-
-  // The decision lives in a pure module — see its header for the defect it
-  // was written for. This wrapper only supplies the two facts it needs.
-  function blockIsPinned(el, text) {
-    return isBlockKept({
-      pinId: el?.getAttribute?.("data-pin-id") || null,
-      text,
-      pinnedContents: existingPinContents,
-    });
-  }
-
-  // Word count (exposed to parent via bind:this)
-  let wordCount = $state(0);
-
-  // Cursor position memory across page switches
-  const cursorMemory = new Map();
 
   // Table toolbar state
   let tableActive = $state(false);
@@ -335,335 +281,7 @@
     };
   });
 
-  function writeMarkdownToClipboard(view, event, clearSelection) {
-    if (!editor || !event.clipboardData) return false;
-    if (view.state.selection.empty) return false;
-    const md = serializeSelection(editor);
-    if (!md) return false;
-    // Mirror TipTap's defaults for text/html and text/plain so apps
-    // that don't read markdown still get usable content. Generate
-    // text/plain from a stripped version of the serialized markdown.
-    const plain = md.replace(/^#{1,6}\s+/gm, "").replace(/\*\*?|`+|~~/g, "");
-    event.clipboardData.setData("text/markdown", md);
-    event.clipboardData.setData("text/plain", plain);
-    // text/html: let TipTap render the slice as HTML via the default
-    // serializer so rich-text targets paste cleanly.
-    const slice = view.state.selection.content();
-    const tmp = document.createElement("div");
-    tmp.appendChild(view.someProp("clipboardSerializer", (s) => s.serializeFragment(slice.content)) ?? document.createDocumentFragment());
-    event.clipboardData.setData("text/html", tmp.innerHTML);
-    event.preventDefault();
-
-    // Mirror the write through the Rust clipboard. This path is synchronous —
-    // it must fill clipboardData before returning — so the plugin write is
-    // fire-and-forget alongside it, not instead of it.
-    //
-    // Needed because setData alone is not sufficient under Wayland: the
-    // webview's clipboard integration fails there, so a plain Ctrl+C put
-    // nothing on the system clipboard even though nothing errored. On X11 and
-    // in the browser this is redundant and harmless — same content, last write
-    // wins. See src/lib/clipboard-write.js.
-    writeClipboard({ text: plain, html: tmp.innerHTML }).catch(() => {});
-
-    if (clearSelection) view.dispatch(view.state.tr.deleteSelection());
-    return true;
-  }
-
-  onMount(async () => {
-    if (typeof document !== "undefined") document.addEventListener("visibilitychange", handleHide);
-    if (typeof window !== "undefined") window.addEventListener("pagehide", handleHide);
-    // Ensure all `bind:this` targets (especially bubbleMenuEl) have been
-    // flushed before the Editor is constructed. BubbleMenu silently bails
-    // out when its `element` option is null at plugin-registration time.
-    await tick();
-
-    const rawContent = initialContent
-      ? (typeof initialContent === "string" ? JSON.parse(initialContent) : initialContent)
-      : { type: "doc", content: [{ type: "paragraph" }] };
-    // Lazy schema migration — old taskList/bulletList/orderedList/taskItem
-    // get rewritten before TipTap parses. algorithmBlock → recipeBlock,
-    // legacy flat-paragraph qaBlock → qaBlock with qaPair children.
-    // All migrations are idempotent on already-migrated docs.
-    const content = migrateQASchema(migrateRecipeSchema(migrateListSchema(rawContent)));
-
-    // Yjs binding gate: only continuous-trail pages, only when the
-    // user has opted in via `enable_yjs`. Discrete pages and any
-    // flag-off session take the unchanged page_blob path.
-    let collaborationDoc = null;
-    if (trailMode === "continuous" && !readonly) {
-      const enabled = await isYjsEnabled();
-      if (enabled) {
-        const bytes = bytesFromTauri(initialYjsState);
-        if (bytes && bytes.length > 0) {
-          // Existing yjs_state — hydrate as-is.
-          collaborationDoc = hydrateDoc(bytes);
-        } else {
-          // Lazy backfill: yjs_state is null but content_json may have
-          // text. Derive a Y.Doc from the JSON so the editor mounts
-          // with the page's actual content. The next save persists the
-          // encoded yjs_state, so subsequent opens use the fast path.
-          // Build the prosemirror schema from a plain (non-yjs) build
-          // of the extension list — Collaboration isn't needed for
-          // schema derivation, only for the live binding below.
-          const schema = getSchema(buildEditingExtensions({ placeholder }));
-          collaborationDoc = docFromTipTapJson(schema, content) ?? hydrateDoc(null);
-        }
-        yjsDoc = collaborationDoc;
-      }
-    }
-
-    editor = new Editor({
-      element: editorEl,
-      extensions: buildEditingExtensions({
-        placeholder,
-        // Called fresh on every menu render — Svelte 5's reactive $props
-        // proxies always reflect the current page's lineage at the moment
-        // the user opens the @-menu, even though the configuration object
-        // is built once at editor construction time.
-        getCurrentLineage: () => (
-          currentLineageId
-            ? { id: currentLineageId, name: currentLineageName || "" }
-            : null
-        ),
-        onCreateSubtrail: (name, kind, trailMode) => onCreateSubtrail(name, kind, trailMode),
-        onPageRefNavigate: (targetPageId) => onMentionNavigate(targetPageId),
-        onPinRefNavigate: (pinId) => onPinRefNavigate(pinId),
-        onChartOpen: (params) => {
-          // /chart slash command: { mode: "create" }. Click on existing
-          // chart node: { mode: "edit", pos, attrs }. Both routes land here.
-          chartBuilderState = params || null;
-        },
-        collaborationDoc,
-      }),
-      // Skip `content` when bound to a Y.Doc — Collaboration sources
-      // the doc state from the YXmlFragment, and supplying `content`
-      // on top would double-apply and shred the doc structure.
-      ...(collaborationDoc ? {} : { content }),
-      editable: !readonly,
-      onUpdate: ({ editor: ed }) => {
-        debouncedSave(ed);
-        updateTableToolbar();
-        updateSelectionPin(ed);
-        updateBubbleMenu(ed);
-        wordCount = countWordsExcludingMarkers(ed);
-        onWordCount(wordCount);
-        onDocChange(ed.state.doc.toJSON());
-      },
-      onSelectionUpdate: ({ editor: ed }) => {
-        updateSelectionPin(ed);
-        updateBubbleMenu(ed);
-        pruneEmptyHeadingOnMove(ed);
-      },
-      onFocus: () => {
-        maybeShowMobileGesturesHint();
-      },
-      onBlur: ({ editor: ed }) => {
-        pruneAllEmptyHeadings(ed, { preserveCursor: false });
-        // The touch toolbar has no timeout (see armTouchHandleHide), so
-        // leaving the editor is what puts it away — but NOT when the blur
-        // is itself the first half of a tap on one of the toolbar's own
-        // buttons, which would unmount the button before its click fires.
-        //
-        // This used to defer a frame and ask whether document.activeElement
-        // was inside .block-handles. It is not: a tap blurs the editor at
-        // mousedown and focuses the button at mouseup, so at blur time
-        // activeElement is BODY, every time. The check only ever passed
-        // because a synthetic tap fires mouseup and click in the same task,
-        // so the frame landed after them. On a device the frame lands in
-        // the real touchend->click gap, the toolbar disappears, and the tap
-        // does nothing — which is the "tap many times" report. The decision
-        // now reads the pointerdown that started the gesture instead of
-        // guessing from focus. See touch-reveal-dismiss.js.
-        if (shouldDismissOnBlur({
-          pointerDownOnToolbar,
-          coarsePointer: isCoarsePointer(),
-        })) {
-          clearTouchReveal();
-        }
-      },
-      onTransaction: () => {
-        updateTableToolbar();
-      },
-      editorProps: {
-        // ProseMirror's own scroll-into-view runs with no margin unless it
-        // is given one, so until now the two paths disagreed: pressing
-        // Enter took the handleScrollToSelection branch below and got
-        // CARET_SCROLL_MARGIN_PX of slack, while typing a character that
-        // wrapped to a new line took PM's path and got the caret flush
-        // against the scroller's edge. Same writer, same sentence, two
-        // different amounts of breathing room depending on which key
-        // produced the line.
-        //
-        // One constant for both, so the two paths cannot drift again.
-        // scrollMargin only. scrollThreshold was set here too and had to
-        // come out: margin is how much extra room is left WHEN a scroll
-        // happens, threshold is how close to an edge the selection must be
-        // BEFORE ProseMirror scrolls at all. The threshold made PM scroll on
-        // load for any document whose selection lands near an edge, and the
-        // amount varied with timing -- a VR diff that changed run to run
-        // (2065px, then 1420px) on a 360px-tall landscape viewport.
-        //
-        // Margin keeps the fix this was added for: Enter took the
-        // handleScrollToSelection branch and got CARET_SCROLL_MARGIN_PX of
-        // slack while a wrapping keystroke took PM's path and got none.
-        scrollMargin: CARET_SCROLL_MARGIN_PX,
-        /**
-         * Keep the caret in view when ProseMirror's own scroll declines to.
-         *
-         * Returning false hands the scroll back to PM, which is what we
-         * want for every normal case. We only take over for the one PM
-         * gives up on: the caret in a freshly-created EMPTY paragraph,
-         * where `coordsAtPos` reports an all-zero rect and
-         * `scrollRectIntoView` returns immediately on its
-         * `if (!nonZero(rect) && rect.left == 0)` guard. That is why
-         * pressing Enter on the last line added a line you could not see
-         * until you pressed ↓ — see editor/caret-scroll.js for the full
-         * measurement.
-         *
-         * PM's rect is the test; the caret's BLOCK ELEMENT is what we
-         * measure instead, because a block always has a box even when the
-         * caret inside it does not.
-         */
-        handleScrollToSelection(view) {
-          let caretRect = null;
-          try { caretRect = view.coordsAtPos(view.state.selection.head); } catch { caretRect = null; }
-          if (!isDegenerateCaretRect(caretRect)) return false; // PM's job.
-
-          const scroller = wrapperEl;
-          if (!scroller) return false;
-          let blockEl = null;
-          try {
-            const at = view.domAtPos(view.state.selection.head);
-            let node = at.node;
-            if (node && node.nodeType === Node.TEXT_NODE) node = node.parentNode;
-            // Walk up to the element that actually has a layout box.
-            while (node && node !== scroller && !(node instanceof Element)) node = node.parentNode;
-            blockEl = node instanceof Element && node !== scroller ? node : null;
-          } catch { blockEl = null; }
-          if (!blockEl) return false;
-
-          const delta = caretScrollDelta(
-            blockEl.getBoundingClientRect(),
-            scroller.getBoundingClientRect(),
-          );
-          if (delta !== 0) scroller.scrollTop += delta;
-          // Handled either way: PM's fallback cannot do better with the
-          // rect it has, and letting it run would only re-confirm the
-          // no-op it already decided on.
-          return true;
-        },
-        handlePaste(view, event) {
-          const data = event.clipboardData;
-          if (!data) return false;
-
-          // Shizumu block copy/paste — Chromium-compatible path. The
-          // block's JSON payload travels inside text/html as a
-          // data-shizumu-block attribute (copyBlockAtPos / block-clipboard.js)
-          // because Chromium rejects the custom application/x-shizumu-block+json
-          // MIME type on write. Check for that wrapper before falling
-          // through to the generic HTML-paste / markdown paths below.
-          //
-          // Coordinator branch-review fix (item 3): this payload can come
-          // from ANY text/html on the clipboard, including content pasted
-          // in from outside the app — a page could hand-craft a
-          // data-shizumu-block attribute carrying an arbitrary node type/
-          // attrs. Allowlist the embedded JSON's top-level node type to
-          // the set copyBlockAtPos can actually produce before calling
-          // nodeFromJSON; anything else rejects and falls through to the
-          // sanitized HTML paste path below.
-          const embeddedBlockJson = parseBlockFromHtml(data.getData("text/html"));
-          if (embeddedBlockJson && COPYABLE_BLOCK_TYPES.has(embeddedBlockJson.type)) {
-            try {
-              // Strip pinId so the duplicate does not double-bind to the same pin row.
-              const nodeJson = stripPinIdsFromJSON(embeddedBlockJson);
-              const node = view.state.schema.nodeFromJSON(nodeJson);
-              const { tr, selection } = view.state;
-              view.dispatch(tr.insert(selection.from, node));
-              return true;
-            } catch {
-              // Fall through to the default HTML/markdown/plain-text paste below.
-            }
-          }
-
-          // Image paste from clipboard
-          const imageFile = Array.from(data.files).find(
-            f => f.type.startsWith("image/")
-          );
-          if (imageFile) {
-            insertImageFile(imageFile);
-            return true;
-          }
-
-          // Markdown clipboard: explicit text/markdown always wins; plain
-          // text that looks like markdown wins only when no text/html is
-          // offered (rich-text sources keep their existing HTML path).
-          // On parser failure, we do NOT preventDefault — the default
-          // pipeline still inserts the plain text — but we surface a
-          // toast so the user knows markdown formatting was lost.
-          let mdAttempted = false;
-          const md = data.getData("text/markdown");
-          if (md && md.trim().length > 0) {
-            mdAttempted = true;
-            if (parseAndInsert(editor, md)) {
-              event.preventDefault();
-              return true;
-            }
-          }
-          const plain = data.getData("text/plain");
-          const htmlForMd = data.getData("text/html");
-          if (plain && !htmlForMd && looksLikeMarkdown(plain)) {
-            mdAttempted = true;
-            if (parseAndInsert(editor, plain)) {
-              event.preventDefault();
-              return true;
-            }
-          }
-          if (mdAttempted) {
-            showToast("couldn't parse as markdown. pasted as plain text.");
-            // fall through to default plain-text insertion path
-          }
-
-          // Sanitize rich HTML from web/Notion/Docs
-          const html = data.getData("text/html");
-          if (html) {
-            const cleaned = sanitizePastedHtml(html);
-            if (cleaned) {
-              editor?.commands.insertContent(cleaned);
-              return true;
-            }
-          }
-          return false;
-        },
-
-        handleDrop(_view, event) {
-          const files = event.dataTransfer?.files;
-          if (!files) return false;
-          const imageFile = Array.from(files).find(f => f.type.startsWith("image/"));
-          if (imageFile) {
-            event.preventDefault();
-            insertImageFile(imageFile);
-            return true;
-          }
-          return false;
-        },
-
-        handleDOMEvents: {
-          copy(view, event) {
-            return writeMarkdownToClipboard(view, event, /* clear */ false);
-          },
-          cut(view, event) {
-            return writeMarkdownToClipboard(view, event, /* clear */ true);
-          },
-        },
-      },
-    });
-
-    // Fire once after mount so the panel sees the initial doc state without
-    // waiting for the first keystroke.
-    if (editor) {
-      onDocChange(editor.state.doc.toJSON());
-    }
-
+  onMount(() => {
     // Quick-pin keybinding (E.1) — Cmd/Ctrl+P from inside the editor.
     // The browser's default for Cmd+P is "print"; we intercept and
     // preventDefault so the writing surface owns the chord. Listener is
@@ -672,22 +290,15 @@
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
       if (e.key === "p" || e.key === "P") {
-        // Shift modifier reserved for "post-pin: open the modal"; not
-        // implemented yet (Phase 10 follow-up). For now, both variants
-        // route to the quick path.
         e.preventDefault();
         e.stopPropagation();
         quickPinFromCursor();
       } else if (e.key === "f" || e.key === "F") {
-        // Cmd/Ctrl+F → find bar (find-only mode). Browser default
-        // (page-level find) doesn't run inside Tauri webviews, but
-        // preventDefault for parity.
         e.preventDefault();
         e.stopPropagation();
         findBarMode = "find";
         findBarOpen = true;
       } else if (e.key === "h" || e.key === "H") {
-        // Cmd/Ctrl+H → find bar (replace mode).
         e.preventDefault();
         e.stopPropagation();
         findBarMode = "replace";
@@ -715,8 +326,6 @@
     // single viewport-state owner) fires on every open/close transition.
     const onKeyboardChange = () => {
       if (!editor || !editor.isFocused) return;
-      // The IME just covered (or revealed) area below. Defer one frame
-      // so layout settles, then nudge ProseMirror's built-in scroll.
       requestAnimationFrame(() => {
         try { editor?.commands.scrollIntoView(); } catch {}
       });
@@ -731,131 +340,12 @@
     };
   });
 
-  // Load pin cache on mount and when lineageId changes
-  let prevLineageId = $state(null);
-  $effect(() => {
-    if (lineageId !== prevLineageId) {
-      prevLineageId = lineageId;
-      loadPinCache();
-    }
-  });
-
-  // Watch for page changes — reload content when pageId changes
-  let prevPageId = $state(null);
-  $effect(() => {
-    if (editor && pageId && pageId !== prevPageId) {
-      // Save cursor position for old page
-      if (prevPageId && editor) {
-        cursorMemory.set(prevPageId, editor.state.selection.anchor);
-      }
-      const oldPageId = prevPageId;
-      prevPageId = pageId;
-
-      // Flush save for old page BEFORE loading new content. The save is
-      // awaited so a quick navigate-away-then-back can't read pre-save state
-      // from the DB (the original "title disappears" bug). The save also
-      // runs unconditionally — not only when a debounce timer is pending —
-      // because edits dispatched via NodeView title slots commit to PM state
-      // before onUpdate has had a chance to (re-)schedule the timer.
-      (async () => {
-        if (oldPageId && editor) {
-          if (saveTimer) {
-            clearTimeout(saveTimer);
-            saveTimer = null;
-          }
-          try {
-            pruneAllEmptyHeadings(editor, { preserveCursor: false });
-            const json = JSON.stringify(editor.getJSON());
-            const yjsBytes = yjsDoc ? encodeState(yjsDoc) : null;
-            if (isTrailMode && trailLineageId) {
-              await saveTrailContent(trailLineageId, oldPageId, json);
-            } else {
-              await savePageContent(oldPageId, json, yjsBytes);
-            }
-          } catch (err) {
-            console.error("Failed to flush save before page switch:", err);
-          }
-        }
-
-        const content = initialContent
-          ? (typeof initialContent === "string" ? JSON.parse(initialContent) : initialContent)
-          : { type: "doc", content: [{ type: "paragraph" }] };
-        editor.commands.setContent(content);
-        editor.setEditable(!readonly);
-        // Cursor placement priority:
-        //   1. Continuous trails always land at end of doc (fresh writing position).
-        //   2. Otherwise restore the saved cursor for this page if we've visited before.
-        if (trailMode === "continuous") {
-          setTimeout(() => editor.commands.focus("end"), 50);
-        } else {
-          const savedPos = cursorMemory.get(pageId);
-          if (savedPos && savedPos <= editor.state.doc.content.size) {
-            setTimeout(() => editor.commands.setTextSelection(savedPos), 50);
-          }
-        }
-      })();
-    }
-  });
-
   onDestroy(() => {
-    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", handleHide);
-    if (typeof window !== "undefined") window.removeEventListener("pagehide", handleHide);
-    if (editor && !editor.isDestroyed) {
-      // Flush a pending edit before tearing down rather than discarding it —
-      // this is what silently dropped a just-stamped pinId when the editor
-      // unmounted inside the debounce window. Capture synchronously; the save
-      // itself is fire-and-forget since onDestroy cannot await.
-      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; flushSave({ preserveCursor: false }); }
-      try { pruneAllEmptyHeadings(editor, { preserveCursor: false }); } catch {}
-      editor.destroy();
-    }
-    if (saveTimer) clearTimeout(saveTimer);
     cancelPendingHover();
     clearTouchHandleHide();
     clearLongPress();
     if (dragActive) endDrag();
   });
-
-  // App backgrounded or closing: flush a pending save before the OS can
-  // suspend or kill the webview. On mobile a swipe-away fires visibilitychange
-  // /pagehide, not onDestroy, so without this a just-created pin's stamp is
-  // lost exactly the way the user hit it.
-  function handleHide() {
-    if (typeof document !== "undefined" && document.visibilityState === "visible") return;
-    if (saveTimer) flushSave({ preserveCursor: false });
-  }
-
-  // Persist the editor's content NOW, awaitable. The single place the doc is
-  // written, so the debounce, the pin-create flush, teardown and pagehide all
-  // save identically. `preserveCursor` is caller-chosen: true mid-session,
-  // false on teardown where the cursor no longer matters.
-  async function flushSave({ preserveCursor = true } = {}) {
-    if (!editor || editor.isDestroyed) return;
-    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-    try {
-      pruneAllEmptyHeadings(editor, { preserveCursor });
-      const json = JSON.stringify(editor.getJSON());
-      // When bound to a Y.Doc, ship its v2-encoded state alongside the JSON
-      // snapshot. The backend persists both: yjs_state is source-of-truth for
-      // sync, content_json keeps FTS warm.
-      const yjsBytes = yjsDoc ? encodeState(yjsDoc) : null;
-      if (isTrailMode && trailLineageId) {
-        // saveTrailContent doesn't accept yjsState yet — continuous trails go
-        // through PAGE's savePageContent path, so this branch only handles
-        // legacy trail-mode pages where the editor was a passthrough.
-        await saveTrailContent(trailLineageId, pageId, json);
-      } else {
-        await savePageContent(pageId, json, yjsBytes);
-      }
-    } catch (err) {
-      console.error("Failed to save content:", err);
-    }
-  }
-
-  function debouncedSave(_ed) {
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => { flushSave(); }, 1000);
-  }
 
   // Click-to-preview image modal (dispatched by the LocalImage node view).
   // Implemented via native <dialog> + showModal() so the modal lives in the
@@ -881,21 +371,6 @@
     wrapperEl.addEventListener("shizumu-image-preview", handler);
     return () => wrapperEl.removeEventListener("shizumu-image-preview", handler);
   });
-
-  // Gather every node in the current doc whose attrs.pinId matches the given id.
-  // Order is doc-order; each entry carries its position.
-  function collectNodesByPinId(pinId) {
-    if (!editor || !pinId) return [];
-    const out = [];
-    editor.state.doc.descendants((node, pos) => {
-      if (node.attrs && node.attrs.pinId === pinId) {
-        out.push({ node, pos });
-        return false; // don't recurse into a pinned node — its children inherit via JSON
-      }
-      return true;
-    });
-    return out;
-  }
 
   // Block handle: detect hovered block on mousemove
   let handleLeaveTimer = null;
@@ -1036,6 +511,22 @@
         applyHoverState(plan.target, snapshot);
       }, plan.delayMs);
     }
+  }
+
+  /** Is this block already kept. The RULE is a pure module on `main`
+   *  (lib/editor/block-already-pinned.js) and the pin cache it needs moved
+   *  into EditorCore in the split, so the two meet at `core.blockIsKept`:
+   *  the core holds the cache, this component holds the DOM block and can
+   *  read the stamp `pin-id.js` renders on it. Before the carry both call
+   *  sites asked the content half alone, which can never match a
+   *  quick-pin — the cache holds the node's JSON and the lookup asked with
+   *  prose, so a second press re-stamped the node and orphaned the first
+   *  pin. `?? false` because `core` is null until the child mounts. */
+  function blockIsPinned(el, text) {
+    return core?.blockIsKept({
+      pinId: el?.getAttribute?.("data-pin-id") || null,
+      text,
+    }) ?? false;
   }
 
   /** A block's offset inside the scroller — where its handle column sits. */
@@ -1721,46 +1212,6 @@
     if (editor) editor.chain().addColumnAfter().run();
   }
 
-  // Top-level node types copyBlockAtPos can ever produce for the
-  // data-shizumu-block clipboard payload — used by handlePaste's block-
-  // copy path to reject a hand-crafted/foreign payload before
-  // nodeFromJSON (see the coordinator branch-review note there).
-  const COPYABLE_BLOCK_TYPES = new Set([
-    "paragraph", "heading", "table", "list", "blockquote",
-    "recipeBlock", "decisionBlock", "qaBlock", "chart", "dayMarker", "localImage",
-    "codeBlock", "attachment", "horizontalRule", "listItem",
-  ]);
-
-  const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"]);
-
-  async function insertImageFile(file) {
-    if (!editor) return;
-    try {
-      const ext = (file.name.split(".").pop() || "png").toLowerCase();
-      if (!IMAGE_EXTS.has(ext)) return;
-      const buf = await file.arrayBuffer();
-      // Images go through the same content-addressed blob store as files, so
-      // they get a blob_hash, an attachments row and a per-image sync
-      // decision. Default sync=false: nothing leaves the device unasked.
-      const att = await attachmentAddBytes(new Uint8Array(buf), file.name, file.type || null, false);
-      editor.chain().focus().insertContent({
-        type: "attachment",
-        attrs: {
-          kind: "image",
-          blob_hash: att.blob_hash,
-          filename: att.filename,
-          mime_type: att.mime_type,
-          size_bytes: att.size_bytes,
-          sync: att.sync,
-          created_at: att.created_at,
-          display: "block",
-        },
-      }).run();
-    } catch (err) {
-      console.error("Failed to insert image:", err);
-    }
-  }
-
   // Shared block-copy implementation, called by both the hover handle
   // (handleCopyBlock) and the keyboard shortcut (BlockCopyKeymap). Pos
   // is a doc position inside (or at the boundary of) the block to
@@ -1899,63 +1350,6 @@
     handleVisible = false;
     hoveredBlock = null;
     touchActiveBoard = null;
-  }
-
-  // Track which top-level block the cursor was in last; when the user moves
-  // out of an empty heading, convert it back to a paragraph — no zombie
-  // empty-heading blocks left behind if the user typed /h1 and walked away.
-  let prevCursorBlockPos = null;
-
-  function pruneEmptyHeadingOnMove(ed) {
-    let currentBlockPos;
-    try {
-      currentBlockPos = ed.state.selection.$from.before(1);
-    } catch {
-      return;
-    }
-    if (prevCursorBlockPos !== null && prevCursorBlockPos !== currentBlockPos) {
-      try {
-        const prevNode = ed.state.doc.nodeAt(prevCursorBlockPos);
-        if (prevNode && prevNode.type.name === "heading" && prevNode.content.size === 0) {
-          const paragraphType = ed.state.schema.nodes.paragraph;
-          if (paragraphType) {
-            const tr = ed.state.tr.setNodeMarkup(prevCursorBlockPos, paragraphType);
-            ed.view.dispatch(tr);
-          }
-        }
-      } catch {}
-    }
-    prevCursorBlockPos = currentBlockPos;
-  }
-
-  // Sweep every empty heading in the doc to a paragraph. Called at lifecycle
-  // moments (blur, save, destroy) that pruneEmptyHeadingOnMove can't catch:
-  // same-position clicks, focus leaving the editor, and unmount-without-move.
-  // When preserveCursor is true, the heading currently holding the cursor is
-  // left alone so active typing isn't clobbered between keystrokes.
-  function pruneAllEmptyHeadings(ed, { preserveCursor = true } = {}) {
-    if (!ed || !ed.state) return;
-    let cursorHeadingPos = -1;
-    if (preserveCursor) {
-      try { cursorHeadingPos = ed.state.selection.$from.before(1); } catch {}
-    }
-    const targets = [];
-    ed.state.doc.descendants((node, pos) => {
-      if (node.type.name === "heading" && node.content.size === 0) {
-        if (pos !== cursorHeadingPos) targets.push(pos);
-      }
-      // Top-level only: don't recurse into non-block children needlessly,
-      // but descendants() is cheap on a doc of this size — leave default.
-    });
-    if (targets.length === 0) return;
-    const paragraphType = ed.state.schema.nodes.paragraph;
-    if (!paragraphType) return;
-    // Iterate in reverse so earlier positions stay valid while the tr mutates.
-    let tr = ed.state.tr;
-    for (let i = targets.length - 1; i >= 0; i--) {
-      try { tr = tr.setNodeMarkup(targets[i], paragraphType); } catch {}
-    }
-    if (tr.docChanged) ed.view.dispatch(tr);
   }
 
   function updateBubbleMenu(ed) {
@@ -2103,8 +1497,10 @@
       handleVisible = false;
       return;
     }
-    // Same gate as describeHoverBlock above — the touch reveal must not
-    // offer a T button on a page the write path will refuse.
+    // Same gate as openBlockActionSheet above — the touch reveal must not
+    // offer a T button on a page the write path will refuse. (Arrived from
+    // `main` naming describeHoverBlock, which computes no title-slot gate
+    // at all; openBlockActionSheet is the site that does.)
     handleHasTitleSlot = !readonly && !!node.querySelector?.(".board-title-slot");
     blockAlreadyPinned = blockIsPinned(node, node.textContent?.trim());
     handleVisible = true;
@@ -2438,7 +1834,7 @@
     // path simply never did.
     try {
       const existing = await getPins(lineageId || null);
-      const isDuplicate = existing.some(p => p.content === pinContent);
+      const isDuplicate = pinAlreadyHolds(existing, { pinId: topLevelNode?.attrs?.pinId, content: pinContent });
       if (isDuplicate) {
         blockAlreadyPinned = true;
         showQuickPinToast("already pinned");
@@ -2615,7 +2011,7 @@
       // Skip duplicates same as the slow paths.
       try {
         const existing = await getPins(lineageId || null);
-        if (existing.some((p) => p.content === pinContent)) {
+        if (pinAlreadyHolds(existing, { pinId: blockNode.attrs?.pinId, content: pinContent })) {
           showQuickPinToast("already pinned");
           return;
         }
@@ -2628,71 +2024,28 @@
     showQuickPinToast(`pinned · ${title.slice(0, 40)}${title.length > 40 ? "…" : ""}`);
   }
 
+  // The chrome half of confirming a pin: close the popup, hand the data
+  // to the core, flash the source block. SharePopup and quickPinFromCursor
+  // both land here, as before the split.
   async function confirmPin(title) {
     showPinPopup = false;
     if (!pinContent) return;
-
     const positions = pinNodePositions;
     pinNodePositions = [];
-
-    try {
-      const newPin = await createPin(lineageId || null, pageId, pinCategory, pinContent, title);
-      // Stamp the pin's id onto the source node(s) so future syncs find them
-      // deterministically, regardless of how the content gets edited.
-      if (newPin?.id && positions.length > 0 && editor) {
-        try {
-          const tr = editor.state.tr;
-          for (const pos of positions) {
-            const node = editor.state.doc.nodeAt(pos);
-            if (node && node.type.spec.attrs && "pinId" in node.type.spec.attrs) {
-              tr.setNodeAttribute(pos, "pinId", newPin.id);
-            }
-            // Boards also receive the chosen title as their blockTitle metadata.
-            if (node && isBoardType(node.type.name) && title) {
-              tr.setNodeAttribute(pos, "blockTitle", title);
-            }
-          }
-          if (tr.docChanged) {
-            editor.view.dispatch(tr);
-            // Re-serialize with pinId attribute now embedded so the stored
-            // snapshot matches what the editor would produce on next sync.
-            if (pinCategory !== "note") {
-              const updatedNodes = positions.map((pos) => {
-                const n = editor.state.doc.nodeAt(pos);
-                return n ? n.toJSON() : null;
-              }).filter(Boolean);
-              if (updatedNodes.length > 0) {
-                const updatedJson = JSON.stringify({ type: "doc", content: updatedNodes });
-                pinContent = updatedJson;
-                try { await updatePinContent(newPin.id, updatedJson, title); } catch {}
-              }
-            }
-          }
-        } catch (err) {
-          console.error("Failed to stamp pinId on source node:", err);
-        }
-      }
-      // Visual feedback
-      if (pinBlockEl) {
+    await core?.confirmPin({
+      title,
+      category: pinCategory,
+      content: pinContent,
+      nodePositions: positions,
+      // Fires once the pin row exists and the stamp is in the doc, before the
+      // core's durable save — the moment the flash ran at pre-split.
+      onStamped: () => {
+        if (!pinBlockEl) return;
         pinBlockEl.style.transition = "background 300ms ease";
         pinBlockEl.style.background = "var(--warm-accent-soft, rgba(196,77,40,0.1))";
         setTimeout(() => { if (pinBlockEl) pinBlockEl.style.background = ""; }, 800);
-      }
-      existingPinContents = new Set([...existingPinContents, pinContent]);
-      // The pinId now lives only in the live doc. refresh_pin_caches orphans
-      // any open pin whose id is not in the SAVED content_json, so unless we
-      // persist now, an unmount before the 1s debounce leaves the pin
-      // orphaned (dimmed, "like deleted") on the next launch. Persist the
-      // stamp synchronously so creation is durable, then tell the panel.
-      await flushSave();
-      onPinCreated();
-    } catch (err) {
-      console.error("Failed to pin block:", err);
-    }
-  }
-
-  export function getEditor() {
-    return editor;
+      },
+    });
   }
 
   /// The editor's own scroll container (`.tiptap-wrapper`) — exposed so
@@ -2702,329 +2055,22 @@
     return wrapperEl;
   }
 
-  /// Replace the editor's content with a fresh JSON doc, preserving the
-  /// user's cursor when possible. Called from Page.svelte when a sync
-  /// pull updates the content_json of the currently-open page.
-  ///
-  /// Always reloads — even if focused — but preserves cursor position
-  /// and selection. Skipping while focused led to data loss: the user
-  /// would click a block (triggering onBlur → pruneAllEmptyHeadings →
-  /// transaction → debouncedSave) with the editor's stale content,
-  /// which then overwrote the remote update on the next sync.
-  export function reloadFromContent(newJson) {
-    if (!editor || editor.isDestroyed) return;
-    try {
-      const parsed = typeof newJson === "string" ? JSON.parse(newJson) : newJson;
-      if (!parsed) return;
-      const current = JSON.stringify(editor.getJSON());
-      const incoming = JSON.stringify(parsed);
-      if (current === incoming) return;
-      const wasFocused = editor.isFocused;
-      const { from, to } = editor.state.selection;
-      // emitUpdate: false → don't fire onUpdate, so this load doesn't
-      // trigger a save (which would echo the remote content right back
-      // through the op_log and into another sync round-trip).
-      editor.commands.setContent(parsed, false);
-      // Restore cursor position if the doc is still long enough. Falls
-      // back to end-of-doc if the new content is shorter.
-      try {
-        const docSize = editor.state.doc.content.size;
-        const safeFrom = Math.min(from, docSize);
-        const safeTo = Math.min(to, docSize);
-        editor.commands.setTextSelection({ from: safeFrom, to: safeTo });
-      } catch {}
-      if (wasFocused) {
-        editor.commands.focus();
-      }
-    } catch (err) {
-      console.warn("reloadFromContent failed:", err);
-    }
-  }
-
-  export function focusInput() {
-    if (!editor) return;
-    // Defer one frame so any in-flight readonly→editable prop change has
-    // propagated before we claim focus. Without this, focusing right after
-    // the writing gate lifts can fail because editable was still false.
-    requestAnimationFrame(() => {
-      if (editor && !editor.isDestroyed) editor.commands.focus("end");
-    });
-  }
-
-  export function getWordCount() {
-    return wordCount;
-  }
-
-  /**
-   * Append a list of node JSONs to the end of the doc in a single transaction.
-   * Shared by both the carry-forward auto-inject path (called from Page.svelte
-   * after a discrete trail is assigned for the first time) and the manual
-   * inject button on the pin panel. Inserted nodes deliberately do NOT carry
-   * pinId — they are independent copies of the source pin's content.
-   *
-   * Skips any incoming node whose stripped-JSON shape already matches a
-   * top-level node in the doc — prevents the "pin appears duplicated after
-   * navigate-and-return" failure where an injected copy lands next to its
-   * original (still pinId-stamped) source block.
-   */
-  export function appendNodesToDoc(nodes) {
-    if (!editor || !Array.isArray(nodes) || nodes.length === 0) return;
-
-    // Snapshot existing top-level nodes' shape (pinId-agnostic).
-    const existingKeys = new Set();
-    editor.state.doc.forEach((node) => {
-      try {
-        existingKeys.add(JSON.stringify(stripPinIdsFromJSON(node.toJSON())));
-      } catch {}
-    });
-
-    const built = [];
-    for (const json of nodes) {
-      try {
-        // Compare shapes WITHOUT pinIds so the same content is not injected
-        // twice, but insert the node WITH its pinId. Inserting the stripped
-        // copy is what made an injected pin inert: it looked identical and
-        // carried no link, so editing it changed the page and never the pin.
-        // With the id intact, the save path's refresh_pin_caches recognises
-        // the node and the page that holds it becomes the pin's owner.
-        const stripped = stripPinIdsFromJSON(json);
-        const key = JSON.stringify(stripped);
-        if (existingKeys.has(key)) continue;
-        built.push(editor.state.schema.nodeFromJSON(json));
-        existingKeys.add(key);
-      } catch (err) {
-        console.error("appendNodesToDoc: skipping invalid node", err);
-      }
-    }
-    if (built.length === 0) return;
-    const end = editor.state.doc.content.size;
-    const tr = editor.state.tr.insert(end, built);
-    editor.view.dispatch(tr);
-  }
-
-  /**
-   * Sum text-content length across the doc, skipping dayMarker atoms.
-   * dayMarkers are decorator metadata, not prose.
-   */
-  function countWordsExcludingMarkers(ed) {
-    let text = "";
-    ed.state.doc.descendants((node) => {
-      if (node.type.name === "dayMarker") return false;
-      if (node.isText) text += node.text + " ";
-      return true;
-    });
-    return text.split(/\s+/).filter(Boolean).length;
-  }
-
-  /**
-   * Returns the list of dayMarker nodes in the doc, earliest-first.
-   * Used by the TrailIndex (Cmd+K) palette.
-   */
-  export function getDayMarkers() {
-    if (!editor) return [];
-    const markers = [];
-    editor.state.doc.descendants((node, pos) => {
-      if (node.type.name === "dayMarker") {
-        markers.push({
-          pos,
-          date: node.attrs.date || "",
-          whatMatters: node.attrs.whatMatters || "",
-        });
-        return false;
-      }
-      return true;
-    });
-    return markers;
-  }
-
-  /** Scroll the editor viewport to the dayMarker whose date matches. */
-  export function scrollToDate(date) {
-    if (!editor) return;
-    const markers = getDayMarkers();
-    const match = markers.find((m) => m.date === date);
-    if (!match) return;
-    editor.commands.focus();
-    editor.commands.setTextSelection(match.pos + 1);
-    editor.commands.scrollIntoView();
-  }
-
-  /**
-   * Insert today's dayMarker, or update an existing one in place.
-   *
-   * - If a marker with the same `date` already exists: update its
-   *   `whatMatters` attr to the supplied value (no-op if unchanged).
-   *   Cursor position is left alone.
-   * - Otherwise, insert a new dayMarker followed by an empty paragraph.
-   *   Position logic is in chooseMarkerInsertPosition (module-level export).
-   *   Cursor moves into the empty paragraph after the new marker so the
-   *   user can immediately type today's content.
-   *
-   * Idempotency: calling this with the same (date, whatMatters) pair after
-   * a marker exists is a no-op. Calling with a new whatMatters updates in place.
-   */
-  export function stampDayMarker(date, whatMatters) {
-    if (!editor) return;
-    const desired = whatMatters || "";
-    const markers = getDayMarkers();
-    const existing = markers.find((m) => m.date === date);
-    if (existing) {
-      if ((existing.whatMatters || "") === desired) return;
-      editor
-        .chain()
-        .command(({ tr }) => {
-          const node = tr.doc.nodeAt(existing.pos);
-          if (!node) return false;
-          tr.setNodeMarkup(existing.pos, undefined, { date, whatMatters: desired });
-          return true;
-        })
-        .run();
-      return;
-    }
-
-    const docSize = editor.state.doc.content.size;
-    const insertPos = chooseMarkerInsertPosition({
-      markersExist: markers.length > 0,
-      docSize,
-    });
-    editor
-      .chain()
-      .focus()
-      .insertContentAt(insertPos, [
-        { type: "dayMarker", attrs: { date, whatMatters: desired } },
-        { type: "paragraph" },
-      ])
-      .run();
-    // Move cursor into the new paragraph (right after the inserted marker).
-    // The marker is one node + the paragraph that follows; cursor lands
-    // at the start of the paragraph.
-    editor.commands.setTextSelection(insertPos + 2);
-  }
-
-  /** Returns true if a dayMarker for the given date exists in the doc. */
-  export function hasDayMarker(date) {
-    return getDayMarkers().some((m) => m.date === date);
-  }
-
-  export function invalidatePinContent(content) {
-    existingPinContents = new Set([...existingPinContents].filter(c => c !== content));
-  }
-
-  /**
-   * Replace the node carrying the given pinId with newNodeJson. Called by the
-   * pin modal's save path for SAME-PAGE pins: the modal's serialized content
-   * (which still carries the pinId attr) is spliced into the main editor's
-   * doc in a single PM transaction. The editor's onUpdate fires, debouncedSave
-   * kicks in, save_page_content runs in Rust, and refresh_pin_caches updates
-   * the pin row's content/title cache.
-   * Returns true on success, false if the pinId is not found in the doc.
-   */
-  export function spliceNodeAtPinId(pinId, newNodeJson) {
-    if (!editor || !pinId || !newNodeJson) return false;
-    let firstPos = null;
-    let lastEnd = null;
-    editor.state.doc.descendants((node, pos) => {
-      if (firstPos !== null) return false;
-      if (node.attrs?.pinId === pinId) {
-        firstPos = pos;
-        lastEnd = pos + node.nodeSize;
-        return false;
-      }
-      return true;
-    });
-    if (firstPos === null) return false;
-    try {
-      const newNode = editor.state.schema.nodeFromJSON(newNodeJson);
-      const tr = editor.state.tr.replaceWith(firstPos, lastEnd, newNode);
-      editor.view.dispatch(tr);
-      return true;
-    } catch (err) {
-      console.error("spliceNodeAtPinId failed:", err);
-      return false;
-    }
-  }
-
-  /**
-   * Scroll the editor to the node carrying the given pinId attribute and
-   * briefly flash a highlight so the user can see where the pin lives.
-   * No-op if the editor is not mounted or the pinId is not found in the doc.
-   * Called by the pin panel when the user clicks a pin card (Issue 2).
-   */
-  export function scrollToPinId(pinId) {
-    if (!editor || !pinId) return;
-    const matches = collectNodesByPinId(pinId);
-    if (matches.length === 0) return;
-    const { pos } = matches[0];
-    // Place selection at the start of the node so PM scrolls to it.
-    try {
-      const tr = editor.state.tr.setSelection(
-        TextSelection.near(editor.state.doc.resolve(pos + 1))
-      );
-      editor.view.dispatch(tr);
-      editor.commands.scrollIntoView();
-    } catch {}
-    // Visual flash: find the DOM node and apply a brief background tint.
-    try {
-      const domNode = editor.view.nodeDOM(pos);
-      if (domNode instanceof HTMLElement) {
-        domNode.style.transition = "background 250ms ease";
-        domNode.style.background = "var(--warm-accent-soft, rgba(196,77,40,0.12))";
-        setTimeout(() => {
-          if (domNode) {
-            domNode.style.background = "";
-            setTimeout(() => { if (domNode) domNode.style.transition = ""; }, 300);
-          }
-        }, 700);
-      }
-    } catch {}
-  }
-
-  // Walk the editor doc looking for a pending pageRef (targetId === "")
-  // whose labelSnapshot matches `label`, and rewrite its targetId to the
-  // newly-created page id. Called by the @-mention create-* flow after
-  // the host has provisioned the new lineage and page so the source
-  // page retains a real reference when the user comes back.
-  export async function linkPendingPageRef(label, newPageId) {
-    if (!editor || !newPageId) return false;
-    const target = (label || "").trim();
-    if (!target) return false;
-    let updated = false;
-    try {
-      const tr = editor.state.tr;
-      editor.state.doc.descendants((node, pos) => {
-        if (updated) return false;
-        if (node.type.name === "pageRef"
-            && (!node.attrs?.targetId)
-            && (node.attrs?.labelSnapshot || "").trim() === target) {
-          tr.setNodeMarkup(pos, undefined, { ...node.attrs, targetId: newPageId });
-          updated = true;
-          return false;
-        }
-        return true;
-      });
-      if (updated) {
-        editor.view.dispatch(tr);
-        // Force-flush the debounced save so the back-reference persists
-        // before the host navigates away to the new page.
-        if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-        try {
-          pruneAllEmptyHeadings(editor, { preserveCursor: false });
-          const json = JSON.stringify(editor.getJSON());
-          const yjsBytes = yjsDoc ? encodeState(yjsDoc) : null;
-          if (isTrailMode && trailLineageId) {
-            await saveTrailContent(trailLineageId, pageId, json);
-          } else {
-            await savePageContent(pageId, json, yjsBytes);
-          }
-        } catch (err) {
-          console.error("Failed to flush save after linkPendingPageRef:", err);
-        }
-      }
-    } catch (err) {
-      // Don't let a bad walk crash the create flow.
-      console.error("linkPendingPageRef walk failed:", err);
-    }
-    return updated;
-  }
+  // Public API — Page.svelte binds this component and calls these; each
+  // forwards to the core so the caller contract is unchanged by the split.
+  export function getEditor() { return core?.getEditor() ?? null; }
+  export function reloadFromContent(newJson) { return core?.reloadFromContent(newJson); }
+  export function focusInput() { return core?.focusInput(); }
+  export function flushPendingSave() { return core?.flushPendingSave(); }
+  export function getWordCount() { return core?.getWordCount() ?? 0; }
+  export function appendNodesToDoc(nodes) { return core?.appendNodesToDoc(nodes); }
+  export function getDayMarkers() { return core?.getDayMarkers() ?? []; }
+  export function scrollToDate(date) { return core?.scrollToDate(date); }
+  export function stampDayMarker(date, whatMatters) { return core?.stampDayMarker(date, whatMatters); }
+  export function hasDayMarker(date) { return core?.hasDayMarker(date) ?? false; }
+  export function invalidatePinContent(content) { return core?.invalidatePinContent(content); }
+  export function spliceNodeAtPinId(pinId, newNodeJson) { return core?.spliceNodeAtPinId(pinId, newNodeJson) ?? false; }
+  export function scrollToPinId(pinId) { return core?.scrollToPinId(pinId); }
+  export function linkPendingPageRef(label, newPageId) { return core?.linkPendingPageRef(label, newPageId); }
 
 </script>
 
@@ -3137,7 +2183,63 @@
     onCancel={() => (chartBuilderState = null)}
   />
 
-  <div bind:this={editorEl} class="tiptap-editor prose"></div>
+  <EditorCore
+    bind:this={core}
+    {pageId}
+    {initialContent}
+    {initialYjsState}
+    {readonly}
+    {placeholder}
+    {trailMode}
+    {isTrailMode}
+    {trailLineageId}
+    {lineageId}
+    {currentLineageId}
+    {currentLineageName}
+    {onWordCount}
+    {onDocChange}
+    {onPinCreated}
+    {onCreateSubtrail}
+    {onMentionNavigate}
+    {onPinRefNavigate}
+    onEditor={(ed) => {
+      editor = ed;
+      editorEl = ed?.options.element ?? null;
+    }}
+    onUpdate={({ editor: ed }) => {
+      updateTableToolbar();
+      updateSelectionPin(ed);
+      updateBubbleMenu(ed);
+    }}
+    onSelectionUpdate={({ editor: ed }) => {
+      updateSelectionPin(ed);
+      updateBubbleMenu(ed);
+    }}
+    onFocus={() => {
+      maybeShowMobileGesturesHint();
+    }}
+    onBlur={() => {
+      // The touch toolbar has no timeout (see armTouchHandleHide), so
+      // leaving the editor is what puts it away — but NOT when the blur
+      // is itself the first half of a tap on one of the toolbar's own
+      // buttons. See touch-reveal-dismiss.js.
+      if (shouldDismissOnBlur({
+        pointerDownOnToolbar,
+        coarsePointer: isCoarsePointer(),
+      })) {
+        clearTouchReveal();
+      }
+    }}
+    onTransaction={() => {
+      updateTableToolbar();
+    }}
+    onChartOpen={(params) => {
+      // /chart slash command: { mode: "create" }. Click on existing
+      // chart node: { mode: "edit", pos, attrs }. Both routes land here.
+      chartBuilderState = params;
+    }}
+    onNotice={(message) => showToast(message)}
+  />
 
   <!-- Quick-pin toast (E.1) — brief confirmation after Cmd/Ctrl+P -->
   {#if quickPinToast}
@@ -3293,19 +2395,6 @@
     display: none;
     width: 0;
     height: 0;
-  }
-
-  /* Block in long-press drag mode (touch only) — subtle elevation cue
-     without ripping the block out of its layout slot. The block stays
-     in place; subsequent moveUnit() swaps actually reorder the doc as
-     the user drags past 32px thresholds. */
-  .tiptap-editor :global(.ProseMirror > .block-dragging) {
-    background: color-mix(in srgb, var(--warm-accent) 8%, transparent);
-    box-shadow: 0 0.25rem 1rem var(--card-shadow);
-    border-radius: 0.375rem;
-    transform: scale(1.005);
-    transition: transform var(--motion-fast),
-                background var(--motion-fast);
   }
 
   /* Block handles — inside the 32px left padding, left of text.
@@ -3817,44 +2906,6 @@
   }
 
   /* Links */
-  /* Editor min-height — needs scoping to the live editor (not static
-     previews), so it stays here. Everything else lives in prose.css
-     under the `.prose` class. */
-  .tiptap-editor :global(.ProseMirror) {
-    min-height: 200px;
-    /* Trailing room below the last block, inside the scroller.
-       Two jobs, both of which the old `padding: 0` denied:
-
-       1. It is what the caret's bottom margin scrolls INTO. Without it the
-          scroller has nothing left to give at the end of the doc, so the
-          line you are writing ends up flush against the bottom edge —
-          technically in view, and still like writing into the window
-          frame. (See editor/caret-scroll.js for the scroll itself.)
-       2. It is a click target. ProseMirror places the caret at the end of
-          the doc when you click inside its own padding, so the empty space
-          under the last line becomes "click here to keep writing" instead
-          of dead canvas.
-
-       Not a viewport fraction: on a phone a `vh`-based value eats the
-       whole screen below a short page, and the writing surface is meant to
-       start at the top. */
-    padding: 0 0 6rem;
-  }
-
-  /* Block gap baseline for paragraph-shaped content. 8px between
-     top-level paragraphs, lists, and blockquotes — tight enough that
-     consecutive written lines read as one continuous stream (the same
-     rhythm as items inside a list), not a sparse, widely-spaced page.
-     Headings, hr, pre, table, and shizumu custom nodes (day-marker,
-     recipe-block, chart-block, code-block-wrap, block-shell, etc.) keep
-     the per-element margins set in src/styles/prose.css and their
-     component styles. we don't override those. */
-  .tiptap-editor :global(.ProseMirror > :is(p, ul, ol, blockquote)) {
-    margin-block: 8px 0;
-  }
-  .tiptap-editor :global(.ProseMirror > :is(p, ul, ol, blockquote):first-child) {
-    margin-block-start: 0;
-  }
 
   /* Quick-pin toast — brief floating confirmation after Cmd/Ctrl+P.
      Bottom-right of the editor wrapper, calm, ~1.6s lifetime. */

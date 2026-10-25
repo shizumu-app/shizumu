@@ -729,6 +729,14 @@
   max-width: 100%;
   position: relative;
 }
+/* The phone layout's charts fill the column, so the type chip (absolute,
+   bottom-right) landed on the chart's last node: "flowchart" printed over
+   "flathub builds". A line of its own under the chart, as the recipe and
+   code blocks already give theirs. Desktop centres a narrower chart with
+   room beside it and keeps its spacing. */
+.ps-canvas .prose .chart-block {
+  padding-bottom: 1.5rem;
+}
 /* Block title for charts. The generic `[data-block-title]::before` rule
    elsewhere in this file renders the label, but its default styling sits
    awkwardly above a centered diagram. Override here for typography and

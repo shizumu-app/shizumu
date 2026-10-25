@@ -71,7 +71,10 @@
     {
       title: "navigation",
       rows: [
-        { label: "previous / next page",       keys: [mod, "← / →"] },
+        // page-nav-keys.js: in the writing, mod+←/→ moves by a word (issue #2),
+        // so the row names the page turn that works from anywhere. mod+←/→
+        // still turns the page outside the writing; it is left unlisted.
+        { label: "previous / next page",       keys: [mod, "pg up / pg dn"] },
         { label: "open memory",                keys: [mod, "↑"] },
         { label: "back to the page",           keys: [mod, "↓"] },
         { label: "in memory: pages · trail map · pins", keys: ["1 · 2 · 3"] },

@@ -47,10 +47,64 @@ export function navPush(tag, onClose, opts = {}) {
   const entry = { id: nextId++, tag, onClose, hideBar: !!opts.hideBar, closed: false };
   stack.push(entry);
   if (typeof window !== "undefined" && window.history) {
-    window.history.pushState({ shizumu: tag, navId: entry.id }, "");
+    const state = { shizumu: tag, navId: entry.id };
+    // A SLOT IS ALREADY FREE. Something closed in this same turn and its
+    // rewind has not run yet, so this entry takes that slot rather than
+    // adding one the pending go(-N) would then take back. See the note
+    // above popTrailingClosed for what that cost.
+    if (pendingRewind > 0) {
+      pendingRewind -= 1;
+      window.history.replaceState(state, "");
+    } else {
+      window.history.pushState(state, "");
+    }
   }
   emit();
   return entry.id;
+}
+
+// ── the rewind is DEFERRED, and a push in the same turn takes it over ──
+//
+// THE DEFECT. Pressing Android's back button while the table size grid was
+// open closed the WHOLE APP. Measured on an SM-A065F: with the insert
+// sheet up `history.state` is {shizumu:"insert",navId:1}, and the moment
+// the table grid replaces it the state is null — the grid is on screen
+// with no entry behind it, so the press falls through to the activity.
+// Every sheet opened from another sheet: insert -> table, insert -> chart,
+// the block handle's `turn into`.
+//
+// WHY IT HAPPENED. `history.go(-1)` is ASYNCHRONOUS. Closing the outgoing
+// sheet requested one, the incoming sheet pushed synchronously, and the
+// pop then landed on the entry that had just been pushed:
+//
+//     go(-1) requested … pushState(table) … popstate arrives
+//
+// A requested go cannot be cancelled, so the fix is not to request one
+// until the turn is over. The rewind is queued on a MACROTASK — later than
+// every effect in the flush that follows, which is where the replacing
+// sheet's push happens — and `navPush` consumes a pending rewind by
+// REPLACING the slot instead of pushing a new one. One sheet, one entry,
+// with no window in which the two disagree.
+//
+// A macrotask and not a microtask, deliberately: Svelte effects run as
+// microtasks, so a microtask scheduled from inside one can still run
+// before the next component's effect.
+let pendingRewind = 0;
+let rewindTimer = null;
+
+function scheduleRewind() {
+  if (rewindTimer !== null) return;
+  rewindTimer = setTimeout(() => {
+    rewindTimer = null;
+    const n = pendingRewind;
+    pendingRewind = 0;
+    // Nothing left to rewind: a push took the slot over.
+    if (n <= 0) return;
+    if (typeof window !== "undefined" && window.history) {
+      suppress += 1;
+      window.history.go(-n);
+    }
+  }, 0);
 }
 
 // Shared by navClose and navPopAll: once an entry is marked closed, rewind
@@ -62,9 +116,9 @@ function popTrailingClosed() {
     stack.pop();
     trailing += 1;
   }
-  if (trailing > 0 && typeof window !== "undefined" && window.history) {
-    suppress += 1;
-    window.history.go(-trailing);
+  if (trailing > 0) {
+    pendingRewind += trailing;
+    scheduleRewind();
   }
 }
 
@@ -130,4 +184,6 @@ export function _resetForTests() {
   suppress = 0;
   subscribers = new Set();
   installed = false;
+  pendingRewind = 0;
+  if (rewindTimer !== null) { clearTimeout(rewindTimer); rewindTimer = null; }
 }

@@ -158,11 +158,27 @@ pub fn attachment_open(
     blob_hash: String,
     filename: String,
 ) -> Result<(), String> {
-    let app_dir = app_data_dir(&app)?;
+    // EVERY FAILURE BELOW SAYS WHICH ONE IT WAS.
+    //
+    // It used to hand back `e.to_string()` here and in three more places,
+    // and `describeAttachmentOpenError` (attachment-error.js) is an
+    // ALLOWLIST — so every one of them collapsed into one generic line
+    // about the original being missing or unreadable, and none of them
+    // logged. A device pass spent on a photograph of that line could not
+    // tell a missing app directory from a failed copy from a null argument.
+    // The allowlist is the right shape; what was missing is a set for it to
+    // recognise.
+    let app_dir = app_data_dir(&app).map_err(|e| {
+        log::warn!("attachment_open: no app data dir: {e}");
+        "could not reach this app's own storage".to_string()
+    })?;
     if !store::has_local(&app_dir, &blob_hash) {
         return Err("file not on this device".into());
     }
-    let path = store::path_for(&app_dir, &blob_hash).map_err(|e| e.to_string())?;
+    let path = store::path_for(&app_dir, &blob_hash).map_err(|e| {
+        log::warn!("attachment_open: no path for blob {blob_hash}: {e}");
+        "could not find where this file is kept".to_string()
+    })?;
 
     #[cfg(target_os = "android")]
     {
@@ -173,8 +189,12 @@ pub fn attachment_open(
         // Desktop opens the real blob path with the OS handler directly —
         // no share staging, no filename needed.
         let _ = &filename;
-        tauri_plugin_opener::open_path(path.to_string_lossy().to_string(), None::<&str>)
-            .map_err(|e| format!("opener failed: {e}"))
+        tauri_plugin_opener::open_path(path.to_string_lossy().to_string(), None::<&str>).map_err(
+            |e| {
+                log::warn!("attachment_open: opener failed for {}: {e}", path.display());
+                "could not hand this file to another app".to_string()
+            },
+        )
     }
 }
 
@@ -191,18 +211,23 @@ fn attachment_open_android(
     blob_path: &std::path::Path,
     filename: &str,
 ) -> Result<(), String> {
-    let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    let cache_dir = app.path().app_cache_dir().map_err(|e| {
+        log::warn!("attachment_open: no app cache dir: {e}");
+        "could not reach this app's own storage".to_string()
+    })?;
     let (staged_path, mime) =
         crate::attachments::share::stage_for_share(&cache_dir, blob_path, filename)?;
-    crate::attachments::share::share_via_intent(&staged_path.to_string_lossy(), mime).map_err(
-        |e| {
-            log::warn!(
-                "attachment_open: android share intent failed for {}: {e}",
-                staged_path.display()
-            );
-            "could not open the share sheet for this file".to_string()
-        },
-    )
+    // ACTION_VIEW, falling back to the share chooser inside the Kotlin —
+    // see open_via_intent. The failure that reaches here is the JNI call
+    // itself, which on a build where patch-android-share.py did not run is
+    // a NoSuchMethodError and looks exactly like this.
+    crate::attachments::share::open_via_intent(&staged_path.to_string_lossy(), mime).map_err(|e| {
+        log::warn!(
+            "attachment_open: android open intent failed for {}: {e}",
+            staged_path.display()
+        );
+        "could not hand this file to another app".to_string()
+    })
 }
 
 /// Should flipping an attachment's sync flag put its bytes on the wire?

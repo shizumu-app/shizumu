@@ -54,6 +54,26 @@ export async function bootstrapDemo() {
     await fixture.seedDemo(base, new Date());
   }
 
+  // The shell is merged, so the device picks the layout: an unwritten
+  // `try_new_shell` boots the phone shell on a phone-shaped viewport
+  // (src/shell/shell-boot.js) and the desktop tree on a wide mouse screen.
+  // The demo therefore leaves the key UNSET instead of forcing a value.
+  //
+  // On every boot, not only on a fresh seed, because a returning visitor's
+  // snapshot from before this change carries `"false"` (the old opt-out),
+  // which would strand a phone visitor on the desktop tree. Here and not in
+  // seedDemo for the reason it was always here: a returning visitor never
+  // runs the fixture, and reaching them from it would need a SEED_VERSION
+  // bump, which reseeds them and takes what they wrote (fixture.js:13).
+  // Writing it on both paths costs one idempotent call and takes nothing.
+  //
+  // `null`, not "" or "null": get_setting reads `settings[key] || null`, so
+  // null is what "unwritten" looks like to every reader of the key.
+  //
+  // Before `lastSnapshot` is first read below, so the unset is inside the
+  // snapshot that gets persisted rather than arriving on the next mutation.
+  await base("set_setting", { key: "try_new_shell", value: null });
+
   let canPersist = storage !== null;
   let saveTimer = null;
   // Set once the page is actually on its way out (pagehide, or

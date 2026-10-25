@@ -36,6 +36,11 @@ pub struct PullStats {
     pub ops_received: usize,
     pub ops_skipped_duplicate: usize,
     pub ops_skipped_decrypt_error: usize,
+    /// This pass applied a snapshot (bootstrap). It moved rows into the
+    /// local tables like ops do, and may have removed the placeholder page
+    /// a screen has open, so the worker announces it as received work
+    /// even when no op came after the snapshot.
+    pub bootstrapped: bool,
 }
 
 #[derive(Debug)]
@@ -89,7 +94,10 @@ pub fn run_pass(
 
     let mut stats = PullStats::default();
     let mut cursor = match crate::sync::snapshot::bootstrap(db, cfg, user_keys, device_keys)? {
-        Some(seq) => seq,
+        Some(seq) => {
+            stats.bootstrapped = true;
+            seq
+        }
         None => cfg.last_seen_user_seq,
     };
 
@@ -160,7 +168,7 @@ pub fn run_pass(
             }
         });
 
-        let mut merge_blocked = false;
+        let mut parked_any = false;
         for op in sorted {
             let seq = op.user_seq;
             if op.op_kind == crate::op_log::OpKind::SNAPSHOT {
@@ -199,35 +207,36 @@ pub fn run_pass(
                     true
                 }
                 IngestOutcome::MergeFailed => {
-                    // The op_log row is parked with a non-null
-                    // merge_error. replay_failed_merges runs at the
-                    // start of every worker tick — it picks the row
-                    // back up and clears the error on success, which
-                    // unblocks cursor advancement on a later pass.
-                    false
+                    // The op_log row is stored with a non-null
+                    // merge_error. The batch's parked rows are retried
+                    // once the whole batch is in (below), and again at
+                    // the start of every worker tick.
+                    parked_any = true;
+                    true
                 }
             };
-            // Only advance the cursor for ops we successfully handled
-            // (including duplicates and decrypt-errors — those are
-            // terminal, retry won't change them). Merge failures hold
-            // the cursor so the op stays at the head of the queue
-            // until replay_failed_merges clears it.
+            // Every outcome moves the cursor: the op's row is written
+            // either way, so nothing is lost by moving past it. A merge
+            // failure used to stop the pass instead, which cost one tick
+            // per failed op; a device re-uploading its history after a
+            // reset sends dozens that can never merge (edits to pages
+            // another device created), and a new device then waited
+            // minutes before anything newer arrived (2026-10-16).
             if advance && seq > cursor {
                 cursor = seq;
                 let conn = db.lock().map_err(|e| PullError::Db(e.to_string()))?;
                 config::set_last_seen_user_seq(&conn, cursor)?;
-            } else if !advance {
-                // Stop processing this batch AND this pass — the
-                // cursor is parked until merge_error clears. Continuing
-                // past this op would skip later ops that may depend on
-                // the parked one's state (e.g. an update_pin_content
-                // op after a failed create_pin).
-                merge_blocked = true;
-                break;
             }
         }
 
-        if merge_blocked || !resp.has_more {
+        // An op listed before the op it depends on (an edit before its
+        // page's create) failed above and can land now, in sequence order.
+        if parked_any {
+            let conn = db.lock().map_err(|e| PullError::Db(e.to_string()))?;
+            replay_failed_merges(&conn).map_err(PullError::Db)?;
+        }
+
+        if !resp.has_more {
             break;
         }
     }
@@ -491,7 +500,10 @@ fn apply_remote_op(
 /// the number of rows whose merge_error was cleared on this pass.
 pub fn replay_failed_merges(conn: &Connection) -> Result<usize, String> {
     let mut stmt = conn
-        .prepare("SELECT op_id, op_kind, payload_blob FROM op_log WHERE merge_error IS NOT NULL")
+        // Sequence order, so a parked create is retried before the parked
+        // edits that depend on it.
+        .prepare("SELECT op_id, op_kind, payload_blob FROM op_log WHERE merge_error IS NOT NULL \
+                  ORDER BY user_seq IS NULL, user_seq, hlc_ts, rowid")
         .map_err(|e| e.to_string())?;
     let rows: Vec<(String, String, Vec<u8>)> = stmt
         .query_map([], |r| {
@@ -800,7 +812,7 @@ mod tests {
     /// `replay_failed_merges` re-runs merge for every op_log row that
     /// carries a non-null `merge_error`, and clears the error on the
     /// rows whose merge now succeeds. This is the S3 fix: the pull
-    /// pipeline parks the cursor on a merge failure, and the worker
+    /// pipeline parks the failed op's row, and the worker
     /// calls `replay_failed_merges` at the start of every tick so a
     /// transient failure (an op arriving before its dependency, a
     /// row temporarily locked by a concurrent write) self-heals.
@@ -848,8 +860,8 @@ mod tests {
         // Row A is the only one whose merge can succeed (Applied).
         // Row B stays parked because SkippedMalformed is not in the
         // recovered set — a malformed payload won't become valid on
-        // retry, but the cursor stays blocked so the user / operator
-        // can investigate.
+        // retry; it stays parked (merge_error kept) for the user /
+        // operator to investigate, and the cursor has moved past it.
         assert_eq!(
             recovered, 1,
             "exactly one row should have its merge_error cleared (the valid setting_op)"
@@ -897,12 +909,8 @@ mod tests {
         let (uk, dk) = fresh_keys();
         let db = test_db();
 
-        // Each op must merge to a benign outcome so the cursor advances
-        // and `has_more` actually drives a second batch. A bare {"seq":N}
-        // page_blob has no page_id, so merge returns SkippedMalformed,
-        // which parks the cursor (the deliberate S3 behaviour exercised by
-        // replay_failed_merges_clears_errors_on_recoverable_rows) and the
-        // loop would stop after one batch. Use a valid create_new_page op.
+        // Valid create_new_page ops, so the counts below are received ops
+        // rather than parked ones.
         let make_op = |seq: i64| {
             let payload = format!(
                 r#"{{"op":"create_new_page","page_id":"p-{seq}","fields":{{"date":"2026-05-20","page_number":{seq}}},"hlc_ts":{seq}}}"#
@@ -974,6 +982,130 @@ mod tests {
         assert_eq!(config::load(&conn).unwrap().last_seen_user_seq, 11);
     }
 
+    /// Serve `ops` (seq, payload) as ONE batch from `since=0`, every op a
+    /// page_blob (or a page_yjs, for a `yjs_update` payload), and return the
+    /// run_pass result.
+    fn one_batch_pass(ops: &[(i64, String)]) -> (crate::db::Db, PullStats) {
+        let server = MockServer::start();
+        let (uk, dk) = fresh_keys();
+        let db = test_db();
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("stream", "3");
+            then.status(200).json_body(json!({"ops": [], "has_more": false}));
+        });
+        let mut listed = Vec::new();
+        for (seq, payload) in ops {
+            let kind = if payload.contains(r#""op":"yjs_update""#) { "page_yjs" } else { "page_blob" };
+            let uuid = uuid::Uuid::new_v4();
+            let ct = encrypt_op(&uk.content_master_key, &uuid, payload.as_bytes());
+            let hash = blob_hash_hex(&ct);
+            listed.push(json!({
+                "user_seq": seq, "blob_hash": &hash, "blob_size": ct.len() as i64,
+                "doc_id_ct": "AAAA", "op_kind": kind, "stream_id": 1,
+                "device_id": "x", "created_at": seq
+            }));
+            server.mock(|when, then| {
+                when.method(GET).path(format!("/v1/users/u/blobs/{hash}"));
+                then.status(200).body(ct.clone());
+            });
+        }
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("since", "0");
+            then.status(200).json_body(json!({"ops": listed, "has_more": false}));
+        });
+        let cfg = active_cfg(&server.base_url());
+        let stats = run_pass(&db, &cfg, &uk, &dk).unwrap();
+        (db, stats)
+    }
+
+    fn create_page(seq: i64, id: &str, hlc: i64) -> (i64, String) {
+        (seq, format!(
+            r#"{{"op":"create_new_page","page_id":"{id}","fields":{{"date":"2026-05-20","page_number":{seq}}},"hlc_ts":{hlc}}}"#))
+    }
+
+    fn save_page(seq: i64, id: &str, word: &str, hlc: i64) -> (i64, String) {
+        let doc = format!(r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{{"type":"text","text":"{word}"}}]}}]}}"#);
+        (seq, serde_json::json!({
+            "op": "save_page_content", "page_id": id,
+            "fields": {"content_json": doc}, "hlc_ts": hlc
+        }).to_string())
+    }
+
+    /// An op that can never merge (an edit to a page whose create this
+    /// relay never held: what a device re-uploads after a reset, for pages
+    /// another device created) must not hold up the ops behind it. Until
+    /// 2026-10-16 each one stopped the pass, so a phone's re-uploaded
+    /// history of dozens of them cost a fresh laptop one five-second tick
+    /// apiece before anything newer arrived; the sync journeys gave up
+    /// after forty seconds with the newest line still on the relay.
+    #[test]
+    fn an_op_that_never_merges_does_not_stop_the_ops_behind_it() {
+        let (db, _) = one_batch_pass(&[
+            save_page(1, "never-created", "orphan", 1),
+            create_page(2, "p-2", 2),
+            save_page(3, "p-2", "kept", 3),
+        ]);
+        let conn = db.lock().unwrap();
+        assert_eq!(config::load(&conn).unwrap().last_seen_user_seq, 3,
+            "one pass reaches the newest op");
+        let content: String = conn.query_row(
+            "SELECT content_json FROM pages WHERE id='p-2'", [], |r| r.get(0)).unwrap();
+        assert!(content.contains("kept"));
+        let parked: Option<String> = conn.query_row(
+            "SELECT merge_error FROM op_log WHERE user_seq=1", [], |r| r.get(0)).unwrap();
+        assert!(parked.is_some(), "the orphan stays parked for replay, not dropped");
+    }
+
+    /// An op that arrives before the op it depends on, in the same pass,
+    /// lands in that pass: the batch's parked ops are retried once it has
+    /// been ingested, in sequence order.
+    #[test]
+    fn an_edit_listed_before_its_create_lands_in_the_same_pass() {
+        let (db, _) = one_batch_pass(&[
+            save_page(1, "p-9", "early", 9),
+            create_page(2, "p-9", 2),
+        ]);
+        let conn = db.lock().unwrap();
+        let content: String = conn.query_row(
+            "SELECT content_json FROM pages WHERE id='p-9'", [], |r| r.get(0)).unwrap();
+        assert!(content.contains("early"));
+        let parked: Option<String> = conn.query_row(
+            "SELECT merge_error FROM op_log WHERE user_seq=1", [], |r| r.get(0)).unwrap();
+        assert!(parked.is_none());
+    }
+
+    /// Question 2 of the J5 investigation, settled: a `page_yjs` op listed
+    /// before its page's create is NOT dropped. `merge_page_yjs` reports a
+    /// missing row as `SkippedMalformed`, which pull.rs parks (merge_error)
+    /// rather than counting benign, and the end-of-batch replay folds it in
+    /// once the create has landed. Guards that parking: were the missing
+    /// row ever reported as a benign skip, the update would be lost.
+    #[test]
+    fn a_yjs_update_listed_before_its_create_converges_in_the_same_pass() {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        use yrs::{GetString, ReadTxn, StateVector, Text, Transact, Update, updates::decoder::Decode};
+        let doc = yrs::Doc::new();
+        let body = doc.get_or_insert_text("body");
+        body.insert(&mut doc.transact_mut(), 0, "gannet");
+        let update = doc.transact().encode_state_as_update_v2(&StateVector::default());
+        let yjs = (1, json!({
+            "op": "yjs_update", "page_id": "p-y",
+            "fields": {"update": B64.encode(&update)}, "hlc_ts": 9
+        }).to_string());
+        let (db, _) = one_batch_pass(&[yjs, create_page(2, "p-y", 2)]);
+        let conn = db.lock().unwrap();
+        let state: Option<Vec<u8>> = conn.query_row(
+            "SELECT yjs_state FROM pages WHERE id='p-y'", [], |r| r.get(0)).unwrap();
+        let state = state.expect("the early update was folded in once the page existed");
+        let got = yrs::Doc::new();
+        got.transact_mut().apply_update(Update::decode_v2(&state).unwrap());
+        let t = got.get_or_insert_text("body");
+        assert_eq!(t.get_string(&got.transact()), "gannet");
+        let parked: Option<String> = conn.query_row(
+            "SELECT merge_error FROM op_log WHERE user_seq=1", [], |r| r.get(0)).unwrap();
+        assert!(parked.is_none(), "replayed, so no longer parked");
+    }
+
     // ──────────────────────────────────────────────────────────────
     // Task 6: bootstrap an empty device from the newest snapshot.
     // ──────────────────────────────────────────────────────────────
@@ -1034,6 +1166,68 @@ mod tests {
     }
 
     #[test]
+    fn a_device_that_pairs_with_only_its_launch_page_takes_the_snapshot() {
+        // The app makes today's page at launch, so a device that pairs is
+        // never empty; before complete_join cleared that blank page, this
+        // pass replayed the account from 0 and `from_zero` was hit
+        // (two-device runs, 2026-10-16: a fresh laptop at seq 4930 of 5581
+        // after four minutes).
+        let server = MockServer::start();
+        let db = test_db();
+        let (uk, dk) = crate::sync::test_keys();
+        {
+            let c = db.lock().unwrap();
+            c.execute(
+                "INSERT INTO pages (id, date, page_number, content_json, created_at, updated_at) VALUES ('launch','2026-10-16',1,?1,'0','0')",
+                [r#"{"type":"doc","content":[{"type":"paragraph","attrs":{"pinId":null}}]}"#],
+            ).unwrap();
+            crate::sync::config::set_relay_url(&c, &server.base_url()).unwrap();
+            crate::sync::snapshot::complete_join(&c, "u", "d", 1, true).unwrap();
+        }
+
+        let src = test_db();
+        let (ct, hash) = {
+            let c = src.lock().unwrap();
+            c.execute("INSERT INTO pages (id, date, page_number, what_matters_now, created_at, updated_at) VALUES ('from-snap','2026-08-22',1,'kept','0','0')", []).unwrap();
+            let snap = crate::sync::snapshot::capture(&c, 40).unwrap();
+            let bytes = crate::sync::snapshot::encode(&snap).unwrap();
+            let ck = crate::sync::epoch::content_master_key_for_epoch(&c, &uk, 0).unwrap().unwrap();
+            let sp = crate::sync::epoch::user_sign_priv_for_epoch(&c, &uk, 0).unwrap().unwrap();
+            let ct = crate::sync::op_auth::seal_authored(&ck, &uuid::Uuid::new_v4(), &bytes, &dk, &sp);
+            let hash = crate::sync::envelope::blob_hash_hex(&ct);
+            (ct, hash)
+        };
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("stream", "3");
+            then.status(200).json_body(serde_json::json!({"ops": [
+                {"user_seq": 40, "blob_hash": hash, "blob_size": ct.len(), "doc_id_ct": "", "op_kind": "snapshot", "stream_id": 3, "device_id": "x", "created_at": 0, "epoch": 0}
+            ], "has_more": false}));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path(format!("/v1/users/u/blobs/{hash}"));
+            then.status(200).body(ct.clone());
+        });
+        let after = server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("since", "40");
+            then.status(200).json_body(serde_json::json!({"ops": [], "has_more": false}));
+        });
+        let from_zero = server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops").query_param("since", "0").matches(query_lacks_stream);
+            then.status(200).json_body(serde_json::json!({"ops": [], "has_more": false}));
+        });
+
+        let cfg = { let c = db.lock().unwrap(); crate::sync::config::load(&c).unwrap() };
+        run_pass(&db, &cfg, &uk, &dk).unwrap();
+
+        assert_eq!(from_zero.hits(), 0, "a paired device does not replay the account from 0");
+        after.assert();
+        let c = db.lock().unwrap();
+        let focus: String = c.query_row("SELECT what_matters_now FROM pages WHERE id='from-snap'", [], |r| r.get(0)).unwrap();
+        assert_eq!(focus, "kept");
+        assert_eq!(crate::sync::config::load(&c).unwrap().last_seen_user_seq, 40);
+    }
+
+    #[test]
     fn a_corrupt_snapshot_falls_back_to_op_replay() {
         // A snapshot blob that fails to open (tampered, wrong key, garbage
         // bytes) must not strand the device: every op is individually
@@ -1080,7 +1274,7 @@ mod tests {
         let db = test_db();
         active_db_config(&db, &server.base_url());
         { let c = db.lock().unwrap();
-          c.execute("INSERT INTO pages (id, date, page_number, created_at, updated_at) VALUES ('mine','2026-08-01',1,'0','0')", []).unwrap(); }
+          c.execute("INSERT INTO pages (id, date, page_number, what_matters_now, created_at, updated_at) VALUES ('mine','2026-08-01',1,'my own focus','0','0')", []).unwrap(); }
         let (uk, dk) = crate::sync::test_keys();
         let stream3 = server.mock(|when, then| { when.method(GET).query_param("stream", "3"); then.status(500); });
         server.mock(|when, then| { when.method(GET).path("/v1/users/u/ops"); then.status(200).json_body(serde_json::json!({"ops": [], "has_more": false})); });
@@ -1098,7 +1292,7 @@ mod tests {
         let db = test_db();
         active_db_config(&db, &server.base_url());
         { let c = db.lock().unwrap();
-          c.execute("INSERT INTO pages (id, date, page_number, created_at, updated_at) VALUES ('mine','2026-08-01',1,'0','0')", []).unwrap(); }
+          c.execute("INSERT INTO pages (id, date, page_number, what_matters_now, created_at, updated_at) VALUES ('mine','2026-08-01',1,'my own focus','0','0')", []).unwrap(); }
         let (uk, dk) = crate::sync::test_keys();
         server.mock(|when, then| {
             when.method(GET).path("/v1/users/u/ops").query_param("since", "0");

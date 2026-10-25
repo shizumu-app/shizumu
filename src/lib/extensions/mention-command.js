@@ -6,6 +6,7 @@ import { PluginKey } from "@tiptap/pm/state";
 import { getLineages, searchPagesForMention, searchPinsForMention } from "../api.js";
 import { buildMentionLabel } from "../mention-label.js";
 import { silentSuggestionRender } from "../editor/silent-suggestion-render.js";
+import { suggestionAllowedAt } from "../editor/suggestion-allowed.js";
 
 // Unique plugin key — see slash-commands.js for the rationale, and for why
 // it is exported: the plugin state behind this key is the only producer of a
@@ -278,6 +279,9 @@ export const MentionCommand = Extension.create({
         pluginKey: MentionCommandPluginKey,
         allowSpaces: false,
         startOfLine: false,
+        // In code `@` is literal: a code block's Return used to commit the
+        // menu's "+ create" row and file a BibTeX entry as a new trail.
+        allow: ({ state, range }) => suggestionAllowedAt(state, range),
         // Suggestion's command runs when an item is committed. The selected
         // item carries `kind` plus everything needed to commit.
         command: ({ editor, range, props }) => {

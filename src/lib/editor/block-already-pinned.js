@@ -37,3 +37,22 @@ export function blockAlreadyPinned({ pinId = null, text = "", pinnedContents } =
   if (!pinnedContents || !text) return false;
   return pinnedContents.has(text);
 }
+
+// The same question at the moment of pinning, asked of the stored pins
+// rather than of the DOM. Both pin paths used to compare content alone, and
+// the first pin is what defeats that: confirmPin stamps pinId (and a
+// board's blockTitle) onto the node, so a re-read of the block never equals
+// what was stored, and a second press on the gutter or mod+P made pin two.
+//
+// The stamp counts only while it names a pin that still exists — a stamp
+// left behind by a pin since deleted must not stop the block being kept
+// again.
+
+/**
+ * @param {Array<{id: string, content: string}>} pins - the pins in scope
+ * @param {{pinId?: string|null, content?: string}} block
+ * @returns {boolean} true when pressing pin must say "already pinned"
+ */
+export function pinAlreadyHolds(pins, { pinId = null, content = "" } = {}) {
+  return (pins || []).some((p) => (pinId && p.id === pinId) || (content && p.content === content));
+}

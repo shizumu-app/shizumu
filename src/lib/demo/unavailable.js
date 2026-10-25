@@ -34,7 +34,14 @@ const NOTICED = new Map([
   ["sync_set_relay_url", DEMO_COPY.sync],
   ["sync_switch_relay", DEMO_COPY.sync],
   ["sync_revoke_device", DEMO_COPY.sync],
+  // The phone shell's sync screen: its switch, "pull now" and reset. The
+  // mock answered these with null, so the switch looked like it worked.
+  ["sync_set_enabled", DEMO_COPY.sync],
+  ["sync_force_pull", DEMO_COPY.sync],
+  ["sync_reset", DEMO_COPY.sync],
   ["setup_encryption", DEMO_COPY.sync],
+  ["change_passphrase", DEMO_COPY.sync],
+  ["remove_encryption", DEMO_COPY.sync],
   ["pair_new_join", DEMO_COPY.sync],
   ["pair_new_complete", DEMO_COPY.sync],
   ["pair_existing_start", DEMO_COPY.sync],

@@ -33,6 +33,34 @@ describe("createSeededInvoke", () => {
     expect(await invoke("get_setting", { key: "mobile_gestures_tip_seen" })).toBe("true");
   });
 
+  // Since P5 an unwritten `try_new_shell` boots the shell, and both Android
+  // projects are phone-shaped viewports that photograph the DESKTOP tree —
+  // `android-landscape` photographs nothing else, and its 23 baselines are
+  // the desktop tree. Unseeded, every one of those scenes would boot the
+  // shell and diff a shell screenshot against a desktop baseline.
+  it("opts every scene out of the shell, so a desktop scene photographs the desktop tree", async () => {
+    installFixedClock("2026-01-15T09:00:00.000Z");
+    installSeqUuid("vr");
+    const invoke = await createSeededInvoke(pageWithContent);
+    expect(await invoke("get_setting", { key: "try_new_shell" })).toBe("false");
+  });
+
+  // The other half, and it is a separate claim: the opt-out is a DEFAULT,
+  // not a lock. scenes.js's `withShellFlag` writes "true" from inside the
+  // fixture, so it only survives if the seed above runs BEFORE the fixture.
+  // Reorder those two and every shell scene silently photographs the
+  // desktop deck instead — which is the failure this pair exists to catch,
+  // and which no assertion about the "false" alone would notice.
+  it("lets a fixture override the opt-out, which is how shell scenes are seeded", async () => {
+    installFixedClock("2026-01-15T09:00:00.000Z");
+    installSeqUuid("vr");
+    const invoke = await createSeededInvoke(async (inv) => {
+      await inv("set_setting", { key: "try_new_shell", value: "true" });
+      await pageWithContent(inv);
+    });
+    expect(await invoke("get_setting", { key: "try_new_shell" })).toBe("true");
+  });
+
   // The blob seam. Marketing scenes hand it a data URI so an attachment
   // node renders a real bitmap; every baselined VR scene omits it and keeps
   // the mock's null, which is the whole subject of page-image-content and

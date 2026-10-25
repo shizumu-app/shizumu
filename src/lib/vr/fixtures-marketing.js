@@ -381,7 +381,7 @@ export async function marketingTools(invoke) {
       ),
       recipe(
         "given a tag that has to reach three stores",
-        ["build the appimage and the flatpak", "push the tag and let the runner take it"],
+        ["build the flatpak and the android bundle", "push the tag and let the runner take it"],
         "one release, three listings, nothing uploaded by hand",
       ),
       code("bash", "git tag -s v0.8 -m 'blocks' && git push --tags"),

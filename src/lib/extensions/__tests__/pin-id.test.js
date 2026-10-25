@@ -60,6 +60,15 @@ describe("stripPinIdsFromJSON", () => {
     expect(out[1].attrs).toEqual({});
   });
 
+  // A copied pin whose content mentions another pin keeps that mention
+  // working: a pinRef's pinId names the pin it points at.
+  it("keeps the id on an @-mention of a pin", () => {
+    const mention = { type: "pinRef", attrs: { pinId: "P2", labelSnapshot: "x" } };
+    const out = stripPinIdsFromJSON({ type: "paragraph", attrs: { pinId: "P1" }, content: [mention] });
+    expect(out.attrs.pinId).toBeUndefined();
+    expect(out.content[0].attrs.pinId).toBe("P2");
+  });
+
   it("handles null and primitives", () => {
     expect(stripPinIdsFromJSON(null)).toBe(null);
     expect(stripPinIdsFromJSON("hello")).toBe("hello");

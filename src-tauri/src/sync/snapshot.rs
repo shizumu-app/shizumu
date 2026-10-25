@@ -45,6 +45,184 @@ pub fn is_empty(conn: &Connection) -> rusqlite::Result<bool> {
     Ok(true)
 }
 
+/// Whether a page's `content_json` holds nothing a writer put there: no
+/// content at all, or a doc whose every top-level node is an empty
+/// paragraph — the shape the editor saves for the page the app opens at
+/// launch. Anything else (text, any other node kind, JSON that does not
+/// parse) counts as writing, so this errs towards keeping a page.
+pub fn is_blank_doc(content_json: Option<&str>) -> bool {
+    let raw = match content_json.map(str::trim) {
+        None | Some("") => return true,
+        Some(s) => s,
+    };
+    let Ok(doc) = serde_json::from_str::<Value>(raw) else { return false };
+    if doc.is_null() {
+        return true;
+    }
+    if doc.get("type").and_then(Value::as_str) != Some("doc") {
+        return false;
+    }
+    let nodes = match doc.get("content") {
+        None | Some(Value::Null) => return true,
+        Some(Value::Array(a)) => a,
+        Some(_) => return false,
+    };
+    nodes.iter().all(|n| {
+        n.get("type").and_then(Value::as_str) == Some("paragraph")
+            && match n.get("content") {
+                None | Some(Value::Null) => true,
+                Some(Value::Array(a)) => a.is_empty(),
+                Some(_) => false,
+            }
+    })
+}
+
+/// The ids of this device's pages when every one of them is a blank
+/// placeholder and nothing else a writer makes exists: no trails, no
+/// pins, and each page with no writing, no focus line, no closing line,
+/// no voice memo, no trail and no legacy lines, blocks or sessions. None
+/// as soon as anything a writer made is found.
+///
+/// Why it exists: the app creates today's page at launch, so a device
+/// that pairs into an existing account was never `is_empty`, and its
+/// first pull replayed the whole account op by op instead of taking the
+/// newest snapshot (two-device runs, 2026-10-16: a fresh laptop still
+/// replaying at seq 4930 of 5581 after four minutes).
+pub fn only_placeholder_pages(conn: &Connection) -> rusqlite::Result<Option<Vec<String>>> {
+    for t in ["lineages", "shared_objects"] {
+        let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))?;
+        if n > 0 {
+            return Ok(None);
+        }
+    }
+    let blank = |c: &str| format!("({c} IS NULL OR TRIM({c}) = '')");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT p.id, p.content_json,
+                (p.lineage_id IS NULL AND {} AND {} AND {} AND {} AND {}
+                 AND NOT EXISTS (SELECT 1 FROM lines l WHERE l.page_id = p.id)
+                 AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.page_id = p.id)
+                 AND NOT EXISTS (SELECT 1 FROM shukonin_sessions s WHERE s.page_id = p.id))
+         FROM pages p",
+        blank("p.what_matters_now"),
+        blank("p.what_shifted"),
+        blank("p.context"),
+        blank("p.voice_memo_path"),
+        blank("p.voice_memo_transcript"),
+    ))?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, bool>(2)?))
+    })?;
+    let mut ids = Vec::new();
+    for row in rows {
+        let (id, content, fields_blank) = row?;
+        if !fields_blank || !is_blank_doc(content.as_deref()) {
+            return Ok(None);
+        }
+        ids.push(id);
+    }
+    Ok(Some(ids))
+}
+
+/// On a device JOINING an account that already exists (pairing, recovery,
+/// re-claiming a relay): when it holds only placeholder pages, delete
+/// them — with their search rows and their not-yet-uploaded ops, so the
+/// blank page is not sent to the other devices either — so `is_empty`
+/// is true and the first pull bootstraps from the newest snapshot.
+/// Deletes nothing when any page holds writing, a focus line or a trail,
+/// or when a trail or pin exists: that is `is_empty`'s protection of real
+/// local data and it stays. No tombstone is written; the pages were never
+/// anyone's writing. Returns how many pages went.
+///
+/// Call only inside a transaction (`complete_join`'s, `apply`'s): the
+/// cleanup commits with the enrollment or the snapshot or not at all, and
+/// the `defer_foreign_keys` it sets lasts only until that transaction ends.
+pub fn clear_placeholder_pages(conn: &Connection) -> rusqlite::Result<usize> {
+    let Some(ids) = only_placeholder_pages(conn)? else { return Ok(0) };
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    // A blank page can still be another blank page's parent.
+    conn.execute_batch("PRAGMA defer_foreign_keys = ON;")?;
+    for id in &ids {
+        conn.execute("DELETE FROM session_markers WHERE page_id = ?1", [id])?;
+        conn.execute("DELETE FROM pages_fts WHERE page_id = ?1", [id])?;
+        conn.execute("DELETE FROM op_log WHERE doc_id = ?1 AND user_seq IS NULL", [id])?;
+        conn.execute("DELETE FROM pages WHERE id = ?1", [id])?;
+    }
+    Ok(ids.len())
+}
+
+/// The last step of joining an account that already exists, in one
+/// transaction: the enrollment, `enabled` when the flow turns sync on,
+/// and `clear_placeholder_pages`. Returns how many placeholder pages went.
+pub fn complete_join(
+    conn: &Connection,
+    user_id: &str,
+    device_id: &str,
+    enrolled_at_ms: i64,
+    enable: bool,
+) -> Result<usize, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    crate::sync::config::set_enrollment(&tx, user_id, device_id, enrolled_at_ms)
+        .map_err(|e| e.to_string())?;
+    if enable {
+        crate::sync::config::set_enabled(&tx, true).map_err(|e| e.to_string())?;
+    }
+    let n = clear_placeholder_pages(&tx).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    if n > 0 {
+        log::info!("join: removed {n} blank placeholder page(s) so the first pull can start from a snapshot");
+    }
+    Ok(n)
+}
+
+/// Whether the relay already holds ops for this account — the difference
+/// between JOINING an account (pairing, recovery, re-claiming a relay that
+/// has history) and being its first device. A wire error answers false:
+/// not knowing is not a reason to delete anything.
+pub fn relay_has_history(
+    relay: &str,
+    device_keys: &crate::sync::keys::DeviceKeys,
+    user_id: &str,
+) -> bool {
+    match crate::sync::wire::pull::get_ops(relay, device_keys, user_id, 0, Some(1), None) {
+        Ok(page) => !page.ops.is_empty(),
+        Err(e) => {
+            log::warn!("join: could not ask the relay for history ({e}) — keeping this device's pages");
+            false
+        }
+    }
+}
+
+/// The enrollment every join path ends with. When the relay holds history
+/// for the account this is `complete_join` (placeholder pages go, so the
+/// first pull can start from a snapshot); when it holds none — this
+/// device is the account's first, as with self-enroll on a fresh relay —
+/// nothing is deleted, because there is nothing to pull in their place.
+/// Returns how many placeholder pages went.
+pub fn finish_enrollment(
+    db: &crate::db::Db,
+    relay: &str,
+    device_keys: &crate::sync::keys::DeviceKeys,
+    user_id: &str,
+    device_id: &str,
+    enrolled_at_ms: i64,
+    enable: bool,
+) -> Result<usize, String> {
+    // HTTP first, with no lock held.
+    let joins = relay_has_history(relay, device_keys, user_id);
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    if joins {
+        return complete_join(&conn, user_id, device_id, enrolled_at_ms, enable);
+    }
+    crate::sync::config::set_enrollment(&conn, user_id, device_id, enrolled_at_ms)
+        .map_err(|e| e.to_string())?;
+    if enable {
+        crate::sync::config::set_enabled(&conn, true).map_err(|e| e.to_string())?;
+    }
+    Ok(0)
+}
+
 fn cell_to_json(v: ValueRef<'_>) -> Value {
     use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
     match v {
@@ -169,7 +347,13 @@ pub fn decode(bytes: &[u8]) -> Result<Snapshot, String> {
     Ok(s)
 }
 
-/// Returns rows written. Refuses a non-empty device outright.
+/// Returns rows written. Refuses a device that holds writing outright;
+/// one that holds only blank placeholder pages (`only_placeholder_pages`)
+/// counts as empty, and those pages go in this same transaction. That is
+/// the case after a join whose open page was re-made by the frontend
+/// before the first pull: a blank page for today would otherwise block
+/// the snapshot, or collide with the snapshot's own today page on
+/// UNIQUE(date, page_number).
 ///
 /// Tables and cursor commit together, or not at all: the `sync_state.
 /// last_seen_user_seq` write happens inside this same transaction, right
@@ -180,13 +364,14 @@ pub fn decode(bytes: &[u8]) -> Result<Snapshot, String> {
 /// next run's `is_empty` check see a non-empty device and fall through to
 /// a full, non-deduped op replay from 0.
 pub fn apply(conn: &mut Connection, s: &Snapshot) -> Result<usize, String> {
-    if !is_empty(conn).map_err(|e| e.to_string())? {
+    if only_placeholder_pages(conn).map_err(|e| e.to_string())?.is_none() {
         return Err(
             "snapshot refused: this device already holds writing; ops merge, snapshots do not"
                 .into(),
         );
     }
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    clear_placeholder_pages(&tx).map_err(|e| e.to_string())?;
     // lineages.parent_id and pages.parent_id self-reference their own
     // table (nested trails, nested pages), so `SELECT * FROM t` — which
     // returns rows in storage order, not creation order — can hand back a
@@ -386,7 +571,8 @@ pub fn bootstrap(
     }
     {
         let conn = db.lock().map_err(|e| PullError::Db(e.to_string()))?;
-        if !is_empty(&conn).map_err(|e| PullError::Db(e.to_string()))? {
+        // Empty, or only blank placeholder pages: `apply` clears those.
+        if only_placeholder_pages(&conn).map_err(|e| PullError::Db(e.to_string()))?.is_none() {
             return Ok(None);
         }
     }
@@ -677,7 +863,7 @@ mod tests {
         let dst = test_db();
         let mut c = dst.lock().unwrap();
         c.execute(
-            "INSERT INTO pages (id, date, page_number, created_at, updated_at) VALUES ('mine','2026-08-01',1,'0','0')",
+            "INSERT INTO pages (id, date, page_number, what_matters_now, created_at, updated_at) VALUES ('mine','2026-08-01',1,'my own focus','0','0')",
             [],
         )
         .unwrap();
@@ -754,5 +940,141 @@ mod tests {
         );
         let snap = Snapshot { v: SNAPSHOT_V, user_seq: 1, taken_at_ms: 0, tables };
         assert!(decode(&encode(&snap).unwrap()).is_err());
+    }
+
+    // ── a joining device's placeholder pages ─────────────────────────
+
+    const LAUNCH_PAGE: &str = r#"{"type":"doc","content":[{"type":"paragraph","attrs":{"pinId":null}}]}"#;
+
+    #[test]
+    fn a_blank_doc_is_one_with_only_empty_paragraphs() {
+        assert!(is_blank_doc(None));
+        assert!(is_blank_doc(Some("")));
+        assert!(is_blank_doc(Some(r#"{"type":"doc"}"#)));
+        assert!(is_blank_doc(Some(r#"{"type":"doc","content":[]}"#)));
+        assert!(is_blank_doc(Some(LAUNCH_PAGE)), "the page the app opens at launch");
+        assert!(is_blank_doc(Some(r#"{"type":"doc","content":[{"type":"paragraph"},{"type":"paragraph","content":[]}]}"#)));
+        assert!(!is_blank_doc(Some(r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"a"}]}]}"#)));
+        assert!(!is_blank_doc(Some(r#"{"type":"doc","content":[{"type":"horizontalRule"}]}"#)), "any other node is writing");
+        assert!(!is_blank_doc(Some("not json")), "unreadable content is kept, not judged blank");
+    }
+
+    fn page(c: &rusqlite::Connection, id: &str, n: i64, focus: Option<&str>, content: &str) {
+        c.execute(
+            "INSERT INTO pages (id, date, page_number, what_matters_now, content_json, created_at, updated_at) VALUES (?1,'2026-10-16',?2,?3,?4,'0','0')",
+            rusqlite::params![id, n, focus, content],
+        ).unwrap();
+        c.execute(
+            "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, hlc_ts, applied_at, created_at) VALUES (?1,'page_blob',?2,x'00',1,0,0)",
+            rusqlite::params![format!("op-{id}"), id],
+        ).unwrap();
+    }
+
+    #[test]
+    fn a_join_removes_the_launch_page_and_its_unsent_ops() {
+        let db = test_db();
+        let c = db.lock().unwrap();
+        page(&c, "launch", 1, None, LAUNCH_PAGE);
+        assert!(!is_empty(&c).unwrap(), "the launch page is why a joining device was never empty");
+        assert_eq!(only_placeholder_pages(&c).unwrap(), Some(vec!["launch".to_string()]));
+        assert_eq!(complete_join(&c, "u", "d", 1, true).unwrap(), 1);
+        assert!(is_empty(&c).unwrap());
+        let ops: i64 = c.query_row("SELECT COUNT(*) FROM op_log WHERE doc_id='launch'", [], |r| r.get(0)).unwrap();
+        assert_eq!(ops, 0, "the blank page is not uploaded to the other devices either");
+        let cfg = crate::sync::config::load(&c).unwrap();
+        assert_eq!((cfg.user_id.as_deref(), cfg.enabled), (Some("u"), true), "the enrollment committed with the cleanup");
+    }
+
+    #[test]
+    fn a_join_deletes_nothing_when_any_page_holds_writing() {
+        // Not a no-op for its own sake: is_empty's protection of real local
+        // data stays. One page with words keeps every page, the blank ones
+        // too, and the device takes the op path as before.
+        let db = test_db();
+        let c = db.lock().unwrap();
+        page(&c, "launch", 1, None, LAUNCH_PAGE);
+        page(&c, "written", 2, None, r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"mine"}]}]}"#);
+        assert_eq!(complete_join(&c, "u", "d", 1, true).unwrap(), 0);
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM pages", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        assert!(!is_empty(&c).unwrap());
+    }
+
+    #[test]
+    fn a_focus_line_or_a_trail_keeps_the_pages() {
+        // Each of these is something a writer made, so nothing goes.
+        let focus = test_db();
+        { let c = focus.lock().unwrap();
+          page(&c, "p", 1, Some("today"), LAUNCH_PAGE);
+          assert_eq!(only_placeholder_pages(&c).unwrap(), None); }
+        let trail = test_db();
+        { let c = trail.lock().unwrap();
+          page(&c, "p", 1, None, LAUNCH_PAGE);
+          c.execute("INSERT INTO lineages (id, name, created_at, mode) VALUES ('ln','a book','0','discrete')", []).unwrap();
+          assert_eq!(only_placeholder_pages(&c).unwrap(), None);
+          assert_eq!(clear_placeholder_pages(&c).unwrap(), 0); }
+        let on_trail = test_db();
+        { let c = on_trail.lock().unwrap();
+          c.execute("INSERT INTO lineages (id, name, created_at, mode) VALUES ('ln','a book','0','discrete')", []).unwrap();
+          page(&c, "p", 1, None, LAUNCH_PAGE);
+          c.execute("UPDATE pages SET lineage_id='ln'", []).unwrap();
+          assert_eq!(only_placeholder_pages(&c).unwrap(), None); }
+    }
+
+    fn relay_listing(ops: serde_json::Value) -> httpmock::MockServer {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/ops");
+            then.status(200).json_body(serde_json::json!({"ops": ops, "has_more": false}));
+        });
+        server
+    }
+
+    #[test]
+    fn the_first_device_of_an_empty_relay_deletes_nothing() {
+        // Self-enroll on a fresh relay is not a join: nothing will be
+        // pulled in place of the launch page, and the writer is looking at
+        // it. It stays, with its ops, so it uploads as the account's first.
+        let server = relay_listing(serde_json::json!([]));
+        let db = test_db();
+        { let c = db.lock().unwrap(); page(&c, "launch", 1, None, LAUNCH_PAGE); }
+        let (_uk, dk) = crate::sync::test_keys();
+        assert_eq!(finish_enrollment(&db, &server.base_url(), &dk, "u", "d", 1, false).unwrap(), 0);
+        let c = db.lock().unwrap();
+        let pages: i64 = c.query_row("SELECT COUNT(*) FROM pages", [], |r| r.get(0)).unwrap();
+        let ops: i64 = c.query_row("SELECT COUNT(*) FROM op_log WHERE doc_id='launch'", [], |r| r.get(0)).unwrap();
+        assert_eq!((pages, ops), (1, 1));
+        assert_eq!(crate::sync::config::load(&c).unwrap().user_id.as_deref(), Some("u"), "enrolled all the same");
+    }
+
+    #[test]
+    fn a_device_joining_a_relay_with_history_clears_its_launch_page() {
+        let server = relay_listing(serde_json::json!([
+            {"user_seq": 1, "blob_hash": "a".repeat(64), "blob_size": 9, "doc_id_ct": "", "op_kind": "page_blob", "stream_id": 0, "device_id": "x", "created_at": 0, "epoch": 0}
+        ]));
+        let db = test_db();
+        { let c = db.lock().unwrap(); page(&c, "launch", 1, None, LAUNCH_PAGE); }
+        let (_uk, dk) = crate::sync::test_keys();
+        assert_eq!(finish_enrollment(&db, &server.base_url(), &dk, "u", "d", 1, true).unwrap(), 1);
+        assert!(is_empty(&db.lock().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn a_snapshot_applies_over_a_launch_page_made_after_the_join() {
+        // The frontend re-makes today's page as soon as a join lands; the
+        // snapshot must still apply, and its own today page must not
+        // collide with the blank one on UNIQUE(date, page_number).
+        let src = test_db();
+        let snap = { let c = src.lock().unwrap();
+            c.execute("INSERT INTO pages (id, date, page_number, what_matters_now, created_at, updated_at) VALUES ('theirs','2026-10-16',1,'from the account','0','0')", []).unwrap();
+            capture(&c, 9).unwrap() };
+        let dst = test_db();
+        let mut c = dst.lock().unwrap();
+        page(&c, "launch", 1, None, LAUNCH_PAGE);
+        apply(&mut c, &snap).unwrap();
+        let ids: Vec<String> = c.prepare("SELECT id FROM pages").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(ids, vec!["theirs".to_string()]);
     }
 }

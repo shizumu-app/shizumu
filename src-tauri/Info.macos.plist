@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated Info.plist of the macOS app only (named in
+  tauri.macos.conf.json). Not called Info.plist on purpose: tauri picks up a
+  plain Info.plist in this directory on its own, iOS builds included.
+
+  NSCameraUsageDescription: an app that touches the camera without it is
+  terminated by the OS rather than refused. Same copy as the iOS build
+  (scripts/patch-ios-camera.py), since it is the same pairing screen.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSCameraUsageDescription</key>
+  <string>shizumu uses the camera to read the pairing code shown on your other device. nothing else uses the camera.</string>
+</dict>
+</plist>

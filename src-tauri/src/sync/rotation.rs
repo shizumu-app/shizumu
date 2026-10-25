@@ -170,6 +170,64 @@ pub fn fetch_and_store_epoch_keys(
     // epoch whose key we couldn't unwrap.
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
+        // AN EPOCH WITHOUT ITS KEY IS ANOTHER ACCOUNT'S. A rotation stores
+        // its secret before it adopts the epoch, so a current epoch with no
+        // secret can only be left from an account this device has left: a
+        // reset that ran before 26648019 kept it, and every op written after
+        // failed with "no content key for epoch 3 on emit" (the A16, moved to
+        // a new account, 2026-10-21). Fall back to epoch 0, which the phrase
+        // always keys, and take the unsent ops stamped with any keyless epoch
+        // along; ops already sealed keep theirs. set_current_epoch only ever
+        // advances, so the fallback is written directly.
+        let local = config::get_current_epoch(&conn).map_err(|e| e.to_string())?;
+        if local > 0 && config::get_epoch_secret(&conn, local).map_err(|e| e.to_string())?.is_none() {
+            log::warn!("sync tick: epoch {local} has no key on this device; falling back to epoch 0");
+            conn.execute("UPDATE sync_state SET current_epoch = 0 WHERE id = 1", [])
+                .map_err(|e| e.to_string())?;
+        }
+        let keyless: Vec<i64> = {
+            let mut st = conn
+                .prepare("SELECT DISTINCT epoch FROM op_log WHERE state = 'local_only' AND ciphertext IS NULL AND epoch > 0")
+                .map_err(|e| e.to_string())?;
+            let all = st.query_map([], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for e in all {
+                if config::get_epoch_secret(&conn, e).map_err(|e| e.to_string())?.is_none() {
+                    out.push(e);
+                }
+            }
+            out
+        };
+        let usable = config::get_current_epoch(&conn).map_err(|e| e.to_string())?;
+        for e in keyless {
+            conn.execute(
+                "UPDATE op_log SET epoch = ?1 WHERE state = 'local_only' AND ciphertext IS NULL AND epoch = ?2",
+                rusqlite::params![usable, e],
+            ).map_err(|e| e.to_string())?;
+        }
+        // An attachment sealed under a keyless epoch was sent to the account
+        // that epoch belonged to, not this one: send it again.
+        let stale: Vec<i64> = {
+            let mut st = conn
+                .prepare("SELECT DISTINCT object_epoch FROM attachments WHERE object_epoch > 0")
+                .map_err(|e| e.to_string())?;
+            let all = st.query_map([], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            let mut out = Vec::new();
+            for e in all {
+                if config::get_epoch_secret(&conn, e).map_err(|e| e.to_string())?.is_none() {
+                    out.push(e);
+                }
+            }
+            out
+        };
+        for e in stale {
+            conn.execute(
+                "UPDATE attachments SET object_key = NULL, object_epoch = NULL, upload_attempts = 0, upload_retry_at_ms = 0 WHERE object_epoch = ?1",
+                [e],
+            ).map_err(|e| e.to_string())?;
+        }
         let have_it = relay_epoch == 0
             || config::get_epoch_secret(&conn, relay_epoch)
                 .map_err(|e| e.to_string())?
@@ -303,6 +361,84 @@ mod tests {
         let conn = db.lock().unwrap();
         assert_eq!(config::get_epoch_secret(&conn, 1).unwrap().unwrap(), es);
         assert_eq!(config::get_current_epoch(&conn).unwrap(), 1);
+    }
+
+    /// A device already stuck before 26648019 made sync_reset start the next
+    /// account at epoch 0: the A16, moved from the owner's account (epoch 3)
+    /// to a new one, kept current_epoch 3 with no key for it, and every op
+    /// it wrote after the move failed with "no content key for epoch 3 on
+    /// emit" (2026-10-21, after the fixed build was installed over it). The
+    /// reset fix cannot reach a device whose reset already ran; the sync
+    /// tick must.
+    #[test]
+    fn an_epoch_this_device_holds_no_key_for_falls_back_and_its_unsent_ops_follow() {
+        let server = MockServer::start();
+        let db = crate::test_helpers::test_db();
+        let dk = {
+            let conn = db.lock().unwrap();
+            let dk = generate_device_keys();
+            persist_device_keys(&conn, &dk).unwrap();
+            config::set_current_epoch(&conn, 3).unwrap();
+            for (id, state, epoch, ct) in [
+                ("stuck", "local_only", 3, None),
+                ("sent", "committed", 3, Some(b"sealed".to_vec())),
+                ("fine", "local_only", 0, None),
+            ] {
+                conn.execute(
+                    "INSERT INTO op_log (op_id, op_kind, doc_id, payload_blob, ciphertext, hlc_ts, device_id, state, applied_at, created_at, epoch)
+                     VALUES (?1,'page_blob','p1', x'7b7d', ?2, 1, '', ?3, 0, 0, ?4)",
+                    rusqlite::params![id, ct, state, epoch],
+                ).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO attachments (blob_hash, filename, mime_type, size_bytes, sync, has_local, created_at, last_seen_at, object_key, object_epoch)
+                 VALUES ('h1','a.jpg','image/jpeg',10,1,1,'t','t','users/old/attachments/h1',3)",
+                [],
+            ).unwrap();
+            dk
+        };
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/epochs/keys");
+            then.status(200).json_body(serde_json::json!({ "current_epoch": 0, "keys": [] }));
+        });
+
+        fetch_and_store_epoch_keys(&db, &dk, &server.base_url(), "u").unwrap();
+
+        let conn = db.lock().unwrap();
+        assert_eq!(config::get_current_epoch(&conn).unwrap(), 0, "new ops are stamped with an epoch this device can seal");
+        let epoch = |id: &str| -> i64 { conn.query_row("SELECT epoch FROM op_log WHERE op_id = ?1", [id], |r| r.get(0)).unwrap() };
+        assert_eq!(epoch("stuck"), 0, "an unsent op stamped with the keyless epoch is sealed under the usable one");
+        assert_eq!(epoch("sent"), 3, "an op already sealed and sent keeps the epoch it was sealed under");
+        assert_eq!(epoch("fine"), 0);
+        let key: Option<String> = conn
+            .query_row("SELECT object_key FROM attachments WHERE blob_hash = 'h1'", [], |r| r.get(0))
+            .unwrap();
+        assert!(key.is_none(), "an attachment sent under the old account's epoch is sent again");
+    }
+
+    /// The heal must not undo a rotation: an epoch the device holds the key
+    /// for is kept, even when the relay's answer is behind it.
+    #[test]
+    fn an_epoch_this_device_holds_the_key_for_is_kept() {
+        let server = MockServer::start();
+        let db = crate::test_helpers::test_db();
+        let dk = {
+            let conn = db.lock().unwrap();
+            let dk = generate_device_keys();
+            persist_device_keys(&conn, &dk).unwrap();
+            config::put_epoch_secret(&conn, 2, &epoch::generate_epoch_secret()).unwrap();
+            config::set_current_epoch(&conn, 2).unwrap();
+            dk
+        };
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/epochs/keys");
+            then.status(200).json_body(serde_json::json!({ "current_epoch": 1, "keys": [] }));
+        });
+
+        fetch_and_store_epoch_keys(&db, &dk, &server.base_url(), "u").unwrap();
+
+        let conn = db.lock().unwrap();
+        assert_eq!(config::get_current_epoch(&conn).unwrap(), 2);
     }
 
     #[test]

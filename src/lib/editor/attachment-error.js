@@ -15,13 +15,33 @@
 // jargon, no exclamation marks) pass through unchanged; anything else,
 // known or not, collapses to one generic line so a future backend error
 // string can't leak raw Rust/OS text into the UI by surprise.
+// WHY THIS LIST GREW. It held two strings while the backend could fail in
+// seven ways, so five of them — a missing app directory, an unresolvable
+// blob path, no cache directory, a failed mkdir, a failed copy — all landed
+// on the fallback below, and none of them logged either. A device pass
+// spent on a photograph of that one line could not tell them apart, and did
+// not. The allowlist is the right shape; what was missing was a set for it
+// to recognise. Every entry here is written by
+// attachments::commands.rs/share.rs, which now also logs the technical
+// cause beside it.
 const READABLE = new Set([
   "file not on this device",
+  "could not reach this app's own storage",
+  "could not find where this file is kept",
+  "could not make room for this file",
+  "could not make a copy of this file to open",
+  "could not hand this file to another app",
+  // The front end's own, for a node whose attrs never arrived — see
+  // AttachmentBlock. Tauri would otherwise reject the call at its argument
+  // layer with "invalid type: null", which is exactly the kind of string
+  // this module exists to keep off the page.
+  "this file lost track of itself",
 ]);
 
 const READABLE_PREFIXES = [
-  // attachments::commands::attachment_open_android's own message, already
-  // lowercase and jargon-free.
+  // Kept for the message attachment_open_android used to send. A build of
+  // the app older than the one that stopped sending it can still be the
+  // thing a tester is holding.
   "could not open the share sheet",
 ];
 

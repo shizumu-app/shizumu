@@ -18,6 +18,12 @@ pub struct OpLogStats {
     pub hlc_physical_ms: Option<i64>,
     pub hlc_logical: Option<i64>,
     pub local_only: i64,
+    /// Rows the upload pass has taken off `local_only` and whose blob PUT
+    /// has not been confirmed yet (state 'pending_upload', upload.rs:309).
+    /// Neither waiting nor on the relay: a reader that wants "everything
+    /// this device holds is uploaded" needs this at 0 as well as
+    /// `local_only`.
+    pub pending_upload: i64,
     /// Rows the merge path tried to apply but bounced (merge_error
     /// IS NOT NULL). Surfaces in the settings UI as a "replay"
     /// affordance so the user can re-run them after fixing the
@@ -35,6 +41,11 @@ pub fn collect(conn: &Connection) -> Result<OpLogStats, rusqlite::Error> {
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM op_log", [], |r| r.get(0))?;
     let local_only: i64 = conn.query_row(
         "SELECT COUNT(*) FROM op_log WHERE state = 'local_only'",
+        [],
+        |r| r.get(0),
+    )?;
+    let pending_upload: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM op_log WHERE state = 'pending_upload'",
         [],
         |r| r.get(0),
     )?;
@@ -83,6 +94,7 @@ pub fn collect(conn: &Connection) -> Result<OpLogStats, rusqlite::Error> {
         hlc_physical_ms,
         hlc_logical,
         local_only,
+        pending_upload,
         failed,
     })
 }
@@ -98,9 +110,10 @@ pub fn format_log_line(stats: &OpLogStats) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     format!(
-        "op_log_stats total={} local_only={} failed={} backfill={} hlc={:?}/{:?} kinds=[{}]",
+        "op_log_stats total={} local_only={} pending_upload={} failed={} backfill={} hlc={:?}/{:?} kinds=[{}]",
         stats.total,
         stats.local_only,
+        stats.pending_upload,
         stats.failed,
         stats.backfill_complete,
         stats.hlc_physical_ms,
@@ -123,6 +136,7 @@ mod tests {
         let stats = collect(&conn).unwrap();
         assert_eq!(stats.total, 0);
         assert_eq!(stats.local_only, 0);
+        assert_eq!(stats.pending_upload, 0);
         assert!(stats.by_kind.is_empty());
         assert!(!stats.backfill_complete);
         assert!(stats.hlc_physical_ms.is_none());
@@ -165,6 +179,34 @@ mod tests {
     }
 
     #[test]
+    fn pending_upload_counts_only_rows_mid_upload() {
+        // After backfill every row is local_only. Two are moved the way the
+        // upload pass moves them (upload.rs:309 to pending_upload, :317 to
+        // committed): one waits on its blob PUT, one is on the relay.
+        let db = test_db();
+        {
+            let conn = db.lock().unwrap();
+            let lin = insert_lineage(&conn, "x", "discrete");
+            let p = insert_page(&conn, "2026-05-15", 1);
+            insert_pin(&conn, &lin, &p, "note", "hi");
+        }
+        let engine = Arc::new(OpLogEngine::load(&db.lock().unwrap()).unwrap());
+        crate::op_log::backfill::run(&db, &engine).unwrap();
+        let conn = db.lock().unwrap();
+        let ids: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT op_id FROM op_log ORDER BY op_id").unwrap();
+            stmt.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+        };
+        assert_eq!(ids.len(), 3);
+        conn.execute("UPDATE op_log SET state = 'pending_upload' WHERE op_id = ?", [&ids[0]]).unwrap();
+        conn.execute("UPDATE op_log SET state = 'committed', user_seq = 1 WHERE op_id = ?", [&ids[1]]).unwrap();
+        let stats = collect(&conn).unwrap();
+        assert_eq!(stats.pending_upload, 1);
+        assert_eq!(stats.local_only, 1);
+        assert_eq!(stats.total, 3);
+    }
+
+    #[test]
     fn log_line_is_single_line_and_contains_totals() {
         let stats = OpLogStats {
             total: 7,
@@ -182,12 +224,14 @@ mod tests {
             hlc_physical_ms: Some(1_700_000_000_000),
             hlc_logical: Some(3),
             local_only: 7,
+            pending_upload: 2,
             failed: 0,
         };
         let line = format_log_line(&stats);
         assert!(!line.contains('\n'), "must fit one log line");
         assert!(line.contains("total=7"));
         assert!(line.contains("backfill=true"));
+        assert!(line.contains("pending_upload=2"));
         assert!(line.contains("page_blob=5"));
         assert!(line.contains("pin_op=2"));
     }

@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The iPhone app's privacy manifest. App Store Connect refuses builds whose
+  binary calls a "required reason" API without a reason declared here, and
+  the Rust code (SQLCipher, OpenSSL, std) is statically linked into the app
+  binary, so the app's own manifest has to cover all of it.
+
+  Copied into the generated Xcode project and added to Copy Bundle Resources
+  by scripts/patch-ios-privacy.py on every CI build (src-tauri/gen/ is
+  regenerated each time).
+
+  Each reason, and why it is ours:
+  - FileTimestamp C617.1: stat/fstat on files inside the app's own container
+    (SQLite reads the database file's metadata; OpenSSL's own manifest
+    declares the same reason, vendor/openssl-src/.../PrivacyInfo.xcprivacy).
+  - SystemBootTime 35F9.1: measuring elapsed time (Rust's Instant, the sync
+    worker's backoff and timers). Never sent off the device.
+  - DiskSpace E174.1: SQLite's Apple locking code calls statfs on the
+    database's volume before writing to it. Nothing about disk space leaves
+    the device or is shown to anyone.
+  - UserDefaults CA92.1: only the app's own defaults (the webview and the
+    app framework keep their state there).
+
+  Tracking: none, no tracking domains. Collected: an email address, and only
+  for an account on the hosted sync relay, used to run that account. Writing
+  that syncs is end-to-end encrypted and unreadable to the relay, so it is
+  not collected data. Keep this in step with the App Store privacy label and
+  https://shizumu.app/privacy.
+
+  Missing a reason here shows up as an ITMS-91053 mail from App Store Connect
+  after an upload, naming the API category; add it here, never in the
+  generated project.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeEmailAddress</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>E174.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy, tick } from "svelte";
   import { listen } from "@tauri-apps/api/event";
+  import { saveHealth } from "../lib/save-health.js";
   import {
     getLocalDateStr,
     contentJsonHasDayMarker,
@@ -12,7 +13,6 @@
   import LineageSelector from "./LineageSelector.svelte";
   import SharedObjectsPanel from "./SharedObjectsPanel.svelte";
   import WhatMattersNow from "./WhatMattersNow.svelte";
-  import WhatShifted from "./WhatShifted.svelte";
   import PageNav from "./PageNav.svelte";
   import TrailIndex from "./TrailIndex.svelte";
   import ShortcutHelp from "./ShortcutHelp.svelte";
@@ -60,6 +60,10 @@
   } from "../lib/api.js";
   import { buildCarryForwardNodes } from "../lib/pin-carry-forward.js";
   import { recordAppearance, bumpAppearance, getAppearance, hasAppearance } from "../lib/rail-appearance.js";
+  import { escapeReturnsToPage } from "../lib/escape-to-page.js";
+  import { pageNavStep } from "../lib/page-nav-keys.js";
+  import { SYNC_JOINED } from "../lib/sync-joined.js";
+  import { handedOutAsToday } from "../lib/today-page.js";
 
   /** @type {{ onNavigateMemory: () => void, currentTone: string, onToneChange: (t: string) => void, currentFontFamily: string, onFontFamilyChange: (f: string) => void, currentFontSize: number, onFontSizeChange: (n: number) => void, onDeleteAll: () => void, continueFocus: any }} */
   let { onNavigateMemory = () => {}, currentTone = "cream", onToneChange = () => {}, currentFontFamily = "lora", onFontFamilyChange = () => {}, currentFontSize = 16, onFontSizeChange = () => {}, onDeleteAll = () => {}, continueFocus = null } = $props();
@@ -172,8 +176,21 @@
   //   - DB-adjacent navigation → page.date of the returned page
   let viewingDate = $state(getLocalDateStr());
   let effectiveDate = $derived(viewingDate);
+  // The id of the row get_or_create_today last returned: today's page by the
+  // backend's say-so. `todayStr` is the WebView's clock and the backend dates
+  // pages with its own; on a phone with stale tz data the two disagree for an
+  // hour around midnight, and the page the backend had just made as today's
+  // was read-only here. Identity asks no clock (src/lib/today-page.js).
+  let todayPageId = $state(null);
+  function rememberToday(result) {
+    if (result?.page?.id != null) todayPageId = result.page.id;
+    return result;
+  }
   let isWritable = $derived(
-    page?.is_open !== false && (page?.date === todayStr || currentTrailMode === "continuous")
+    page?.is_open !== false &&
+      (page?.date === todayStr ||
+        currentTrailMode === "continuous" ||
+        handedOutAsToday({ page, todayPageId, todayDateStr: todayStr }))
   );
 
   // Midnight detection state. When the local clock crosses midnight while the
@@ -209,7 +226,7 @@
       // session_markers }) and reads pageData.page internally. Passing
       // result.page made page = undefined and the editor froze on an
       // empty white view.
-      const result = await getOrCreateToday();
+      const result = rememberToday(await getOrCreateToday());
       await loadPage(result, getLocalDateStr());
     } catch (err) {
       console.error("Failed to start a fresh day:", err);
@@ -251,85 +268,102 @@
 
     // If we mounted with a continueFocus prop (the user just hit "open in
     // editor" from Memory), the $effect below will load that page. Skip
-    // the loadToday path here — otherwise the two async chains race and
-    // loadToday often finishes last, snapping the user back to today.
-    if (continueFocus && continueFocus.date && continueFocus.page_number) {
-      midnightSeenDate = getLocalDateStr();
-      midnightInterval = setInterval(checkMidnight, 60_000);
-      return;
-    }
-
-    // Try to restore the page the user was last on. Default to disabled when
-    // the setting key is unset (matches the Settings default). Falls back
-    // silently to loadToday() on any miss — never crashes the open path.
-    let restored = false;
-    try {
-      const enabled = await getSetting("restore_last_page");
-      if (enabled === "true") {
-        const lastId = await getSetting("last_open_page_id");
-        if (lastId) {
-          const row = await getPageForMention(lastId);
-          if (row) {
-            const result = row.lineage_mode === "continuous" && row.lineage_id
-              ? await getCanonicalTrailPage(row.lineage_id)
-              : await getPage(...pageAddress(row));
-            if (result) {
-              await loadPage(result, row.date);
-              restored = true;
+    // the restore/loadToday path here — otherwise the two async chains race
+    // and loadToday often finishes last, snapping the user back to today.
+    //
+    // Skip only that. This used to `return` from onMount, which also
+    // skipped the `sync-pulled` listener below: a page opened from memory
+    // never followed a pull, so the other device's lines never reached its
+    // editor, a pin made there had no stamp here to splice an edit into, and
+    // this editor's next save could write the stale copy back (sync journey
+    // J2.8; Page.pull.test.js).
+    if (!(continueFocus && continueFocus.date && continueFocus.page_number)) {
+      // Try to restore the page the user was last on. Default to disabled when
+      // the setting key is unset (matches the Settings default). Falls back
+      // silently to loadToday() on any miss — never crashes the open path.
+      let restored = false;
+      try {
+        const enabled = await getSetting("restore_last_page");
+        if (enabled === "true") {
+          const lastId = await getSetting("last_open_page_id");
+          if (lastId) {
+            const row = await getPageForMention(lastId);
+            if (row) {
+              const result = row.lineage_mode === "continuous" && row.lineage_id
+                ? await getCanonicalTrailPage(row.lineage_id)
+                : await getPage(...pageAddress(row));
+              if (result) {
+                await loadPage(result, row.date);
+                restored = true;
+              }
             }
           }
         }
+      } catch (err) {
+        console.warn("restore_last_page failed:", err);
       }
-    } catch (err) {
-      console.warn("restore_last_page failed:", err);
-    }
-    if (!restored) {
-      await loadToday();
+      if (!restored) {
+        await loadToday();
+      }
     }
 
     midnightSeenDate = getLocalDateStr();
     midnightInterval = setInterval(checkMidnight, 60_000);
 
     syncUnlisten = await listen("sync-pulled", async () => {
-      if (page?.id) {
-        try {
-          const result = page.lineage_mode === "continuous" && page.lineage_id
-            ? await getCanonicalTrailPage(page.lineage_id)
-            : await getPage(...pageAddress(page));
-          if (result) {
-            page = result.page;
-            lines = result.lines || [];
-            // Push the new content into the TipTap editor so the visible
-            // doc reflects the synced state. Without this, the editor
-            // keeps its stale local copy and the user's next edit saves
-            // that stale doc, wiping the remote update (data loss on
-            // discrete pages with concurrent edits).
-            if (result.page?.content_json && flowModeRef?.reloadFromContent) {
-              flowModeRef.reloadFromContent(result.page.content_json);
-            }
-          } else if (viewingDate === getLocalDateStr()) {
-            // The page we were on is gone. On the FIRST pull after launch
-            // that is the expected outcome, not an error: `get_or_create_today`
-            // mints a blank page for today before sync has had a chance to
-            // say what today already holds, and the first-pull orphan sweep
-            // then removes it once the real pages arrive. Without this the
-            // user keeps staring at a deleted blank page while their own
-            // writing from another device sits one reload away — the
-            // "mobile looks empty" half of the 2026-08-22 report.
-            //
-            // Only for today: a past page vanishing is a delete the user
-            // asked for somewhere, and snapping them to today would hide it.
-            try {
-              const today = await getOrCreateToday();
-              if (today) await loadPage(today, getLocalDateStr());
-            } catch {}
-          }
-        } catch {}
-      }
+      await followStoredPage();
       await loadPinCount();
       await loadRailFocuses();
     });
   });
+
+  // Re-read the open page from the database and show it: after a sync pull,
+  // and after the pins panel wrote an edit into this page's stored copy
+  // because the editor did not hold the pin's node (pin-edit-route.js).
+  async function followStoredPage(again = true) {
+    if (page?.id) {
+      try {
+        const result = page.lineage_mode === "continuous" && page.lineage_id
+          ? await getCanonicalTrailPage(page.lineage_id)
+          : await getPage(...pageAddress(page));
+        if (result) {
+          page = result.page;
+          lines = result.lines || [];
+          // Push the new content into the TipTap editor so the visible
+          // doc reflects the synced state. Without this, the editor
+          // keeps its stale local copy and the user's next edit saves
+          // that stale doc, wiping the remote update (data loss on
+          // discrete pages with concurrent edits).
+          if (result.page?.content_json && flowModeRef?.reloadFromContent) {
+            // Put off for typing not yet saved: save it now and read again,
+            // as no later pull may come to show the other device's words
+            // (pull-reload.js, pullReload). Once, so a writer who keeps
+            // typing is not chased by reads.
+            if (flowModeRef.reloadFromContent(result.page.content_json) === "deferred" && again) {
+              await flowModeRef.flushPendingSave?.();
+              return followStoredPage(false);
+            }
+          }
+        } else if (viewingDate === getLocalDateStr()) {
+          // The page we were on is gone. On the FIRST pull after launch
+          // that is the expected outcome, not an error: `get_or_create_today`
+          // mints a blank page for today before sync has had a chance to
+          // say what today already holds, and the first-pull orphan sweep
+          // then removes it once the real pages arrive. Without this the
+          // user keeps staring at a deleted blank page while their own
+          // writing from another device sits one reload away — the
+          // "mobile looks empty" half of the 2026-08-22 report.
+          //
+          // Only for today: a past page vanishing is a delete the user
+          // asked for somewhere, and snapping them to today would hide it.
+          try {
+            const today = rememberToday(await getOrCreateToday());
+            if (today) await loadPage(today, getLocalDateStr());
+          } catch {}
+        }
+      } catch {}
+    }
+  }
 
   let syncUnlisten = $state(null);
 
@@ -407,6 +441,7 @@
     window.addEventListener("shizumu:nav-prev", handleSwipeNavPrev);
     window.addEventListener("shizumu:nav-next", handleSwipeNavNext);
     window.addEventListener("shizumu:nav-create", handleSwipeNavCreate);
+    window.addEventListener(SYNC_JOINED, followStoredPage);
   });
 
   onDestroy(() => {
@@ -425,6 +460,7 @@
     window.removeEventListener("shizumu:nav-prev", handleSwipeNavPrev);
     window.removeEventListener("shizumu:nav-next", handleSwipeNavNext);
     window.removeEventListener("shizumu:nav-create", handleSwipeNavCreate);
+    window.removeEventListener(SYNC_JOINED, followStoredPage);
   });
 
   // Returns continuous-trail canonicals whose content_json contains a
@@ -465,7 +501,7 @@
 
   async function loadToday() {
     try {
-      const result = await getOrCreateToday();
+      const result = rememberToday(await getOrCreateToday());
       page = result.page;
       lines = result.lines;
       sessionMarkers = result.session_markers || [];
@@ -1085,13 +1121,6 @@
     }
   }
 
-  function handleShiftedSave() {
-    if (page) {
-      page = { ...page, what_shifted_complete: true };
-    }
-    loadRailFocuses();
-  }
-
   // Returns true if the trail index opened (continuous trail with markers).
   // Lets the Cmd+K handler fall through to the global command palette
   // when this context doesn't have anything to index.
@@ -1110,10 +1139,11 @@
 
   function handleKeydown(e) {
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.key === "ArrowLeft") {
+    const step = pageNavStep(e);
+    if (step === -1) {
       e.preventDefault();
       navigatePrev();
-    } else if (mod && e.key === "ArrowRight") {
+    } else if (step === 1) {
       e.preventDefault();
       navigateNext();
     } else if (mod && e.key === "ArrowUp") {
@@ -1130,7 +1160,7 @@
       // global command palette for cross-page navigation.
       const opened = openTrailIndex();
       if (!opened) commandPaletteOpen = true;
-    } else if (e.key === "Escape" && !showSettings && !showTrailIndex && !commandPaletteOpen) {
+    } else if (escapeReturnsToPage(e, { overlayOpen: showSettings || showTrailIndex || commandPaletteOpen })) {
       flowModeRef?.focusInput();
     }
   }
@@ -1334,6 +1364,11 @@
         <div class="trail-warning label" role="status">{trailWarning}</div>
       {/if}
 
+      <!-- A save that did not land. Stays until one does (save-health.js). -->
+      {#if $saveHealth.failing}
+        <div class="save-failing label" role="alert">not saved yet — trying again. your writing is still here.</div>
+      {/if}
+
       <!-- Writing body — slides on page navigation while the header/rail
            and bottom bar stay put. --slide-x sets the enter side. -->
       <div class="page-body" style="--slide-x: {navDirection > 0 ? '2rem' : '-2rem'}">
@@ -1407,20 +1442,8 @@
       </div>
     </div>
 
-    <!-- Bottom bar: what shifted + nav -->
+    <!-- Bottom bar: page nav + word count + settings -->
     <div class="bottom-bar">
-      <div class="bottom-left">
-        {#if currentTrailMode !== "continuous"}
-          <WhatShifted
-            pageId={page.id}
-            value={page.what_shifted}
-            complete={page.what_shifted_complete}
-            readonly={!isWritable}
-            hasParent={!!page.parent_id}
-            onClose={handleShiftedSave}
-          />
-        {/if}
-      </div>
       <div class="bottom-center">
         {#if !isPhone}
           <PageNav
@@ -1497,7 +1520,9 @@
         }}
         onPinInject={(nodes) => flowModeRef?.appendNodesToDoc?.(nodes)}
         onPinLocate={(pinId) => flowModeRef?.scrollToPinId?.(pinId)}
-        onSamePagePinSave={(pinId, newNode) => flowModeRef?.spliceNodeAtPinId?.(pinId, newNode)}
+        onSamePagePinSave={(pinId, newNode) => flowModeRef?.spliceNodeAtPinId?.(pinId, newNode) === true}
+        onBeforePageWrite={async (writingId) => { if (writingId === page?.id) await flowModeRef?.flushPendingSave?.(); }}
+        onPageWritten={(writtenId) => { if (writtenId === page?.id) followStoredPage(); }}
         onNavigateToSource={(srcPageId) => { showSharedPanel = false; handleMentionNavigate(srcPageId); }}
       />
     {/if}
@@ -1621,7 +1646,7 @@
       /* The status-bar inset is reserved once by .app-shell (App.svelte), so
          the top here is just breathing room below it — re-adding the inset
          would double it. Bottom clears the fixed MobileActionBar so the
-         .bottom-bar (what-settled + word count + settings) isn't covered. */
+         .bottom-bar (page nav + word count + settings) isn't covered. */
       padding:
         12px
         max(var(--safe-right), var(--space-4))
@@ -1800,24 +1825,18 @@
   @media (max-width: 480px), (orientation: landscape) and (max-height: 480px) {
     .bottom-bar { padding: var(--space-2) 0 var(--space-1); }
   }
-  /* Hide the bottom-bar (what-settled + word count + cog) when any
+  /* Hide the bottom-bar (page nav + word count + cog) when any
      BottomSheet or Modal is open. Both overlays' z-index (9999 / 201)
      should cover it, but .bottom-bar is a DOM sibling of .column (both
      z-index: 1, direct children of .page) declared LATER — so at the
      .page stacking level the tie goes to source order and .bottom-bar
      paints over whatever's nested inside .column, no matter how high
      that content's own z-index is. Concretely: ChartBuilder's Modal on
-     phone (full-screen, z-index 201) still had "what settled" show
-     through over its node rows. Belt + suspenders on both classes. */
+     phone (full-screen, z-index 201) still had the bar show through over
+     its node rows. Belt + suspenders on both classes. */
   :global(body.shizumu-bottom-sheet-open) .bottom-bar,
   :global(body.shizumu-modal-open) .bottom-bar {
     display: none;
-  }
-
-  .bottom-left {
-    flex: 1 1 0;
-    min-width: 0;
-    max-width: 22.5rem;
   }
 
   .memory-wrap {
@@ -1847,6 +1866,13 @@
     font-size: 0.625rem;
     opacity: 0.25;
     color: var(--ink);
+  }
+
+  .save-failing {
+    align-self: flex-start;
+    font-size: 0.6875rem;
+    color: var(--warm-accent);
+    padding: 0.1875rem 0 0.5rem;
   }
 
   .trail-warning {

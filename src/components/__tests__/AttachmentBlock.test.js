@@ -30,6 +30,13 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: vi.fn((p) => `asset://localhost/${p}`),
 }));
 
+// The block listens for the sync worker's "sync-pulled" event; each test
+// can fire the captured handler as the worker would after a pull.
+const events = vi.hoisted(() => ({ handlers: {} }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn((name, handler) => { events.handlers[name] = handler; return Promise.resolve(() => { delete events.handlers[name]; }); }),
+}));
+
 import { attachmentOpen, attachmentSetSync, attachmentLocalSrc } from "../../lib/api.js";
 import AttachmentBlock from "../AttachmentBlock.svelte";
 
@@ -68,6 +75,28 @@ describe("AttachmentBlock", () => {
     target.querySelector(".attachment-block").click();
     await tick();
     expect(attachmentOpen).toHaveBeenCalledWith("abc123", "report.pdf");
+  });
+
+  it("says what is wrong rather than calling the backend with nothing", async () => {
+    // Both attrs default to null on the node, and attachment_open takes two
+    // non-Option Strings — so a node missing either is rejected by Tauri's
+    // argument layer with "invalid type: null, expected a string", which
+    // the error mapper then collapses into the generic line about the
+    // original being missing. That line is wrong about a file the writer
+    // can see, and it is indistinguishable from five other failures. Not
+    // calling at all is also the honest thing: there is nothing to open.
+    const { target } = render(AttachmentBlock, {
+      node: node({ blob_hash: null }),
+      updateAttributes: vi.fn(),
+      deleteNode: vi.fn(),
+      selected: false,
+    }, { context: NODE_VIEW_CONTEXT });
+    target.querySelector(".attachment-block").click();
+    await tick();
+    expect(attachmentOpen).not.toHaveBeenCalled();
+    expect(target.querySelector(".attachment-error").textContent).toContain(
+      "lost track of itself",
+    );
   });
 
   it("shows a readable message when opening fails, without the raw OS error", async () => {
@@ -273,5 +302,82 @@ describe("image: inline vs block, and re-resolution", () => {
 
     expect(updateAttributes).toHaveBeenCalledWith({ collapsed: false });
     expect(events).toHaveLength(0);
+  });
+});
+
+// SYNC CAN BRING THE BYTES AFTER THE NODE. A page synced from another device
+// carries the attachment node first; its bytes are a separate relay object
+// the worker fetches on a later tick. The block looked a hash up once and
+// kept a missing answer for good, so an open page drew "image not on this
+// device" after the bytes had landed (sync journey J4.6 on the A06,
+// docs/desktop-findings.md). A pull is when bytes can arrive, so a missing
+// image looks again after one.
+describe("image whose bytes arrive by sync", () => {
+  async function settle() {
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
+  }
+  const img = { attrs: { kind: "image", blob_hash: "late-hash", filename: "p.jpg", size_bytes: 1,
+    sync: true, width: null, display: "block", collapsed: false } };
+  beforeEach(() => {
+    for (const k of Object.keys(events.handlers)) delete events.handlers[k];
+    // A test that fails before using its queued answers would hand them to
+    // the next; clearAllMocks keeps a Once queue.
+    attachmentLocalSrc.mockReset();
+    attachmentLocalSrc.mockResolvedValue("/home/user/.local/share/shizumu/blobs/ab/abc123");
+  });
+
+  // Two moments bring bytes: an object fetch (the worker's tick or the
+  // startup sweep, announced as "attachments-fetched", often on a tick that
+  // merged no op) and a pull whose op carried the bytes inline
+  // ("sync-pulled").
+  for (const event of ["attachments-fetched", "sync-pulled"]) {
+    it(`is missing until ${event}, then drawn`, async () => {
+      attachmentLocalSrc.mockResolvedValueOnce(null).mockResolvedValueOnce("/blobs/la/late-hash");
+      const { target } = render(AttachmentBlock, {
+        node: img, updateAttributes: vi.fn(), deleteNode: vi.fn(), selected: false,
+      }, { context: NODE_VIEW_CONTEXT });
+      await settle();
+      expect(target.querySelector("img")).toBeNull();
+      expect(target.textContent).toContain("image not on this device");
+
+      expect(typeof events.handlers[event]).toBe("function");
+      events.handlers[event]();
+      await settle();
+
+      const drawn = target.querySelector("img");
+      expect(drawn).toBeTruthy();
+      expect(drawn.getAttribute("src")).toBe("asset://localhost//blobs/la/late-hash");
+      expect(target.textContent).not.toContain("image not on this device");
+    });
+  }
+
+  it("a drawn image is not looked up again when bytes arrive", async () => {
+    // Once the path is known it cannot change (content-addressed store), so
+    // an announcement must not cost a drawn image an IPC round trip.
+    const { target } = render(AttachmentBlock, {
+      node: img, updateAttributes: vi.fn(), deleteNode: vi.fn(), selected: false,
+    }, { context: NODE_VIEW_CONTEXT });
+    await settle();
+    expect(target.querySelector("img")).toBeTruthy();
+    const calls = attachmentLocalSrc.mock.calls.length;
+    expect(typeof events.handlers["attachments-fetched"]).toBe("function");
+    expect(typeof events.handlers["sync-pulled"]).toBe("function");
+    events.handlers["attachments-fetched"]();
+    events.handlers["sync-pulled"]();
+    await settle();
+    expect(attachmentLocalSrc.mock.calls.length).toBe(calls);
+  });
+
+  it("a file chip listens for neither: it has no image to look up", async () => {
+    render(AttachmentBlock, {
+      node: { attrs: { blob_hash: "f", filename: "a.pdf", size_bytes: 1, sync: true } },
+      updateAttributes: vi.fn(), deleteNode: vi.fn(), selected: false,
+    }, { context: NODE_VIEW_CONTEXT });
+    await settle();
+    expect(events.handlers["attachments-fetched"]).toBeUndefined();
+    expect(events.handlers["sync-pulled"]).toBeUndefined();
   });
 });

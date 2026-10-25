@@ -8,6 +8,7 @@ import { PluginKey, TextSelection } from "@tiptap/pm/state";
 import { attachmentAddBytes } from "./api.js";
 import { isImagePick, imageRejectionMessage } from "./editor/image-file-guard.js";
 import { needsFreshLine, needsLeadingParagraph } from "./editor/slash-insert-target.js";
+import { suggestionAllowedAt } from "./editor/suggestion-allowed.js";
 import { clampTableSize, gridCellsFor, moveHover, DEFAULT_HOVER, GRID_SIZE } from "./editor/table-size-picker.js";
 
 // Pick a file with the WebView's native picker and read its bytes here. Works
@@ -938,6 +939,9 @@ export const SlashCommands = Extension.create({
       suggestion: {
         char: "/",
         pluginKey: SlashCommandsPluginKey,
+        // In code `/` is literal: a path, a comment, a division
+        // (editor/suggestion-allowed.js, the @ menu's same rule).
+        allow: ({ state, range }) => suggestionAllowedAt(state, range),
         command: ({ editor, range, props }) => {
           // The range is consumed once here, not by each command, so the
           // cursor can be moved to a fresh line in between. Every command

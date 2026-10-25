@@ -15,3 +15,4 @@ Keywords[fr]=ecriture;carnet;journal;notes;prise-de-notes;quotidien;prive;hors-l
 MimeType=text/plain;
 StartupWMClass=shizumu
 StartupNotify=true
+X-Purism-FormFactor=Workstation;Mobile;

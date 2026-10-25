@@ -66,6 +66,37 @@ function swapWithSibling(state, dispatch, unit, direction) {
   return true;
 }
 
+// moveBlockTo: move the node that STARTS at `fromPos` to sibling index
+// `toIndex` inside its own parent. This is the single transaction shared
+// by keyboard moves and the phone shell's drag-to-reorder (spec §3): a
+// block never leaves its container through this command — a board's
+// children reorder inside the board, a top-level block stays top-level.
+function moveNodeToIndex(state, dispatch, fromPos, toIndex) {
+  if (typeof fromPos !== "number" || fromPos < 0 || fromPos > state.doc.content.size) return false;
+  const node = state.doc.nodeAt(fromPos);
+  if (!node || node.isText) return false;
+  const $from = state.doc.resolve(fromPos);
+  // A text position resolves INSIDE a textblock; a node boundary resolves
+  // to the parent with nodeAfter === node. Only the latter is a block start.
+  if ($from.nodeAfter !== node) return false;
+  const parent = $from.parent;
+  const fromIndex = $from.index();
+  const target = Math.max(0, Math.min(toIndex, parent.childCount - 1));
+  if (target === fromIndex) return false;
+  const parentStart = $from.start();
+  let tr = state.tr.delete(fromPos, fromPos + node.nodeSize);
+  // The parent's content start is unaffected by deleting one of its own
+  // children, so resolving it in the new doc yields the same parent.
+  const newParent = tr.doc.resolve(parentStart).parent;
+  let insertAt = parentStart;
+  for (let i = 0; i < target; i++) insertAt += newParent.child(i).nodeSize;
+  tr = tr.insert(insertAt, node);
+  if (dispatch) {
+    dispatch(tr.setSelection(TextSelection.near(tr.doc.resolve(insertAt + 1), 1)));
+  }
+  return true;
+}
+
 /**
  * Move the block AT A GIVEN POSITION one slot up or down among its
  * siblings, without consulting — or disturbing — the selection.
@@ -138,6 +169,8 @@ export const BlockMovement = Extension.create({
         const parent = findParentUnit(state.selection.$from, child);
         return swapWithSibling(state, dispatch, parent, direction);
       },
+      moveBlockTo: (fromPos, toIndex) => ({ state, dispatch }) =>
+        moveNodeToIndex(state, dispatch, fromPos, toIndex),
     };
   },
 

@@ -115,7 +115,9 @@ describe("inline rename routes the title to the home the pin actually has", () =
         content: [{ type: "paragraph", content: [{ type: "text", text: "quoted" }] }],
       },
     })];
-    const onSamePagePinSave = vi.fn();
+    // The editor's splice reports whether it found the stamp; this one did.
+    // A false answer sends the rename on to the stored page instead.
+    const onSamePagePinSave = vi.fn(() => true);
     const { target } = render(SharedObjectsPanel, {
       pageId: "p1",
       editorDoc: {

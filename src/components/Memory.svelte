@@ -1,10 +1,13 @@
 <script>
   import { onMount, onDestroy, tick } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { fade } from "svelte/transition";
   import ThreadCard from "./ThreadCard.svelte";
   import ThreadPageView from "./ThreadPageView.svelte";
   import TrailMap from "./TrailMap.svelte";
-  import { getTrailPageCounts, getThread, searchPages, getGroundData, getLineages, getSetting, setSetting, getPins, updatePinContent, deletePin, getPageForMention } from "../lib/api.js";
+  import { getTrailPageCounts, getThread, searchPages, getGroundData, getLineages, getSetting, setSetting, getPins, updatePinContent, deletePin, getPageForMention, loadPageContentForModal, savePageContentWithPinRefresh } from "../lib/api.js";
+  import { writePinEdit, textIntoNode } from "../lib/pin-edit-route.js";
+  import { pinTitleAuthority } from "../lib/pin-title-authority.js";
   import { buildTreeList } from "../lib/trail-utils.js";
   import {
     emptyFilters,
@@ -31,7 +34,7 @@
   import PinRow from "./pins/PinRow.svelte";
   import PinArtifactModal from "./pins/PinArtifactModal.svelte";
   import PinNoteModal from "./pins/PinNoteModal.svelte";
-  import { applyDateFilter } from "../lib/memory-filters.js";
+  import { applyDateFilter, groupPinsByTrail, memoryPool, searchDateFilter } from "../lib/memory-filters.js";
   import { getLocalDateStr } from "../lib/utils.js";
 
   /** @type {{ onNavigatePage: () => void, onContinueFocus: (focus: any) => void }} */
@@ -84,6 +87,9 @@
 
   // v0.5 date filter (replaces the old filters.date chip group).
   let dateFilter = $state(/** @type {{ kind: string, date?: string, from?: string, to?: string } | null} */ ({ kind: "thisMonth" }));
+  // Whether the writer picked the window, rather than memory opening on it.
+  // A search ignores a window nobody chose (searchDateFilter).
+  let dateChosen = $state(false);
   let todayStr = $state(getLocalDateStr());
 
   // "on page" filter — Phase-A consolidated filters panel slot. Wiring to a
@@ -110,10 +116,27 @@
   // two surfaces can't race each other into stacked overlays.
   let pinModalState = $state(/** @type {{ type: "artifact"|"note", pinId: string } | null} */ (null));
 
+  // THE OTHER DEVICE WRITES WHILE MEMORY IS OPEN. The list, the trails
+  // and their counts were read once, on arrival, so a page written on the
+  // phone waited for the writer to leave and come back (sync journey 19,
+  // 2026-10-14). Read again quietly after every pull that brought ops: the
+  // list stays on screen meanwhile. New trails re-run the pins effect too.
+  let unlistenPull = null;
+  let alive = true;
   onMount(() => {
     Promise.all([reloadThread(), loadLineages(), loadTrailPageCounts(), loadGroundData(), loadPrefs()]);
+    listen("sync-pulled", () => {
+      reloadThread({ quiet: true });
+      loadLineages();
+      loadTrailPageCounts();
+    }).then((off) => { if (alive) unlistenPull = off; else off(); })
+      .catch((err) => console.error("memory: could not listen for sync pulls", err));
   });
-  onDestroy(() => { if (searchDebounce) clearTimeout(searchDebounce); });
+  onDestroy(() => {
+    alive = false;
+    unlistenPull?.();
+    if (searchDebounce) clearTimeout(searchDebounce);
+  });
 
   async function loadPrefs() {
     try {
@@ -134,8 +157,8 @@
     setSetting("trailmap_range_days", String(days)).catch(() => {});
   }
 
-  async function reloadThread() {
-    loading = true;
+  async function reloadThread({ quiet = false } = {}) {
+    if (!quiet) loading = true;
     try { pages = await getThread(100, 0, sort); } catch {} finally { loading = false; }
   }
   async function loadLineages() { try { lineages = await getLineages(); } catch {} }
@@ -367,24 +390,23 @@
   // filtering is owned by applyScopeFilter — we clear filters.trails and
   // filters.untrailedOnly before delegating to pageMatches so that helper's
   // trail branch becomes a no-op and there is exactly one path that decides
-  // what trail a row belongs to. Search is handled separately: matchingIds
-  // (from the FTS5 backend) is intersected with the scoped list so the search
-  // result count narrows when the user picks a trail in the sidebar.
+  // what trail a row belongs to. Search is handled separately: the FTS5 hits
+  // become the pool (memoryPool) and go through the same scope, so the
+  // search result count narrows when the user picks a trail in the sidebar.
   let nonScopeFilters = $derived({
     ...filters,
     trails: new Set(),
     untrailedOnly: false,
   });
   let filteredPages = $derived.by(() => {
-    let r = applyScopeFilter(pages, effectiveScope);
-    r = r.filter((p) => pageMatches(p, nonScopeFilters, getLineageMode));
-    r = applyDateFilter(r, dateFilter, todayStr);
     // Search filters the list, no dim treatment. When the FTS query is
-    // active, only matching pages are kept; non-matches disappear from
-    // the timeline / trail map entirely.
-    if (matchingIds && searchQuery.trim()) {
-      r = r.filter((p) => matchingIds.has(p.id));
-    }
+    // active the hits ARE the list — every one of them, not only those
+    // among the pages memory loaded (memoryPool) — and non-matches
+    // disappear from the timeline / trail map entirely.
+    const searching = !!(searchResults && searchQuery.trim());
+    let r = applyScopeFilter(memoryPool(pages, searching ? searchResults : null, sort), effectiveScope);
+    r = r.filter((p) => pageMatches(p, nonScopeFilters, getLineageMode));
+    r = applyDateFilter(r, searchDateFilter(dateFilter, { searching, chosen: dateChosen }), todayStr);
     return r;
   });
   // Alias used by the mode-switched render branches (Phase C and beyond).
@@ -428,10 +450,21 @@
       ...pin,
       date: pin.source_page_date || (pin.created_at ? pin.created_at.slice(0, 10) : ""),
     }));
-    let filtered = applyDateFilter(stamped, dateFilter, todayStr);
-    if (searchQuery.trim()) filtered = filtered.filter((pin) => pinMatches(pin, searchQuery));
+    const searching = !!searchQuery.trim();
+    let filtered = applyDateFilter(stamped, searchDateFilter(dateFilter, { searching, chosen: dateChosen }), todayStr);
+    if (searching) filtered = filtered.filter((pin) => pinMatches(pin, searchQuery));
     return filtered;
   });
+
+  /** The pins mode's sections. `effectiveScope` is what the sidebar
+   *  selection resolves to — null while it is on all trails, which is the
+   *  one state the grouping is for (see groupPinsByTrail).
+   *
+   *  The lineage ORDER comes from `lineages` as loaded, which is the order
+   *  every other trail list on this screen uses. */
+  let pinGroups = $derived(
+    groupPinsByTrail({ pins: visiblePins, lineages, scope: effectiveScope }),
+  );
 
   // Subtrails of the currently-selected lineage, packed for TrailMap's
   // single-trail variant. Each entry is { lineage, pages, pins }: the child
@@ -478,26 +511,41 @@
     pinsGlobal = pinsGlobal.filter((p) => p.id !== id);
   }
 
-  // Memory is a read/jump surface, not an editor host. We can still let the
-  // modal save: same-page splicing isn't available (no live editor here),
-  // so we always take the cross-page write path. The Rust refresh_pin_caches
-  // hook updates row caches on save; we also patch locally so the panel
-  // doesn't lag the modal close.
+  // Memory is a read/jump surface, not an editor host, so there is no open
+  // editor to splice into. An edit still goes where the pin lives
+  // (pin-edit-route.js writePinEdit): into its node in the stored page while
+  // a page holds it, the row only when none does. These used to write the
+  // row alone, and the page's next save rewrote the row from the unedited
+  // node — and, since a save sends the pins it rewrites, sent that old text
+  // to the other devices as the newest.
+  const memoryPinDeps = {
+    loadPage: loadPageContentForModal,
+    savePage: savePageContentWithPinRefresh,
+    updateRow: updatePinContent,
+  };
+  let pinNotice = $state("");
+
   async function savePinArtifact(pinId, newNode, newTitle, contentChanged, titleChanged) {
     const pin = pinById(pinId);
     if (!pin || !newNode) return;
     if (!contentChanged && !titleChanged) return;
     const newDoc = { type: "doc", content: [newNode] };
     const nextContent = contentChanged ? JSON.stringify(newDoc) : pin.content;
-    try {
-      await updatePinContent(pin.id, nextContent, titleChanged ? newTitle : pin.title);
-    } catch (err) {
-      console.error("Failed to save pin (artifact) from memory:", err);
-    }
-    patchPin(pin.id, {
-      content: nextContent,
-      title: titleChanged ? newTitle : pin.title,
+    const nextTitle = titleChanged ? newTitle : pin.title;
+    const landed = await writePinEdit({
+      pin, liveNode: null, nodeFor: () => newNode,
+      rowContent: nextContent, rowTitle: nextTitle, deps: memoryPinDeps,
     });
+    if (!landed) {
+      pinNotice = "that edit did not save. the pin still holds what it held before.";
+      return;
+    }
+    pinNotice = "";
+    // A title the node cannot hold lives on the row (pin-title-authority).
+    if (titleChanged && landed !== "row" && pinTitleAuthority(pin, newNode) === "row") {
+      try { await updatePinContent(pin.id, nextContent, newTitle); } catch (err) { console.error("pin title from memory:", err); }
+    }
+    patchPin(pin.id, { content: nextContent, title: nextTitle });
   }
   async function savePinNote(pinId, newContent, newTitle, contentChanged, titleChanged) {
     const pin = pinById(pinId);
@@ -505,11 +553,26 @@
     if (!contentChanged && !titleChanged) return;
     const nextContent = contentChanged ? newContent : pin.content;
     const nextTitle = titleChanged ? newTitle : pin.title;
-    try {
-      await updatePinContent(pin.id, nextContent, nextTitle);
-    } catch (err) {
-      console.error("Failed to save pin (note) from memory:", err);
+    let landed = null;
+    if (contentChanged) {
+      let written = null;
+      landed = await writePinEdit({
+        pin, liveNode: null, nodeFor: (n) => (written = textIntoNode(n, newContent)),
+        rowContent: nextContent, rowTitle: nextTitle, deps: memoryPinDeps,
+      });
+      // A note's title is the row's (a paragraph has no title slot). A
+      // "row" landing wrote it already; a "source" one wrote only the node.
+      if (landed === "source" && titleChanged) {
+        try { await updatePinContent(pin.id, JSON.stringify(written), nextTitle); } catch (err) { console.error("pin title from memory:", err); }
+      }
+    } else {
+      try { await updatePinContent(pin.id, pin.content, nextTitle); landed = "row"; } catch (err) { console.error("pin title from memory:", err); }
     }
+    if (!landed) {
+      pinNotice = "that edit did not save. the pin still holds what it held before.";
+      return;
+    }
+    pinNotice = "";
     patchPin(pin.id, { content: nextContent, title: nextTitle });
   }
   async function deletePinAndClose(pinId) {
@@ -744,7 +807,7 @@
         onOpenSpecificPin={(pin) => openPin(pin)}
         onSwitchMode={(m, opts) => {
           mode = /** @type {any} */ (m);
-          if (opts?.dateFilter) dateFilter = opts.dateFilter;
+          if (opts?.dateFilter) { dateFilter = opts.dateFilter; dateChosen = true; }
           if (opts?.lineageId !== undefined) setLineage(opts.lineageId);
         }}
         onSwitchSidebar={(lid) => setLineage(lid)}
@@ -766,18 +829,30 @@
           </Empty>
         {/if}
       {:else}
+        <!-- ONE SECTION PER TRAIL while the sidebar is on all trails.
+             groupPinsByTrail decides which groups and in what order; an
+             empty label is its answer for a list that is already one
+             trail's, so a scoped sidebar renders exactly as it did. -->
+        {#if pinNotice}
+          <p class="pin-notice label" role="status">{pinNotice}</p>
+        {/if}
         <div class="pin-rows">
-          {#each visiblePins as pin (pin.id)}
-            <PinRow
-              pin={pin}
-              eff={pin}
-              isBoard={isPinBoard(pin)}
-              lineagePath={relativeLineagePath(getLineagePath(pin.lineage_id), effectiveLineageId === UNTRAILED ? null : effectiveLineageId, lineages)}
-              density="standard"
-              samePage={false}
-              showActions={false}
-              onClick={() => openPin(pin)}
-            />
+          {#each pinGroups as group (group.id)}
+            {#if group.label}
+              <h3 class="pin-group-heading">{group.label}</h3>
+            {/if}
+            {#each group.pins as pin (pin.id)}
+              <PinRow
+                pin={pin}
+                eff={pin}
+                isBoard={isPinBoard(pin)}
+                lineagePath={relativeLineagePath(getLineagePath(pin.lineage_id), effectiveLineageId === UNTRAILED ? null : effectiveLineageId, lineages)}
+                density="standard"
+                samePage={false}
+                showActions={false}
+                onClick={() => openPin(pin)}
+              />
+            {/each}
           {/each}
         </div>
       {/if}
@@ -798,7 +873,7 @@
       {lineageTree} {activeLineageId} {setLineage} {visibleLineageTree}
       {collapsedTrails} {toggleTrailCollapse}
       {dateFilter} {todayStr} {activityByDate}
-      onDateChange={(f) => { dateFilter = f; }}
+      onDateChange={(f) => { dateFilter = f; dateChosen = true; }}
       {sort} onSortChange={(s) => (sort = s)}
       pinned={filters.pinned} {togglePinned}
       showOnPage={onPageOnly} onPageToggle={lineageId == null ? () => (onPageOnly = !onPageOnly) : undefined}
@@ -874,6 +949,7 @@
 {/if}
 
 <style>
+  .pin-notice { margin: 8px 12px; color: var(--ink-soft); }
   .memory {
     width: 100%;
     flex: 1;
@@ -947,6 +1023,24 @@
 
   /* Pins mode list — same flex column + gap as the pages timeline so the
      cards sit on a consistent rhythm across modes. */
+  /* The section heading in the pins mode. The same shape the rest of this
+     screen gives a group label — interface face, small, quiet — so a list
+     that gained headings does not read as a different screen. */
+  .pin-group-heading {
+    font-family: "Inter", sans-serif;
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-soft, var(--ink));
+    opacity: 0.6;
+    margin: 1.25rem 0 0.35rem;
+  }
+
+  .pin-group-heading:first-child {
+    margin-top: 0;
+  }
+
   .pin-rows {
     display: flex;
     flex-direction: column;

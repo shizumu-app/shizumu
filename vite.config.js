@@ -8,6 +8,19 @@ const pkg = require("./package.json");
 
 const host = process.env.TAURI_DEV_HOST;
 
+// The browser demo counts its visits with the website's own goatcounter, the
+// same counter Base.astro puts on every site page, so a visit to /try/app/
+// reads as a demo try in promo (marketing/promo/core/tries.js). It is added
+// to the demo build's page alone: the app itself never carries it, since
+// nothing leaves the device without an explicit export.
+export const DEMO_COUNTER = Object.freeze({ count: "https://stats.shizumu.app/count", src: "https://stats.shizumu.app/count.js" });
+export function demoCounter() {
+  return {
+    name: "demo-counter",
+    transformIndexHtml: () => [{ tag: "script", attrs: { "data-goatcounter": DEMO_COUNTER.count, async: true, src: DEMO_COUNTER.src }, injectTo: "head" }],
+  };
+}
+
 // A real filesystem absolute path, not the "/src/..." root-relative shorthand
 // the plan called for: dev's optimizeDeps pre-bundling step (esbuild, used to
 // pre-bundle transitive deps like @tauri-apps/plugin-notification, which
@@ -49,7 +62,7 @@ export default defineConfig(async ({ mode } = {}) => {
   }
 
   return {
-    plugins: [svelte()],
+    plugins: isDemo ? [svelte(), demoCounter()] : [svelte()],
     clearScreen: false,
     // The browser demo is served from /try/app/ on the website, so its assets
     // must be requested from there rather than from the site root.
