@@ -57,6 +57,7 @@
     getPageForMention,
     getSetting,
     setSetting,
+    emitTrailMutated,
   } from "../lib/api.js";
   import { buildCarryForwardNodes } from "../lib/pin-carry-forward.js";
   import { recordAppearance, bumpAppearance, getAppearance, hasAppearance } from "../lib/rail-appearance.js";
@@ -311,6 +312,9 @@
     midnightInterval = setInterval(checkMidnight, 60_000);
 
     syncUnlisten = await listen("sync-pulled", async () => {
+      // Mention labels name other pages and trails, which the pull may
+      // have renamed or deleted (api.js emitTrailMutated).
+      emitTrailMutated();
       await followStoredPage();
       await loadPinCount();
       await loadRailFocuses();
@@ -1538,6 +1542,8 @@
     open={commandPaletteOpen}
     onClose={() => commandPaletteOpen = false}
     onNavigate={handleMentionNavigate}
+    currentTrail={isWritable && page?.lineage_id && currentLineageName ? { id: page.lineage_id, name: currentLineageName } : null}
+    onManageTrail={(action) => window.dispatchEvent(new CustomEvent("shizumu:manage-trail", { detail: { action } }))}
   />
 
   <!-- Bottom action bar — visible on phones/tablets only (CSS-gated at
@@ -1588,7 +1594,14 @@
     margin: 0 auto;
     transition: opacity 150ms ease;
     background: var(--canvas-bg);
+    /* The sheet's edge: a hairline down each side, so where the page starts
+       reads at a glance against the desk (--margin-bg). Not at phone width,
+       where the column is the whole screen. */
+    box-shadow: -1px 0 0 var(--page-edge, var(--elev-border)), 1px 0 0 var(--page-edge, var(--elev-border));
     z-index: 1;
+  }
+  @media (max-width: 768px) {
+    .page { box-shadow: none; }
   }
 
   /* Writing body: fills the column below the header, and carries the
@@ -1712,8 +1725,7 @@
     font-style: italic;
     font-size: 0.8125rem;
     line-height: 1.4;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     padding: 0.375rem 0.25rem;
     height: 2rem;
     display: flex;
@@ -1730,6 +1742,20 @@
     gap: 0.5rem;
     flex: 1;
     min-width: 0;
+  }
+
+  /* The dots and "what matters now" start where the prose does, past the
+     editor's block-handle gutter (.tiptap-wrapper padding-left: 32px, and
+     1.5rem at phone width), not 32px to the left of it. */
+  .top-row-1 > :global(.focus-rail),
+  .top-zone {
+    padding-left: 32px;
+  }
+  @media (max-width: 480px) {
+    .top-row-1 > :global(.focus-rail),
+    .top-zone {
+      padding-left: 1.5rem;
+    }
   }
 
   .top-right {
@@ -1761,11 +1787,11 @@
   /* Quiet by default — "+ trail" is an invitation, not a decision already
      made. Accent only kicks in once a trail is actually attached (.active,
      set by LineageSelector from `!!currentLineage`). */
-  .eh-line2 :global(.trigger-chip) { color: var(--ink); opacity: 0.45; }
+  .eh-line2 :global(.trigger-chip) { color: var(--ink-soft); }
   .eh-line2 :global(.trigger-chip.active) {
     background: transparent;
     border-color: transparent;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     /* Same specificity as the quiet base rule above (both are two classes
        plus this component's scoping hash) — without an explicit opacity
        here, source order left the trailed chip stuck at the quiet 0.45
@@ -1779,10 +1805,10 @@
      pill was the only outlined control on this line — the one thing that
      didn't match. Opacity alone separates it from the quiet trail chip. */
   .eh-line2 :global(.pages-chip .trigger-chip) {
-    opacity: 0.75;
+    color: var(--ink-soft);
   }
-  .eh-actions :global(.trigger-chip) { color: var(--ink); opacity: 0.6; }
-  .eh-actions :global(.trigger-chip.active) { color: var(--warm-accent); opacity: 1; }
+  .eh-actions :global(.trigger-chip) { color: var(--ink-soft); }
+  .eh-actions :global(.trigger-chip.active) { color: var(--accent-text); opacity: 1; }
   /* Today-link accent exception: when the return link is present, pins yields. */
   .eh:has(.pn-today) .eh-actions :global(.trigger-chip.active) { color: var(--ink); background: transparent; }
 
@@ -1864,22 +1890,20 @@
 
   .word-ct {
     font-size: 0.625rem;
-    opacity: 0.25;
-    color: var(--ink);
+    color: var(--ink-soft);
   }
 
   .save-failing {
     align-self: flex-start;
     font-size: 0.6875rem;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     padding: 0.1875rem 0 0.5rem;
   }
 
   .trail-warning {
     align-self: flex-start;
     font-size: 0.6875rem;
-    color: var(--warm-accent);
-    opacity: 0.75;
+    color: var(--accent-text);
     padding: 0.1875rem 0 0.5rem;
     animation: trail-warn-fade 2.5s ease forwards;
   }
@@ -1891,8 +1915,8 @@
   }
 
   .error {
-    opacity: 0.55;
     font-style: italic;
     margin-top: auto;
+    color: var(--ink-soft);
   }
 </style>

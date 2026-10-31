@@ -31,6 +31,7 @@
 //    If none of them takes it, the panel says so on screen.
 import { pinModalKind } from "./pin-display.js";
 import { holdsPin } from "./pin-node.js";
+import { findPinRun, withPinRun, pinContentNodes } from "./pin-run.js";
 
 /**
  * @param {any} pin - the pin row
@@ -51,7 +52,9 @@ export function pinModalFor(pin, liveNode) {
  */
 export function pinForModal(pin, liveNode) {
   if (!pin || !liveNode) return pin;
-  return { ...pin, content: JSON.stringify({ type: "doc", content: [liveNode] }) };
+  // A pin over several blocks is already a doc of them (findPinNode).
+  const doc = liveNode.type === "doc" ? liveNode : { type: "doc", content: [liveNode] };
+  return { ...pin, content: JSON.stringify(doc) };
 }
 
 /**
@@ -70,31 +73,30 @@ export function pinEditRoute({ liveHere, sourcePageId }) {
 }
 
 /**
- * The node stamped with this pin id, at any depth, or null.
+ * What a page holds of this pin, at any depth, or null: the stamped node
+ * itself, or — for a pin made over several blocks — a doc of all of them,
+ * the shape the pin's row stores (pin-run.js).
  * @param {any} doc
  * @param {string} pinId
  */
 export function findPinNode(doc, pinId) {
   if (!doc || !pinId) return null;
   if (holdsPin(doc, pinId)) return doc;
-  if (!Array.isArray(doc.content)) return null;
-  for (const c of doc.content) {
-    const hit = findPinNode(c, pinId);
-    if (hit) return hit;
-  }
-  return null;
+  const run = findPinRun(doc, pinId);
+  if (run.length === 0) return null;
+  return run.length === 1 ? run[0] : { type: "doc", content: run };
 }
 
 /**
- * The doc with the node stamped `pinId` replaced by `newNode`.
+ * The doc with the pin's blocks replaced by `newNode` — one node, or a doc
+ * of several — once, where the first of them was (pin-run.js).
  * @param {any} doc
  * @param {string} pinId
  * @param {any} newNode
  */
 export function splicePinNode(doc, pinId, newNode) {
   if (holdsPin(doc, pinId)) return newNode;
-  if (Array.isArray(doc?.content)) return { ...doc, content: doc.content.map((c) => splicePinNode(c, pinId, newNode)) };
-  return doc;
+  return withPinRun(doc, pinId, pinContentNodes(newNode));
 }
 
 const TEXTBLOCKS = new Set(["paragraph", "heading"]);

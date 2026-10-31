@@ -102,8 +102,7 @@
     gap: 0.375rem;
   }
   .branch-glyph {
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     width: 0.875rem;
     text-align: center;
   }
@@ -133,12 +132,14 @@
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--ink);
-    opacity: 0.45;
+    color: var(--ink-soft);
     font-size: 0.875rem;
     padding: 0 0.25rem;
     line-height: 1;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .branch-action:hover { opacity: 0.85; }
+  .branch-action:hover {
+    color: var(--ink);
+    opacity: 1;
+  }
 </style>

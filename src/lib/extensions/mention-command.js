@@ -252,6 +252,143 @@ function positionMenu(menuEl, rect) {
 
 // ----- the extension -----
 
+/**
+ * What `@` finds: page references, then pin references, then the rows that
+ * start a trail from the typed name, in that order. The ONE answer to that
+ * question, shared by the desktop's floating menu (this extension's
+ * `items`) and the phone's chip strip (src/shell/mention-chips.js), so the
+ * two cannot drift into finding different things for the same keystroke.
+ *
+ * @param {{query?: string, currentLineage?: {id: string, name: string}|null,
+ *   onCreate?: Function|null}} args
+ */
+export async function mentionItems({ query = "", currentLineage = null, onCreate = null } = {}) {
+  const trimmed = (query || "").trim();
+  const cur = currentLineage;
+
+  // Reference rows (pages) + pin reference rows + create rows, in
+  // that order. Pin section gets its own divider in renderMenu so
+  // the user sees three groups: pages · pins · new.
+  let refRows = [];
+  let pinRefRows = [];
+  try {
+    const [pageRows, pinRows, lineages] = await Promise.all([
+      searchPagesForMention(trimmed, REF_LIMIT),
+      searchPinsForMention(trimmed, 10, cur?.id || null),
+      getLineages(),
+    ]);
+    refRows = pageRows.map((row) => ({
+      kind: "ref",
+      pageId: row.page_id,
+      label: buildMentionLabel({ page: row, lineages }),
+    }));
+    // Dedupe: a continuous trail's canonical may match by both
+    // lineage name and focus; keep first.
+    const seen = new Set();
+    refRows = refRows.filter((r) => {
+      if (seen.has(r.pageId)) return false;
+      seen.add(r.pageId);
+      return true;
+    });
+    pinRefRows = (pinRows || []).map((row) => ({
+      kind: "pin-ref",
+      pinId: row.id,
+      label: (row.title && row.title.trim()) || "untitled pin",
+      scope: row.scope_label || "global",
+    }));
+  } catch {
+    refRows = [];
+    pinRefRows = [];
+  }
+
+  // Create rows only when the user has typed something.
+  const createRows = [];
+  if (trimmed.length > 0) {
+    if (cur && cur.id) {
+      createRows.push({
+        kind: "create-subtrail",
+        parentName: cur.name,
+        parentId: cur.id,
+        query: trimmed,
+        mode: "discrete",
+        onCreate,
+      });
+    }
+    createRows.push({
+      kind: "create-toplevel",
+      query: trimmed,
+      mode: "discrete",
+      onCreate,
+    });
+  }
+
+  return [...refRows, ...pinRefRows, ...createRows];
+}
+
+/**
+ * Put a picked `@` item into the doc in place of the `@query` at `range`:
+ * a pageRef or pinRef node, or — for a create row — an empty pageRef the
+ * host fills once it has made the trail. Shared by the desktop menu and
+ * the phone's chips, for the same reason as `mentionItems`.
+ */
+export function commitMention(editor, range, props) {
+  if (!props || props.kind === "placeholder") return;
+  if (props.kind === "ref") {
+    editor
+      .chain()
+      .focus()
+      .deleteRange(range)
+      .insertContent({
+        type: "pageRef",
+        attrs: { targetId: props.pageId, labelSnapshot: props.label },
+      })
+      .run();
+    return;
+  }
+  if (props.kind === "pin-ref") {
+    editor
+      .chain()
+      .focus()
+      .deleteRange(range)
+      .insertContent({
+        type: "pinRef",
+        attrs: { pinId: props.pinId, labelSnapshot: props.label },
+      })
+      .run();
+    return;
+  }
+  if (props.kind === "create-subtrail" || props.kind === "create-toplevel") {
+    const name = (props.query || "").trim();
+    if (!name) return;
+    // Replace the @query with a pageRef whose targetId is empty.
+    // The host's onCreate then creates the lineage + page and calls
+    // back to populate the targetId once it knows the new page id,
+    // so returning to this page later still shows the reference.
+    editor
+      .chain()
+      .focus()
+      .deleteRange(range)
+      .insertContent({
+        type: "pageRef",
+        attrs: { targetId: "", labelSnapshot: name },
+      })
+      .run();
+    if (typeof props.onCreate === "function") {
+      const mode = props.kind === "create-subtrail" ? "subtrail" : "toplevel";
+      props.onCreate(name, mode, props.mode);
+    }
+  }
+}
+
+/** The mention extension's host options on a live editor (onCreate,
+ *  getCurrentLineage), so a host that renders its own picker passes the
+ *  same ones the floating menu does. Null when the editor has no mention
+ *  extension. */
+export function mentionOptionsOf(editor) {
+  const ext = editor?.extensionManager?.extensions?.find((e) => e.name === "mentionCommand");
+  return ext ? ext.options : null;
+}
+
 export const MentionCommand = Extension.create({
   name: "mentionCommand",
   // Higher priority than the unified list extension — see slash-commands.js
@@ -284,54 +421,7 @@ export const MentionCommand = Extension.create({
         allow: ({ state, range }) => suggestionAllowedAt(state, range),
         // Suggestion's command runs when an item is committed. The selected
         // item carries `kind` plus everything needed to commit.
-        command: ({ editor, range, props }) => {
-          if (!props || props.kind === "placeholder") return;
-          if (props.kind === "ref") {
-            editor
-              .chain()
-              .focus()
-              .deleteRange(range)
-              .insertContent({
-                type: "pageRef",
-                attrs: { targetId: props.pageId, labelSnapshot: props.label },
-              })
-              .run();
-            return;
-          }
-          if (props.kind === "pin-ref") {
-            editor
-              .chain()
-              .focus()
-              .deleteRange(range)
-              .insertContent({
-                type: "pinRef",
-                attrs: { pinId: props.pinId, labelSnapshot: props.label },
-              })
-              .run();
-            return;
-          }
-          if (props.kind === "create-subtrail" || props.kind === "create-toplevel") {
-            const name = (props.query || "").trim();
-            if (!name) return;
-            // Replace the @query with a pageRef whose targetId is empty.
-            // The host's onCreate then creates the lineage + page and calls
-            // back to populate the targetId once it knows the new page id,
-            // so returning to this page later still shows the reference.
-            editor
-              .chain()
-              .focus()
-              .deleteRange(range)
-              .insertContent({
-                type: "pageRef",
-                attrs: { targetId: "", labelSnapshot: name },
-              })
-              .run();
-            if (typeof props.onCreate === "function") {
-              const mode = props.kind === "create-subtrail" ? "subtrail" : "toplevel";
-              props.onCreate(name, mode, props.mode);
-            }
-          }
-        },
+        command: ({ editor, range, props }) => commitMention(editor, range, props),
       },
     };
   },
@@ -344,69 +434,12 @@ export const MentionCommand = Extension.create({
         ...this.options.suggestion,
         pluginKey: MentionCommandPluginKey,
 
-        items: async ({ query }) => {
-          const trimmed = (query || "").trim();
-          const cur = ext.options.getCurrentLineage?.() || null;
-          const onCreate = ext.options.onCreate;
-
-          // Reference rows (pages) + pin reference rows + create rows, in
-          // that order. Pin section gets its own divider in renderMenu so
-          // the user sees three groups: pages · pins · new.
-          let refRows = [];
-          let pinRefRows = [];
-          try {
-            const [pageRows, pinRows, lineages] = await Promise.all([
-              searchPagesForMention(trimmed, REF_LIMIT),
-              searchPinsForMention(trimmed, 10, cur?.id || null),
-              getLineages(),
-            ]);
-            refRows = pageRows.map((row) => ({
-              kind: "ref",
-              pageId: row.page_id,
-              label: buildMentionLabel({ page: row, lineages }),
-            }));
-            // Dedupe: a continuous trail's canonical may match by both
-            // lineage name and focus; keep first.
-            const seen = new Set();
-            refRows = refRows.filter((r) => {
-              if (seen.has(r.pageId)) return false;
-              seen.add(r.pageId);
-              return true;
-            });
-            pinRefRows = (pinRows || []).map((row) => ({
-              kind: "pin-ref",
-              pinId: row.id,
-              label: (row.title && row.title.trim()) || "untitled pin",
-              scope: row.scope_label || "global",
-            }));
-          } catch {
-            refRows = [];
-            pinRefRows = [];
-          }
-
-          // Create rows only when the user has typed something.
-          const createRows = [];
-          if (trimmed.length > 0) {
-            if (cur && cur.id) {
-              createRows.push({
-                kind: "create-subtrail",
-                parentName: cur.name,
-                parentId: cur.id,
-                query: trimmed,
-                mode: "discrete",
-                onCreate,
-              });
-            }
-            createRows.push({
-              kind: "create-toplevel",
-              query: trimmed,
-              mode: "discrete",
-              onCreate,
-            });
-          }
-
-          return [...refRows, ...pinRefRows, ...createRows];
-        },
+        items: async ({ query }) =>
+          mentionItems({
+            query,
+            currentLineage: ext.options.getCurrentLineage?.() || null,
+            onCreate: ext.options.onCreate,
+          }),
 
         // Only the renderer is optional; the key, the trigger char, the
         // item source and the state above it are identical either way.

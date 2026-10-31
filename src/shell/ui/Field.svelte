@@ -214,7 +214,15 @@
     line-height: var(--leading-base);
   }
 
-  .shell-field-input:focus { outline: none; }
+  .shell-field-input:focus { outline: none; box-shadow: none; }
+  /* The field's border is its focus mark: the accent while you type in it,
+     where nothing showed before (visual pass, 2026-10-30). */
+  .shell-field {
+    transition: border-color var(--motion-fast);
+  }
+  .shell-field:focus-within {
+    border-color: var(--warm-accent);
+  }
 
   /* Restyle the composed ToolbarButton to read as the field's own clear
      glyph rather than a toolbar icon: softer colour, larger glyph. */

@@ -216,7 +216,7 @@ fn merge_page_yjs(
             // receivers can keep their FTS index fresh", and until this
             // line nothing did. Without it the words are in the row and
             // invisible to the device's own search.
-            crate::search::reindex_page(conn, page_id);
+            reindex_page_and_refs(conn, page_id);
         }
         None => {
             conn.execute(
@@ -354,7 +354,7 @@ fn merge_page(
             // skipped-insert case right too — the index then matches
             // whatever this device already had rather than the payload it
             // has moved on from.
-            crate::search::reindex_page(conn, page_id);
+            reindex_page_and_refs(conn, page_id);
             Ok(MergeOutcome::Applied)
         }
         "create_new_page" | "get_or_create_today" => {
@@ -373,7 +373,7 @@ fn merge_page(
             // and the alternative is a row this device's index has never
             // heard of — which is the half of the defect that left a page
             // with no FTS row at all.
-            crate::search::reindex_page(conn, page_id);
+            reindex_page_and_refs(conn, page_id);
             Ok(MergeOutcome::Applied)
         }
         // `save_trail_content` is a continuous trail's save: the same whole
@@ -469,7 +469,7 @@ fn merge_page(
                             log::warn!("pin orphan rescue failed for page {page_id}: {e}");
                         }
                         rearm_swept_attachments_of_row(conn, PAGE_CONTENT_SQL, page_id);
-                        crate::search::reindex_page(conn, page_id);
+                        reindex_page_and_refs(conn, page_id);
                         return Ok(MergeOutcome::Applied);
                     }
                 }
@@ -490,7 +490,7 @@ fn merge_page(
                 log::warn!("pin orphan rescue failed for page {page_id}: {e}");
             }
             rearm_swept_attachments(conn, content);
-            crate::search::reindex_page(conn, page_id);
+            reindex_page_and_refs(conn, page_id);
             Ok(MergeOutcome::Applied)
         }
         "update_what_matters_now" | "update_what_shifted" => {
@@ -546,7 +546,7 @@ fn merge_page(
             // the second is the whole reason the dropped strip's data was
             // kept reachable by search. A focus line that arrives from
             // another device has to be findable the way a typed one is.
-            crate::search::reindex_page(conn, page_id);
+            reindex_page_and_refs(conn, page_id);
             Ok(MergeOutcome::Applied)
         }
         "set_focus_lineage" => {
@@ -1516,6 +1516,26 @@ fn check_pin_divergence(conn: &Connection, page_id: &str) -> rusqlite::Result<()
     Ok(())
 }
 
+/// Search and backlinks, from what the page row NOW holds. A local save
+/// refreshes both (commands.rs `save_page_content_with_pin_refresh`); a
+/// merged one refreshed only search, so `page_refs` and `pin_refs` never
+/// listed a page written on another device and its backlinks stayed empty
+/// there (found reading the J16 journey, 2026-10-28).
+fn reindex_page_and_refs(conn: &Connection, page_id: &str) {
+    crate::search::reindex_page(conn, page_id);
+    let content: Option<String> = conn
+        .query_row("SELECT content_json FROM pages WHERE id = ?", params![page_id], |r| r.get(0))
+        .ok()
+        .flatten();
+    let Some(content) = content else { return };
+    if let Err(e) = crate::commands::refresh_page_refs(conn, page_id, &content) {
+        log::warn!("page refs refresh failed for page {page_id}: {e}");
+    }
+    if let Err(e) = crate::commands::refresh_pin_refs(conn, page_id, &content) {
+        log::warn!("pin refs refresh failed for page {page_id}: {e}");
+    }
+}
+
 /// Walk a TipTap doc tree collecting every `attrs.pinId` value present.
 /// Kept private to merge.rs so the divergence check is self-contained;
 /// commands.rs has a near-twin (`collect_pin_nodes`) that also captures
@@ -2063,6 +2083,32 @@ mod tests {
             )
             .unwrap();
         assert_eq!(both, 2, "a remote save did not rewrite the page's stale index row");
+    }
+
+    /// A mention that arrives from another device is a backlink here too.
+    /// `page_refs` and `pin_refs` were filled only by a LOCAL save, so the
+    /// receiving device's backlinks never listed a page written elsewhere
+    /// (found reading the J16 journey, 2026-10-28).
+    #[test]
+    fn a_synced_mention_is_a_backlink_on_the_receiving_device() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        let content = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"see "},{"type":"pageRef","attrs":{"targetId":"p-target"}},{"type":"pinRef","attrs":{"pinId":"PIN9"}}]}]}"#;
+        apply(&conn, "page_blob", &payload_bytes(json!({
+            "op": "create_new_page", "page_id": "p-plan",
+            "fields": {"date": "2026-10-28", "page_number": 1},
+        }))).unwrap();
+        apply(&conn, "page_blob", &payload_bytes(json!({
+            "op": "save_page_content", "page_id": "p-plan",
+            "fields": {"content_json": content},
+        }))).unwrap();
+        let page_refs: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM page_refs WHERE source_page_id = 'p-plan' AND target_page_id = 'p-target'",
+            [], |r| r.get(0)).unwrap();
+        let pin_refs: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pin_refs WHERE source_page_id = 'p-plan'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!((page_refs, pin_refs), (1, 1));
     }
 
     /// The focus line is an indexed column, and one that arrives from

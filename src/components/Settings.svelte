@@ -639,7 +639,7 @@
                     variant="ghost"
                     disabled={deleteConfirm !== "delete" || deleting}
                     onClick={confirmDelete}
-                  >{deleting ? "..." : "confirm"}</Button>
+                  >{deleting ? "deleting…" : "confirm"}</Button>
                 </span>
               {/snippet}
             </Row>
@@ -850,7 +850,7 @@
                   variant="ghost"
                   disabled={deleteConfirm !== "delete" || deleting}
                   onClick={confirmDelete}
-                >{deleting ? "..." : "confirm"}</Button>
+                >{deleting ? "deleting…" : "confirm"}</Button>
               </span>
             {/snippet}
           </Row>
@@ -905,8 +905,7 @@
   .size-num {
     font-family: "DM Mono", monospace;
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     min-width: 1.5rem;
     text-align: right;
   }
@@ -916,7 +915,7 @@
     border: none;
     border-bottom: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
     outline: none;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.8125rem;
     color: var(--ink);
     padding: 0.25rem 0;
@@ -930,16 +929,14 @@
   .version {
     font-family: "DM Mono", monospace;
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
   }
 
   .export-progress,
   .export-summary {
     font-family: "DM Mono", monospace;
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     margin-right: 0.5rem;
   }
 
@@ -950,7 +947,7 @@
   }
 
   .danger-label {
-    color: var(--warm-accent);
+    color: var(--danger-text);
   }
 
   .section-hero {
@@ -964,7 +961,7 @@
     font-style: italic;
     font-size: 1.375rem;
     font-weight: 500;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     line-height: 1.2;
     letter-spacing: -0.005em;
   }
@@ -972,8 +969,7 @@
     margin: 0.375rem 0 0;
     font-family: "Lora", Georgia, serif;
     font-size: 0.8125rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     line-height: 1.5;
   }
 
@@ -995,12 +991,12 @@
     display: inline-flex;
     align-items: center;
   }
+  /* Destructive, readable at rest (visual pass, 2026-10-30). */
   .danger-slot :global(.btn) {
-    color: var(--warm-accent);
-    opacity: 0.75;
+    color: var(--danger-text);
   }
   .danger-slot :global(.btn:hover:not(:disabled)) {
-    opacity: 1;
+    background: var(--danger-soft);
   }
   .danger-slot :global(.btn:disabled) {
     opacity: 0.25;
@@ -1052,13 +1048,12 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: var(--ink);
+    color: var(--ink-soft);
     cursor: pointer;
     border-radius: 0.375rem;
     font-family: "Lora", Georgia, serif;
     font-size: 1.5rem;
     line-height: 1;
-    opacity: 0.75;
     transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1), opacity 120ms cubic-bezier(0.2, 0, 0, 1);
   }
   .back-arrow:hover { opacity: 1; background: color-mix(in srgb, var(--ink) 5%, transparent); }

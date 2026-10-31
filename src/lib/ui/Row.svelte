@@ -39,7 +39,12 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 0.875rem;
-    padding: 0.625rem 0;
+    padding: 0.75rem 0;
+  }
+  /* Rows read as one group, as the phone's do: a soft hairline between
+     them, none above the first (2026-10-31). */
+  .settings-row + .settings-row {
+    border-top: 1px solid var(--hairline-soft);
   }
 
   .label-col {
@@ -52,18 +57,18 @@
 
   .label {
     font-family: "Lora", Georgia, serif;
-    font-size: 0.8125rem;
+    font-size: 0.875rem;
     color: var(--ink);
-    opacity: 0.85;
     line-height: 1.3;
   }
 
+  /* A sentence the writer reads, so the reading face and the soft ink,
+     at full strength: at 0.45 opacity it was under any reading bar. */
   .description {
-    font-family: "Inter", sans-serif;
-    font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.45;
-    line-height: 1.4;
+    font-family: var(--font-prose);
+    font-size: 0.75rem;
+    color: var(--ink-soft);
+    line-height: 1.45;
     max-width: 22rem;
   }
 

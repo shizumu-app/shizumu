@@ -114,8 +114,22 @@
     text-align: left;
   }
 
-  .shell-row[data-kind="action"] { color: var(--warm-accent); }
-  .shell-row.destructive { color: var(--warm-accent); }
+  .shell-row[data-kind="action"] { color: var(--accent-text); }
+  /* Its own colour, not the action's orange: a row that deletes should not
+     look like one that offers (visual pass, 2026-10-30). */
+  .shell-row.destructive { color: var(--danger-text); }
+  /* A row that does something answers the finger and the pointer: a soft
+     tint on press, and on hover where there is one. Only the <button>
+     form; an inert row is markup and must not look pressable. */
+  button.shell-row {
+    transition: background-color var(--motion-fast);
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  button.shell-row:active { background: var(--press-tint); }
+  @media (hover: hover) {
+    button.shell-row:hover { background: var(--hover-tint); }
+  }
 
   .shell-row-label {
     flex: 1 1 auto;

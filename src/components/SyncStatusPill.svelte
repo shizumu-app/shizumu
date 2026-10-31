@@ -281,12 +281,12 @@
     border-radius: 0.5rem;
     padding: 0.4375rem 0.6875rem;
     cursor: pointer;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.8125rem;
     line-height: 1.3;
     color: var(--ink);
-    opacity: 0.92;
     transition: background-color 0.12s, color 0.15s, border-color 0.15s, opacity 0.15s;
+    opacity: 1;
   }
   .pill:hover {
     background: color-mix(in srgb, var(--ink) 5%, transparent);
@@ -305,7 +305,7 @@
   .pill:active,
   .pill.active {
     background: var(--warm-accent-soft);
-    color: var(--warm-accent);
+    color: var(--accent-text);
     border-color: color-mix(in srgb, var(--warm-accent) 25%, transparent);
     opacity: 1;
   }

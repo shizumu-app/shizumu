@@ -44,8 +44,7 @@
   .app-name {
     font-family: "Lora", serif;
     font-size: 20px;
-    color: var(--ink);
-    opacity: 0.2;
+    color: var(--ink-soft);
     letter-spacing: 0.04em;
     margin: 0 0 36px;
     user-select: none;
@@ -58,7 +57,9 @@
     margin: 0;
   }
 
-  .sf-line.soft { opacity: 0.6; }
+  .sf-line.soft {
+    color: var(--ink-soft);
+  }
 
   .sf-path,
   .sf-detail {
@@ -70,5 +71,7 @@
     user-select: text;
   }
 
-  .sf-detail { opacity: 0.4; margin-top: 24px; }
+  .sf-detail { margin-top: 24px;
+    color: var(--ink-soft);
+  }
 </style>

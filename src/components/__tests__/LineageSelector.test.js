@@ -129,6 +129,28 @@ describe("LineageSelector", () => {
     expect(api.getLineages.mock.calls.length).toBeLessThanOrEqual(2);
   });
 
+  it("opens on its own delete question when the palette asks to delete the trail", async () => {
+    // mod+K's "delete trail …" (CommandPalette) reaches the same panel the
+    // row's ⋮ opens: the owner looked for delete in the palette and found
+    // only page search (2026-10-28).
+    const { target } = render(LineageSelector, { ...base, lineageId: "L1", onLineageChange: vi.fn() });
+    await settle();
+    window.dispatchEvent(new CustomEvent("shizumu:manage-trail", { detail: { action: "delete" } }));
+    await settle();
+    expect(target.querySelector(".delete-title")?.textContent).toContain('delete "book"?');
+    target.querySelector(".delete-confirm").click();
+    await settle();
+    expect(api.deleteLineage).toHaveBeenCalledWith("L1", null);
+  });
+
+  it("ignores the palette's request on a read-only page", async () => {
+    const { target } = render(LineageSelector, { ...base, lineageId: "L1", readonly: true, onLineageChange: vi.fn() });
+    await settle();
+    window.dispatchEvent(new CustomEvent("shizumu:manage-trail", { detail: { action: "delete" } }));
+    await settle();
+    expect(target.querySelector(".delete-title")).toBeNull();
+  });
+
   it("selects a trail and reports the choice", async () => {
     const onLineageChange = vi.fn();
     const { target } = render(LineageSelector, { ...base, onLineageChange });

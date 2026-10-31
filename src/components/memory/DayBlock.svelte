@@ -97,7 +97,9 @@
     margin-top: 0.125rem;
   }
   .dot.empty { background: transparent; }
-  .dot.sub { background: var(--warm-accent); opacity: 0.6; }
+  .dot.sub { background: var(--warm-accent);
+    color: var(--ink-soft);
+  }
   .dot.today {
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--warm-accent) 25%, transparent);
   }
@@ -108,8 +110,13 @@
     line-height: 1.1;
     flex-shrink: 0;
   }
-  .day-num { font-size: 0.875rem; opacity: 0.92; display: block; }
-  .month-line { font-size: 0.5625rem; opacity: 0.55; }
+  .day-num { font-size: 0.875rem; display: block;
+    color: var(--ink);
+    opacity: 1;
+  }
+  .month-line { font-size: 0.5625rem;
+    color: var(--ink-soft);
+  }
   .day-body {
     flex: 1;
     min-width: 0;
@@ -120,13 +127,15 @@
     font-style: italic;
     font-size: 0.875rem;
     color: var(--ink);
-    opacity: 0.92;
     line-height: 1.5;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    opacity: 1;
   }
-  .focus-line.empty { opacity: 0.55; }
+  .focus-line.empty {
+    color: var(--ink-soft);
+  }
   .chip-row {
     display: flex;
     gap: 0.4375rem;
@@ -137,8 +146,7 @@
   .count-chip {
     font-family: "DM Mono", monospace;
     font-size: 0.5625rem;
-    color: var(--ink);
-    opacity: 0.75;
+    color: var(--ink-soft);
     padding: 0.0625rem 0.4375rem;
     border-radius: 0.5rem;
     background: color-mix(in srgb, var(--warm-accent) 6%, transparent);
@@ -153,6 +161,6 @@
   .counts-text {
     font-family: "DM Mono", monospace;
     font-size: 0.5625rem;
-    opacity: 0.45;
+    color: var(--ink-soft);
   }
 </style>

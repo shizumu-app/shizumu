@@ -79,3 +79,31 @@ export function buildMentionLabel({ page, lineages }) {
   // Discrete page: trail-path + focus (or date fallback).
   return hasFocus ? `${trailLabel}:${focus}` : `${trailLabel}:${page.date}`;
 }
+
+/**
+ * The same page as two parts for a list that can style them apart (the
+ * mod+K palette): the trail path it sits in, joined with " › ", and the
+ * name the writer looks for. `buildMentionLabel`'s colon form is the
+ * mention's stored label and stays as it is; a palette row reading
+ * "the harbour book:the storm chapter" looked like a typo (2026-10-31).
+ *
+ *   discrete, focus     → { context: "book › research", title: "the storm chapter" }
+ *   discrete, no focus  → { context: "book", title: "2026-10-31" }
+ *   continuous          → { context: "book", title: "research" }  (its own trail last)
+ *   untrailed           → { context: "2026-10-31", title: focus } or { context: "", title: date }
+ *
+ * @param {{ page: any, lineages: any }} args
+ * @returns {{ context: string, title: string }}
+ */
+export function mentionParts({ page, lineages }) {
+  const focus = (page.what_matters_now ?? "").trim();
+  const path = trailPathFor(page.lineage_id, lineages);
+  const shown = path.length > MAX_PATH_PARTS ? [path[0], "…", ...path.slice(-2)] : path;
+  if (!page.lineage_id || path.length === 0) {
+    return focus ? { context: page.date, title: focus } : { context: "", title: page.date };
+  }
+  if (page.lineage_mode === "continuous") {
+    return { context: shown.slice(0, -1).join(" › "), title: shown[shown.length - 1] };
+  }
+  return { context: shown.join(" › "), title: focus || page.date };
+}

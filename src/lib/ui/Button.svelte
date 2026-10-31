@@ -60,7 +60,7 @@
     min-height: 2rem;
     border: none;
     border-radius: var(--radius-md);
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.8125rem;
     line-height: 1.3;
     color: var(--ink);
@@ -78,35 +78,36 @@
 
   .btn.ghost {
     background: transparent;
-    opacity: 0.6;
+    color: var(--ink-soft);
   }
   .btn.ghost:hover {
-    background: color-mix(in srgb, var(--ink) 4%, transparent);
-    opacity: 0.85;
+    background: var(--hover-tint);
+    color: var(--ink);
   }
 
   .btn.subtle {
-    background: color-mix(in srgb, var(--ink) 5%, transparent);
-    opacity: 0.8;
+    background: var(--hover-tint);
+    color: var(--ink);
+    opacity: 1;
   }
   .btn.subtle:hover {
-    background: color-mix(in srgb, var(--ink) 9%, transparent);
+    background: var(--press-tint);
     opacity: 1;
   }
 
   .btn.accent {
     background: var(--warm-accent-soft);
-    color: var(--warm-accent);
-    opacity: 0.95;
+    color: var(--accent-text);
+    opacity: 1;
   }
   .btn.accent:hover {
     background: color-mix(in srgb, var(--warm-accent) 16%, transparent);
-    opacity: 1;
   }
 
+  /* The one focus ring the whole app uses (global.css --focus-ring). */
   .btn:focus-visible {
-    outline: 2px solid var(--warm-accent);
-    outline-offset: 2px;
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   .btn.ghost:active,

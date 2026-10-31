@@ -70,8 +70,7 @@
     border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
     font-family: "Lora", serif;
     font-size: 0.9375rem;
-    color: var(--ink);
-    opacity: 0.75;
+    color: var(--ink-soft);
     outline: none;
     transition: border-color var(--motion-fast),
                 opacity var(--motion-fast);
@@ -81,14 +80,19 @@
     font-style: italic;
   }
 
+  /* Focus is the accent underline, which is this field's own ring: it
+     moved from 6% to 12% ink before, which no one could see (visual pass,
+     2026-10-30). The global ring would box an underline field, so not here. */
   .input:focus {
-    border-bottom-color: color-mix(in srgb, var(--ink) 12%, transparent);
-    opacity: 0.92;
+    border-bottom-color: var(--warm-accent);
+  }
+  .input:focus-visible {
+    box-shadow: none;
   }
 
+  /* Soft ink at full strength, not ink at 25%: the prompt must be read. */
   .input::placeholder {
-    color: var(--ink);
-    opacity: 0.25;
+    color: var(--ink-soft);
     font-style: italic;
   }
 

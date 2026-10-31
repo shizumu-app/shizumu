@@ -226,6 +226,17 @@ describe("which half of a pairing this device performs", () => {
     expect(pairSide(null)).toBe("join");
   });
 
+  it("joins again after a pairing that saved keys and never enrolled", () => {
+    // 0.8.0 saved the account's keys before the relay said ready, so a
+    // pairing the relay refused (the account at its device limit) left
+    // the phone `configured` with no user id. It then took itself for the
+    // device that SHOWS a code, and every retry failed until sync was
+    // reset (reproduced 2026-10-28). A device with no account id holds no
+    // account, whatever keys it kept.
+    expect(pairSide({ configured: true, user_id: null })).toBe("join");
+    expect(pairSide({ configured: true, user_id: "u1" })).toBe("show");
+  });
+
   it("names the act rather than the screen on the row that opens it", () => {
     expect(pairRowLabel("show")).toBe("add a device");
     expect(pairRowLabel("join")).toBe("pair this device");
@@ -296,7 +307,18 @@ describe("pairErrorText", () => {
     expect(pairErrorText("Error: pair_token_unknown")).toContain("unknown or expired");
     expect(pairErrorText("device_limit_reached")).toContain("two devices");
     expect(pairErrorText("no wrapped bundle deposited")).toContain("did not finish");
+    // the joining side's own give-up, with a 404 as the last relay answer
+    expect(pairErrorText("wrapped bundle never deposited: relay returned 404 Not Found")).toContain("press codes match on it");
+    // the other device's half can fail with the token already in a later
+    // state; that still reads as the other device not finishing
+    expect(pairErrorText("wrapped bundle never deposited: pair_token_state_invalid")).toContain("did not confirm");
     expect(pairErrorText("timed out")).toContain("timed out");
+    // the keys arrived and the other device's finalize was refused, most
+    // often the device limit, which only the other device is told about;
+    // the 429 inside it is the relay's, not the reason
+    const refused = "pair_status never ready: relay returned 429 rate_limited: too many requests";
+    expect(pairErrorText(refused)).toContain("could not add this one");
+    expect(pairErrorText("relay returned 429 rate_limited: too many requests")).toContain("wait a minute");
   });
 
   it("never puts the exception itself on screen", () => {

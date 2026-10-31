@@ -56,6 +56,14 @@
   }
 
   .shell-tab.active {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
+  /* Visual pass (2026-10-30): a press shows, and the tab you are on reads
+     a touch firmer than the colour alone says. */
+  .shell-tab {
+    border-radius: var(--radius-md);
+    transition: background-color var(--motion-fast), color var(--motion-fast);
+  }
+  .shell-tab:active { background: var(--press-tint); }
+  .shell-tab.active { font-weight: 500; }
 </style>

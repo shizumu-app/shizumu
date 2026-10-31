@@ -51,7 +51,7 @@
 <script>
   import { onMount, onDestroy } from "svelte";
   import { Editor } from "@tiptap/core";
-  import { READONLY_EXTENSIONS } from "../../lib/render/shared-extensions.js";
+  import { PIN_EDITOR_EXTENSIONS } from "../../lib/render/shared-extensions.js";
 
   /** @type {{
     doc: object,
@@ -67,7 +67,7 @@
     if (!host) return;
     editor = new Editor({
       element: host,
-      extensions: READONLY_EXTENSIONS,
+      extensions: PIN_EDITOR_EXTENSIONS,
       content: doc,
       editable: true,
       onUpdate: ({ editor: ed }) => onChange?.(ed.getJSON()),

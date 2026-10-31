@@ -2,10 +2,10 @@
 Type=Application
 Name=Shizumu
 Name[fr]=Shizumu
-GenericName=Writing Space
-GenericName[fr]=Espace d'ecriture
-Comment=write to think · pin what matters · the rest sinks
-Comment[fr]=écrire pour penser · épingler · le reste se dépose
+GenericName=Writing App
+GenericName[fr]=Application d'écriture
+Comment=write to think · pin what matters · trail what continues
+Comment[fr]=écrire pour penser · épingler ce qui compte · suivre ce qui continue
 Exec=env GDK_BACKEND=x11 shizumu %U
 Icon=app.shizumu.Shizumu
 Terminal=false

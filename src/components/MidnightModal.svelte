@@ -49,8 +49,7 @@
     font-family: "Lora", serif;
     font-size: 0.9375rem;
     line-height: 1.55;
-    color: var(--ink);
-    opacity: 0.75;
+    color: var(--ink-soft);
   }
   /* Full-width, stacked buttons read as a clear phone choice. */
   .midnight-actions {

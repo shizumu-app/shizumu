@@ -1,6 +1,6 @@
 <script>
   import { holdsPin } from "../lib/pin-node.js";
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
   import { untrack, onMount, onDestroy } from "svelte";
   import { navPush, navClose } from "../lib/navstack.js";
   import { pinToNodes } from "../lib/pin-carry-forward.js";
@@ -110,19 +110,36 @@
   // Same-page live pin contents: walk the current editor's doc once, build
   // a map of pinId -> live node JSON. Pin rows whose source_page_id === pageId
   // render from this map; if their pinId is missing, fall back to cache.
+  //
+  // A PIN OVER SEVERAL BLOCKS is held as a doc of all of them, in order —
+  // findPinNode's shape and the stored row's. This used to keep one node
+  // per pinId (the last one walked), so the modal opened on that block and
+  // its save replaced the whole run with it, deleting the others from the
+  // page (found by the J12 journey's review, 2026-10-28).
   let livePinNodes = $derived.by(() => {
     if (!editorDoc) return new Map();
-    const map = new Map();
+    const runs = new Map();
     function walk(node) {
-      // A mention of a pin is not its live content (src/lib/pin-node.js).
-      if (holdsPin(node)) map.set(node.attrs.pinId, node);
+      // A mention of a pin is not its live content (src/lib/pin-node.js),
+      // and a stamped block's insides are part of it, not a second block.
+      if (holdsPin(node)) {
+        const run = runs.get(node.attrs.pinId) || [];
+        run.push(node);
+        runs.set(node.attrs.pinId, run);
+        return;
+      }
       if (Array.isArray(node?.content)) {
         for (const child of node.content) walk(child);
       }
     }
     walk(editorDoc);
+    const map = new Map();
+    for (const [id, run] of runs) map.set(id, run.length === 1 ? run[0] : { type: "doc", content: run });
     return map;
   });
+
+  /** A pin's content as a doc: a single node wrapped, a run already one. */
+  const asPinDoc = (node) => (node?.type === "doc" ? node : { type: "doc", content: [node] });
 
   // Each rendered pin merges live state on top of the DB row.
   // Boards/artifacts need the live node as a serialized doc so modals can
@@ -154,11 +171,12 @@
     // absent and correctly falls through to its cache.
     const live = livePinNodes.get(p.id);
     if (!live) return p;  // not in this doc — cross-page or truly absent; cache
-    const liveTitle = (live.attrs?.blockTitle || "").trim();
+    const head = live.type === "doc" ? live.content?.[0] : live;
+    const liveTitle = (head?.attrs?.blockTitle || "").trim();
     if (isBoard(p)) {
       return {
         ...p,
-        content: JSON.stringify({ type: "doc", content: [live] }),
+        content: JSON.stringify(asPinDoc(live)),
         title: liveTitle.length > 0 ? liveTitle : p.title,
       };
     }
@@ -841,7 +859,7 @@
       pin: art,
       liveNode: livePinNodes.get(art.id) || null,
       nodeFor: () => newNode,
-      rowContent: JSON.stringify({ type: "doc", content: [newNode] }),
+      rowContent: JSON.stringify(asPinDoc(newNode)),
       rowTitle: titleChanged ? newTitle : art.title,
       deps: pinEditDeps(),
     });
@@ -859,7 +877,7 @@
     // than an older copy of it. A "row" landing already wrote both.
     if (titleToRow && landed !== "row") {
       const carried = contentChanged
-        ? JSON.stringify({ type: "doc", content: [newNode] })
+        ? JSON.stringify(asPinDoc(newNode))
         : art.content;
       try { await updatePinContent(art.id, carried, newTitle); } catch {}
     }
@@ -868,7 +886,7 @@
     // Wrap the spliced node back into a doc shape — that's the format the
     // pin row's content cache expects (parseContent on the read side will
     // unwrap if needed).
-    const newDoc = { type: "doc", content: [newNode] };
+    const newDoc = asPinDoc(newNode);
     patchPin(art.id, {
       content: contentChanged ? JSON.stringify(newDoc) : art.content,
       title: titleChanged ? newTitle : art.title,
@@ -956,14 +974,14 @@
     {#snippet footer()}
       {#if carryForwardPins.length > 0}
         <div class="cf-footer" class:open={carryForwardOpen}>
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="cf-summary" onclick={() => (carryForwardOpen = !carryForwardOpen)}>
-            <span class="cf-caret">{carryForwardOpen ? "▾" : "▸"}</span>
+          <!-- A button with its state named (aria-expanded), so a keyboard
+               opens it too; it was a div only a mouse could (2026-10-31). -->
+          <button type="button" class="cf-summary" aria-expanded={carryForwardOpen} onclick={() => (carryForwardOpen = !carryForwardOpen)}>
+            <span class="cf-caret" aria-hidden="true">{carryForwardOpen ? "▾" : "▸"}</span>
             <span class="cf-text">
               tomorrow's first lines · {carryForwardPins.length} {carryForwardPins.length === 1 ? "pin" : "pins"}
             </span>
-          </div>
+          </button>
           {#if carryForwardOpen}
             <ul class="cf-list">
               {#each carryForwardPins as p (p.id)}
@@ -1105,7 +1123,9 @@
 
 <style>
   /* Overlay */
-  .overlay { position: fixed; inset: 0; z-index: 149; }
+  /* The page dims behind the panel, as it does behind a phone sheet: the
+     panel slid over a page that looked as live as ever (2026-10-31). */
+  .overlay { position: fixed; inset: 0; z-index: 149; background: var(--scrim-soft); }
 
   .edit-notice { margin: 8px 12px; color: var(--ink-soft); }
 
@@ -1116,9 +1136,9 @@
   .panel {
     position: fixed; top: 0; right: 0; bottom: 0;
     width: 36rem; max-width: 92vw;
-    background: var(--canvas-bg);
-    border-left: 1px solid var(--card-border);
-    box-shadow: -0.375rem 0 1.5rem var(--card-shadow);
+    background: var(--surface-raised);
+    border-left: 1px solid var(--elev-border);
+    box-shadow: var(--elev-2);
     z-index: 150; display: flex; flex-direction: column;
   }
   /* On tablet/phone the side panel becomes a full-screen sheet — the
@@ -1139,11 +1159,12 @@
     top: 0.5rem; right: 0.625rem;
     z-index: 2;
     background: none; border: none; cursor: pointer;
-    font-size: 1.125rem; color: var(--ink); opacity: 0.35;
-    padding: 0.25rem;
-    transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
+    font-size: 1.125rem; color: var(--ink-soft);
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--radius-sm, 0.25rem);
+    transition: color var(--motion-fast), background-color var(--motion-fast);
   }
-  .panel-close:hover { opacity: 0.75; }
+  .panel-close:hover { color: var(--ink); background: var(--hover-tint); }
 
   /* Phone: swap the top-right × for a top-left ‹ back arrow.
      Matches the universal-back-arrow pattern from Settings. */
@@ -1157,7 +1178,7 @@
     background: none; border: none; cursor: pointer;
     font-family: "Lora", Georgia, serif;
     font-size: 1.5rem; line-height: 1;
-    color: var(--ink); opacity: 0.75;
+    color: var(--ink-soft);
     border-radius: 0.375rem;
     align-items: center; justify-content: center;
     transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1), opacity 120ms cubic-bezier(0.2, 0, 0, 1);
@@ -1201,7 +1222,7 @@
     font-weight: 500;
     line-height: 1.3;
     color: var(--ink);
-    opacity: 0.92;
+    opacity: 1;
   }
   .phone-search-row {
     display: flex;
@@ -1243,7 +1264,7 @@
   }
   .empty-text {
     font-family: "Lora", serif; font-style: italic; font-size: 0.875rem;
-    color: var(--ink); opacity: 0.35;
+    color: var(--ink-soft);
   }
 
   /* Density popover layout — two stacked rows of chips. */
@@ -1268,27 +1289,32 @@
     display: flex;
     align-items: center;
     gap: 0.375rem;
+    width: 100%;
+    padding: 0;
+    background: none;
+    border: none;
+    text-align: left;
+    color: inherit;
+    font: inherit;
     cursor: pointer;
     user-select: none;
   }
   .cf-caret {
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     line-height: 1;
   }
   .cf-text {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
     text-transform: lowercase;
     letter-spacing: 0.05em;
-    color: var(--ink);
-    opacity: 0.35;
-    transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
+    color: var(--ink-soft);
+    transition: color var(--motion-fast);
   }
   .cf-summary:hover .cf-text {
-    opacity: 0.55;
+    color: var(--ink);
   }
   .cf-list {
     list-style: none;
@@ -1306,12 +1332,10 @@
     font-family: "Lora", serif;
     font-style: italic;
     font-size: 0.8125rem;
-    color: var(--ink);
-    opacity: 0.75;
+    color: var(--ink-soft);
   }
   .cf-glyph {
-    color: var(--warm-accent);
-    opacity: 0.55;
+    color: var(--accent-text);
     font-size: 0.625rem;
     flex-shrink: 0;
   }

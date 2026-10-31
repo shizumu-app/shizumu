@@ -237,6 +237,7 @@
        than the room it actually has, keyboard open or not. */
     max-height: calc(var(--app-height, 100dvh) - var(--safe-top) - 2rem);
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding:
       0.5rem
       max(1rem, var(--safe-right))
@@ -277,8 +278,7 @@
     font-style: italic;
     font-size: 0.875rem;
     font-weight: 500;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
 
   .sheet-body {

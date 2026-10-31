@@ -56,17 +56,19 @@ import { MentionCommand } from "../extensions/mention-command.js";
 // Editing-only plugins (placeholder, slash, mention, block-movement) are
 // excluded — they have no effect on rendering and adding them to a
 // read-only mount just wastes init work.
+const STARTER_KIT_OPTIONS = {
+  heading: { levels: [1, 2, 3] },
+  // Disable bundled list extensions — replaced by UnifiedListExtensions.
+  bulletList: false,
+  orderedList: false,
+  listItem: false,
+  // Disable bundled code block — replaced by CodeBlockShizumu which
+  // adds the header NodeView (language input + copy button).
+  codeBlock: false,
+};
+
 export const READONLY_EXTENSIONS = [
-  StarterKit.configure({
-    heading: { levels: [1, 2, 3] },
-    // Disable bundled list extensions — replaced by UnifiedListExtensions.
-    bulletList: false,
-    orderedList: false,
-    listItem: false,
-    // Disable bundled code block — replaced by CodeBlockShizumu which
-    // adds the header NodeView (language input + copy button).
-    codeBlock: false,
-  }),
+  StarterKit.configure(STARTER_KIT_OPTIONS),
   Table.configure({ resizable: false, View: ShellTableView }),
   Attachment,
   TableRow,
@@ -93,6 +95,22 @@ export const READONLY_EXTENSIONS = [
   // openBlockActionSheet in TipTapEditor.svelte), only copy/insert/delete
   // are.
   TouchBlockHandle,
+];
+
+// The pin editors' list (desktop PinArtifactModal, phone PinEditor): the
+// canonical schema with StarterKit's TrailingNode turned off. On a page the
+// trailing node is useful, an empty line to write on below a closing list.
+// In a pin it is wrong twice over, found on the A16 and the laptop on
+// 2026-10-30: a pin is exactly the blocks the writer kept, and the empty
+// paragraph it adds after a closing list was saved into the pin and the
+// page (J12.6); and these editors are built with their content and no
+// transaction, so the paragraph lands on the FIRST transaction, which on
+// the laptop was the native focus event in the middle of
+// `commands.focus("end")`, leaving that command's transaction stale
+// ("Applying a mismatched transaction", J12.9).
+export const PIN_EDITOR_EXTENSIONS = [
+  StarterKit.configure({ ...STARTER_KIT_OPTIONS, trailingNode: false }),
+  ...READONLY_EXTENSIONS.slice(1),
 ];
 
 // Factory for the writable editor's extension list. Takes the editor-only

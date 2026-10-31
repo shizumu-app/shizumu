@@ -1,5 +1,5 @@
 <script>
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
   import { isPhoneViewport, isCoarsePointer } from "../lib/responsive.js";
   import { focusField } from "../lib/focus-field.js";
 
@@ -84,10 +84,10 @@
   .share-popup {
     position: fixed;
     z-index: 100;
-    background: var(--canvas-bg);
-    border: 1px solid var(--card-border);
+    background: var(--surface-raised);
+    border: 1px solid var(--elev-border);
     border-radius: 0.5rem;
-    box-shadow: 0 0.25rem 1rem var(--card-shadow);
+    box-shadow: var(--elev-1);
     padding: 0.625rem 0.875rem;
     display: flex;
     flex-direction: column;
@@ -99,7 +99,7 @@
     font-size: 0.625rem;
     text-transform: lowercase;
     letter-spacing: 0.05em;
-    opacity: 0.35;
+    color: var(--ink-soft);
   }
 
   .popup-input {
@@ -128,11 +128,14 @@
     border: none;
     border-radius: 0.375rem;
     cursor: pointer;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.75rem;
     padding: 0.3125rem 0.875rem;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
 
-  .popup-btn:hover { opacity: 0.92; }
+  .popup-btn:hover {
+    color: var(--ink);
+    opacity: 1;
+  }
 </style>

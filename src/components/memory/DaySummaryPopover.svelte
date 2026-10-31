@@ -112,15 +112,15 @@
     font-family: "DM Mono", monospace;
     font-size: 0.5625rem;
     letter-spacing: 0.05em;
-    opacity: 0.55;
     text-transform: lowercase;
     padding-bottom: 0.4375rem;
     margin-bottom: 0.5rem;
     border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+    color: var(--ink-soft);
   }
   .focus {
     font-style: italic;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     font-size: 0.875rem;
     margin-bottom: 0.5rem;
     line-height: 1.5;
@@ -137,20 +137,20 @@
     font-style: italic;
     font-size: 0.75rem;
     color: var(--ink);
-    opacity: 0.85;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    opacity: 1;
   }
   .row:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
-  .row.accent { color: var(--warm-accent); }
+  .row.accent { color: var(--accent-text); }
   .row.dim { opacity: 0.3; cursor: not-allowed; }
   .kbd {
     font-family: "DM Mono", monospace;
     font-size: 0.5rem;
-    opacity: 0.35;
     font-style: normal;
+    color: var(--ink-soft);
   }
 
   .trail-row {
@@ -169,8 +169,7 @@
     font-family: "Lora", Georgia, serif;
     font-style: italic;
     font-size: 0.8125rem;
-    color: var(--warm-accent);
-    opacity: 0.92;
+    color: var(--accent-text);
     cursor: pointer;
     flex: 1;
     text-align: left;
@@ -178,6 +177,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    opacity: 1;
   }
   .trail-name:hover { opacity: 1; text-decoration: underline; }
   .trail-actions { display: flex; gap: 0.3125rem; flex-shrink: 0; }
@@ -189,8 +189,7 @@
     border-radius: 0.375rem;
     background: color-mix(in srgb, var(--warm-accent) 6%, transparent);
     border: 1px solid color-mix(in srgb, var(--warm-accent) 18%, transparent);
-    color: var(--ink);
-    opacity: 0.75;
+    color: var(--ink-soft);
     cursor: pointer;
   }
   .trail-chip:hover { opacity: 1; }

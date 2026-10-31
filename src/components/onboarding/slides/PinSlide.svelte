@@ -198,7 +198,7 @@
     overflow-wrap: break-word;
   }
   .pin-row.accent .pin-title {
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 0.92;
   }
 

@@ -1,11 +1,12 @@
 # shizumu
 
-a private thinking space.
+a private writing app where you write to think.
 
 > write to think.
 > pin what matters.
 > trail what continues.
-> the rest sinks.
+
+[website](https://shizumu.app) · [try it in your browser](https://shizumu.app/try/) · [download](https://shizumu.app/#download)
 
 ## quick start
 
@@ -19,7 +20,7 @@ npm run dev             # web version at http://localhost:1420
 ```bash
 npm install
 npm run build           # frontend → dist/
-npx tauri build         # desktop app (Linux: deb, rpm; requires system libs)
+npx tauri build         # desktop app (Linux: flatpak is the shipped package; requires system libs)
 ```
 
 ### linux prerequisites (fedora)

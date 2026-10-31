@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pinIntent, TITLE_MAX, UNTITLED } from "../pin-intent.js";
+import { pinIntent, pinRefusal, holdsAnyPin, PART_PINNED, TITLE_MAX, UNTITLED } from "../pin-intent.js";
 
 // A block descriptor with the shape ShellApp reads off the editor. Every
 // test below overrides only the fields it is about, so a field that grows
@@ -245,5 +245,58 @@ describe("pinIntent — what it is called", () => {
   it("leaves a title shorter than the cap exactly as written", () => {
     const title = pinIntent({ scope: "block", blocks: [paragraph("short enough")] }).title;
     expect(title).toBe("short enough");
+  });
+});
+
+describe("pinRefusal — saying why a selection cannot be pinned", () => {
+  it("says so in words when part of a selection is already pinned", () => {
+    // The pin-selection button used to go dead with nothing said, and a
+    // writer who selected three blocks, one of them pinned, read it as
+    // "pin is not working" (2026-10-28).
+    expect(
+      pinRefusal({
+        scope: "selection",
+        blocks: [paragraph("one", { pos: 0 }), paragraph("two", { pos: 5, pinned: true })],
+      }),
+    ).toBe(PART_PINNED);
+  });
+
+  it("stays quiet on a single pinned block: the dimmed control already says it is kept", () => {
+    expect(pinRefusal({ scope: "block", blocks: [paragraph("kept", { pinned: true })] })).toBeNull();
+  });
+
+  it("has nothing to say about a range that can be pinned, or holds nothing", () => {
+    expect(pinRefusal({ scope: "selection", blocks: [paragraph("one"), paragraph("two", { pos: 5 })] })).toBeNull();
+    expect(pinRefusal({ scope: "selection", blocks: [block({ hasContent: false, pinned: true })] })).toBeNull();
+    expect(pinRefusal({ scope: "selection", blocks: [] })).toBeNull();
+  });
+});
+
+describe("holdsAnyPin — a pin anywhere inside a block", () => {
+  it("sees a pinned item nested inside a list, not only the list's own stamp", () => {
+    // A pinned paragraph indented into a list keeps its stamp one level
+    // down. Stamping the list over it would hide that pin from the save's
+    // walk, which stops at the outer stamp, and orphan it.
+    const listNode = {
+      type: "list",
+      content: [{ type: "listItem", content: [{ type: "paragraph", attrs: { pinId: "old" } }] }],
+    };
+    expect(holdsAnyPin(listNode)).toBe(true);
+  });
+
+  it("does not take a mention of a pin for a pin", () => {
+    const line = { type: "paragraph", content: [{ type: "pinRef", attrs: { pinId: "p" } }] };
+    expect(holdsAnyPin(line)).toBe(false);
+  });
+
+  it("reads ProseMirror nodes as well as JSON", () => {
+    const pm = {
+      type: { name: "list" },
+      attrs: {},
+      descendants(fn) {
+        fn({ type: { name: "paragraph" }, attrs: { pinId: "old" } });
+      },
+    };
+    expect(holdsAnyPin(pm)).toBe(true);
   });
 });

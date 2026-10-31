@@ -278,8 +278,12 @@
     transition: background 180ms cubic-bezier(0.2, 0, 0, 1),
                 opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .pin-row-wrap.closed { opacity: 0.35; }
-  .pin-row-wrap.orphaned { opacity: 0.55; }
+  .pin-row-wrap.closed {
+    color: var(--ink-soft);
+  }
+  .pin-row-wrap.orphaned {
+    color: var(--ink-soft);
+  }
   .pin-row-wrap.dragging { opacity: 0.35; }
   .pin-row-wrap.drag-over { background: var(--warm-accent-soft); }
 
@@ -337,8 +341,7 @@
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
     letter-spacing: 0.02em;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     padding: 0.125rem 0.375rem;
     border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
     border-radius: 0.25rem;
@@ -349,24 +352,21 @@
   }
   .kind-chip[data-family="lists"],
   .kind-chip[data-family="structure"] {
-    color: var(--warm-accent);
-    opacity: 0.65;
+    color: var(--accent-text);
     border-color: color-mix(in srgb, var(--warm-accent) 22%, transparent);
   }
   .kind-chip[data-family="charts"] {
-    color: var(--warm-accent);
-    opacity: 0.75;
+    color: var(--accent-text);
     border-color: color-mix(in srgb, var(--warm-accent) 30%, transparent);
   }
   .kind-chip[data-family="code"] {
-    color: var(--ink);
-    opacity: 0.7;
+    color: var(--ink-soft);
     border-color: color-mix(in srgb, var(--ink) 18%, transparent);
   }
   .kind-chip[data-family="files"] {
-    color: var(--warm-accent);
-    opacity: 0.85;
+    color: var(--accent-text);
     border-color: color-mix(in srgb, var(--warm-accent) 25%, transparent);
+    opacity: 1;
   }
   /* family="text" and family="none" use the default styles above. */
 
@@ -375,7 +375,6 @@
     font-style: italic;
     font-size: 0.9375rem;
     color: var(--ink);
-    opacity: 0.92;
     cursor: text;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -383,36 +382,34 @@
     min-width: 0;
   }
   .row-title-accent {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
   .row-title-empty {
-    color: var(--warm-accent);
-    opacity: 0.75;
+    color: var(--accent-text);
     font-style: italic;
   }
+  /* Renamed in place, like every title field: no box, the title stays
+     where it was, and focus is the accent caret and short accent rule
+     (global.css). A tinted, bordered box with the focus ring around it
+     was two outlines on one line (owner, 2026-10-31). */
   .row-title-input {
     width: 100%;
-    background: color-mix(in srgb, var(--ink) 4%, transparent);
-    border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+    background: transparent;
+    border: none;
     outline: none;
     font-family: "Lora", serif;
     font-style: italic;
     font-size: 0.9375rem;
     color: var(--ink);
-    padding: 0.125rem 0.375rem;
-    border-radius: 0.25rem;
-    transition: border-color 180ms cubic-bezier(0.2, 0, 0, 1);
-  }
-  .row-title-input:focus {
-    border-color: color-mix(in srgb, var(--warm-accent) 35%, transparent);
+    padding: 0 0 0.25rem;
+    border-radius: 0;
   }
 
   .row-snippet {
     font-family: "Lora", serif;
     font-size: 0.8125rem;
     line-height: 1.4;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -424,8 +421,7 @@
     font-family: "Lora", serif;
     font-style: italic;
     font-size: 0.625rem;
-    color: var(--warm-accent);
-    opacity: 0.92;
+    color: var(--accent-text);
     padding: 0.0625rem 0.4375rem;
     border-radius: 0.625rem;
     background: var(--warm-accent-soft);
@@ -434,5 +430,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    opacity: 1;
   }
 </style>

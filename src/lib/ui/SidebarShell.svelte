@@ -126,11 +126,14 @@
 </div>
 
 <style>
+  /* It takes the surface it sits on: inside a modal, a canvas-coloured
+     panel was a box in a box (settings, 2026-10-31). Full-screen memory
+     sits on the app's own canvas, which paints the same colour. */
   .sidebar-shell {
     display: flex;
     width: 100%;
     height: 100%;
-    background: var(--canvas-bg);
+    background: transparent;
     color: var(--ink);
     position: relative;
   }
@@ -140,6 +143,7 @@
     border-right: 1px solid var(--horizon);
     padding: 1rem 0.75rem;
     overflow-y: auto;
+    overscroll-behavior: contain;
     background: transparent;
   }
 
@@ -165,18 +169,18 @@
     padding: 0.5rem;
     margin-left: -0.5rem;
     font-size: 1rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     cursor: pointer;
     min-width: 2.75rem;
     min-height: 2.75rem;
   }
 
-  .shell-hamburger:hover { opacity: 0.92; }
+  .shell-hamburger:hover { color: var(--ink); }
 
   .shell-body {
     flex: 1;
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 1.25rem 1.75rem;
   }
 
@@ -206,7 +210,7 @@
   .shell-scrim {
     position: fixed;
     inset: 0;
-    background: color-mix(in srgb, var(--ink) 20%, transparent);
+    background: var(--scrim-soft);
     z-index: 49;
     animation: scrim-in 280ms cubic-bezier(0.2, 0, 0, 1);
   }

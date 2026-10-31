@@ -9,6 +9,13 @@ import { pinTitleAuthority, pinNodeType } from "../pin-title-authority.js";
 const doc = (node) => JSON.stringify({ type: "doc", content: [node] });
 
 describe("pinNodeType", () => {
+  it("reads the first block of a live pin held as a doc of several", () => {
+    // A pin over several blocks is held live as a doc (SharedObjectsPanel);
+    // read as "doc" it routed a board's rename to the row, which the next
+    // save rewrites from the node.
+    expect(pinNodeType({}, { type: "doc", content: [{ type: "list" }, { type: "paragraph" }] })).toBe("list");
+  });
+
   it("reads the node type out of a doc-wrapped cache", () => {
     expect(pinNodeType({ content: doc({ type: "list" }) })).toBe("list");
   });

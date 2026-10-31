@@ -172,8 +172,12 @@
      most reused primitive and a pin's status is this screen's fact about
      its own rows; a `muted` prop there would put a pins concept into every
      settings list, and would owe a gallery swatch and a VR baseline this
-     task cannot record. The two opacities are the desktop's own
-     (PinRow.svelte:281-282). */
-  .pins-row[data-pin-status="closed"] { opacity: 0.35; }
-  .pins-row[data-pin-status="orphaned"] { opacity: 0.55; }
+     task cannot record. Quiet by colour, as the desktop's PinRow is: the
+     label takes --ink-soft at full strength. The 0.35 and 0.55 opacities
+     put a closed pin's title at 2.4 to 3.4:1 in every tone
+     (scripts/clarity/visual-phone.mjs, 2026-10-31). */
+  .pins-row[data-pin-status="closed"] :global(.shell-row-label),
+  .pins-row[data-pin-status="orphaned"] :global(.shell-row-label) {
+    color: var(--ink-soft);
+  }
 </style>

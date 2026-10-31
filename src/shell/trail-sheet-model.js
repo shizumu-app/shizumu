@@ -21,8 +21,11 @@
 // fifth device pass). It lists them and scopes memory to one, and since
 // task 9e (2026-10-16) the row memory is already showing pushes that
 // trail's screen: rename, move under, delete (trail-manage.js,
-// TrailScreen.svelte). So management has landed, in memory, and this
-// sheet still only chooses. Fold stays laptop-only.
+// TrailScreen.svelte). So management has landed, in memory. Since
+// 2026-10-28 this sheet also offers a way TO that screen for the page's
+// own trail (the "manage" row), because the owner looked for delete here;
+// the managing itself still happens on the trail's screen, not in this
+// sheet. Fold stays laptop-only.
 //
 // ── a continuous trail is listed and is not a choice ──────────────────
 //
@@ -98,7 +101,7 @@ const LIVING_DOC = "living doc";
  * @returns {Array<{
  *   id: string,
  *   kind: "create" | "create-continuous" | "nest" | "nest-target"
- *       | "unlink" | "trail" | "open-doc",
+ *       | "unlink" | "manage" | "trail" | "open-doc",
  *   label: string,
  *   value: string,
  *   name?: string,
@@ -234,6 +237,25 @@ export function trailSheetRows({
       lineageId: null,
       selectable: true,
     });
+    // ── and managing the trail the page is on ──────────────────────────
+    //
+    // The header's line moved on 2026-10-28: the owner looked for "delete
+    // trail" HERE and it lived only in memory, behind a second tap on a
+    // scoped row. Managing still happens on the trail's own screen
+    // (TrailScreen, trail-manage.js); this row is the way to it from where
+    // the writer is, for the one trail they are looking at. Right under
+    // "no trail", so a long list of trails cannot push it out of reach.
+    const own = rows.find((l) => l.id === currentLineageId);
+    if (own) {
+      out.push({
+        id: "manage",
+        kind: "manage",
+        label: `manage “${cut(clean(own.name))}”`,
+        value: "rename, move, delete",
+        lineageId: own.id,
+        selectable: true,
+      });
+    }
   }
 
   for (const lineage of orderedTrails(rows)) {

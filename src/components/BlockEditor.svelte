@@ -371,7 +371,7 @@
     background: transparent;
     border: none;
     outline: none;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-weight: 400;
     font-size: 12px;
     color: var(--ink);
@@ -382,7 +382,7 @@
   .block-shared {
     opacity: 0.3;
     font-size: 10px;
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
   /* List items */

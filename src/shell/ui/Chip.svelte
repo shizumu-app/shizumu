@@ -42,7 +42,7 @@
   }
 
   .shell-chip[data-tone="accent"] {
-    color: var(--warm-accent);
+    color: var(--accent-text);
     background: var(--warm-accent-soft);
     border-color: transparent;
   }

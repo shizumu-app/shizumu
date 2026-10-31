@@ -31,7 +31,7 @@ justifies it, the model will change.
 
 ## Before proposing a feature
 
-shizumu is a private thinking space built on four verbs:
+shizumu is a private writing app built on four verbs:
 
 > write to think. pin what matters. trail what continues. the rest sinks.
 

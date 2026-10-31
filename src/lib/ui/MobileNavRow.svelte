@@ -76,24 +76,22 @@
     font-size: 1rem;
     line-height: 1.3;
     color: var(--ink);
-    opacity: 0.92;
+    opacity: 1;
   }
   .mobile-nav-row.accent .title {
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 1;
   }
   .blurb {
     font-family: "Lora", Georgia, serif;
     font-size: 0.8125rem;
     line-height: 1.45;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
   .chev {
     font-family: "DM Mono", ui-monospace, monospace;
     font-size: 1rem;
-    color: var(--ink);
-    opacity: 0.4;
+    color: var(--ink-soft);
     flex-shrink: 0;
   }
 </style>

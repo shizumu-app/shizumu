@@ -71,12 +71,11 @@
     gap: 0.25rem;
     padding: 0.125rem 0.5rem;
     border-radius: var(--radius-sm);
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
     line-height: 1.4;
     background: color-mix(in srgb, var(--ink) 6%, transparent);
-    color: var(--ink);
-    opacity: 0.75;
+    color: var(--ink-soft);
     user-select: none;
   }
 
@@ -87,13 +86,14 @@
   .chip.clickable:hover,
   .chip.active {
     background: color-mix(in srgb, var(--ink) 12%, transparent);
-    opacity: 0.92;
+    color: var(--ink);
+    opacity: 1;
   }
 
   .chip.accent {
     background: var(--warm-accent-soft);
-    color: var(--warm-accent);
-    opacity: 0.92;
+    color: var(--accent-text);
+    opacity: 1;
   }
 
   .chip.accent.clickable:hover,
@@ -120,7 +120,6 @@
     font-size: 0.8125rem;
     line-height: 1;
     color: inherit;
-    opacity: 0.55;
     cursor: pointer;
     margin-left: 0.125rem;
   }

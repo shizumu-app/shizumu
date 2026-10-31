@@ -32,14 +32,18 @@
 
   /** @type {{
     chips?: string[],
+    labels?: Record<string, string> | null,
     onPick?: (title: string) => void,
   }} */
-  let { chips = [], onPick } = $props();
+  // `labels`: what a chip SAYS when its id is not its words. A slash chip's
+  // id is its title; a mention chip's id is `page:<id>` or `pin:<id>`, and
+  // what it says is the page's or pin's label (mention-chips.js).
+  let { chips = [], labels = null, onPick } = $props();
 </script>
 
 <div class="shell-suggestion-strip" role="toolbar">
   {#each chips as title (title)}
-    <ToolbarButton id={title} label={title} onPress={() => onPick?.(title)} />
+    <ToolbarButton id={title} label={labels?.[title] ?? title} onPress={() => onPick?.(title)} />
   {/each}
 </div>
 

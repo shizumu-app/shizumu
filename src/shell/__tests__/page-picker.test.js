@@ -301,6 +301,36 @@ describe("pageSheetRows — the list, and the one thing that can remove from it"
     expect(last.pageId).toBe("b");
   });
 
+  it("asks before it deletes: armed, the row says a second tap takes the page", () => {
+    // Vercel's interface guidelines, 2026-10-31: a destructive act needs a
+    // confirmation or an undo, never one tap. The desktop rail already asks
+    // twice (FocusRail confirmDeleteId); the phone deleted on the first tap.
+    // Confirm, not undo: an undo would leave the page alive in the database
+    // for seconds while sync runs, and a page that comes back is a merge.
+    const rows = pageSheetRows({
+      summaries: [page({ id: "a" }), page({ id: "b", page_number: 2 })],
+      currentPageId: "b",
+      armedDeleteId: "b",
+    });
+    const last = rows[rows.length - 1];
+    expect(last.kind).toBe("delete");
+    expect(last.armed).toBe(true);
+    expect(last.label).toBe("tap again to delete page 2");
+  });
+
+  it("is not armed for a page other than the one showing", () => {
+    // A confirm armed on one page must not carry to the next: the sheet
+    // reopened on another page starts unarmed.
+    const rows = pageSheetRows({
+      summaries: [page({ id: "a" }), page({ id: "b", page_number: 2 })],
+      currentPageId: "b",
+      armedDeleteId: "a",
+    });
+    const last = rows[rows.length - 1];
+    expect(last.armed).toBe(false);
+    expect(last.label).toBe("delete page 2");
+  });
+
   it("puts it last, where a thumb does not land by accident", () => {
     // pin-artifact-view.js's rule for `unpin`, which this follows: the row
     // that removes something is not the row a thumb reaches first.

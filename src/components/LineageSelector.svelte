@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy, tick } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
   import {
     getLineages,
     createLineage,
@@ -90,6 +90,33 @@
         currentLineage = lineages.find(l => l.id === lineageId) || null;
       }
     } catch { lineages = []; }
+  });
+
+  // MANAGING THE CURRENT TRAIL FROM THE COMMAND PALETTE. Rename and delete
+  // lived only behind a faint ⋮ revealed on hover, per row inside this
+  // picker, and the owner looked for delete in mod+K and found nothing
+  // (2026-10-28). The palette sends `shizumu:manage-trail` with the action;
+  // this opens the picker on the same panel its own ⋮ menu opens, so there
+  // is one rename and one delete, not a second copy in the palette. Only
+  // one picker is mounted at a time (Page.svelte's trailChip snippet is
+  // rendered in one branch of an if), so one listener answers.
+  onMount(() => {
+    const onManage = (e) => {
+      const action = e?.detail?.action;
+      if (readonly || !lineageId) return;
+      const lineage = lineages.find((l) => l.id === lineageId);
+      if (!lineage) return;
+      isOpen = true;
+      if (action === "delete") startDelete(lineage);
+      // The rename field is drawn inside the trail's row, and the list
+      // shows fifteen rows: filter to the name so the row is one of them.
+      else if (action === "rename") {
+        filterText = lineage.name;
+        startRename(lineage);
+      }
+    };
+    window.addEventListener("shizumu:manage-trail", onManage);
+    return () => window.removeEventListener("shizumu:manage-trail", onManage);
   });
 
   // THE OTHER DEVICE RENAMES OR MOVES A TRAIL. This list is the chip's own,
@@ -420,7 +447,7 @@
     {/if}
   {:else}
     <TriggerChip
-      active={!!currentLineage}
+      active={!!currentLineage && isPhone}
       onClick={() => isOpen = !isOpen}
       ariaLabel={currentLineage ? `change trail (${getBreadcrumb(currentLineage)})` : "pick trail"}
     >
@@ -450,7 +477,7 @@
         bind:this={searchInputEl}
         type="text"
         class="lineage-search selectable"
-        placeholder="search or create..."
+        placeholder="search or create…"
         bind:value={filterText}
         onkeydown={handleKeydown}
         spellcheck="false"
@@ -547,12 +574,15 @@
               </p>
               {#if lineages.length > 0}
                 {#if selectedParent}
-                  <button class="nest-under" onclick={() => { showNestPicker = !showNestPicker; }}>
-                    └ under: <span class="nest-val">{selectedParent.name}</span>
-                    <!-- svelte-ignore a11y_click_events_have_key_events -->
-                    <!-- svelte-ignore a11y_no_static_element_interactions -->
-                    <span class="nest-rm" onclick={(e) => { e.stopPropagation(); selectedParent = null; }}>×</span>
-                  </button>
+                  <!-- Two buttons side by side, not one inside the other: a
+                       button cannot hold a button, and the × used to be a
+                       span only a mouse could press (2026-10-31). -->
+                  <div class="nest-under-row">
+                    <button class="nest-under" onclick={() => { showNestPicker = !showNestPicker; }}>
+                      └ under: <span class="nest-val">{selectedParent.name}</span>
+                    </button>
+                    <button class="nest-rm" aria-label="start it at the top instead" onclick={() => { selectedParent = null; }}>×</button>
+                  </div>
                 {:else if !showNestPicker}
                   <button class="nest-under" onclick={() => showNestPicker = true}>
                     └ nest under...
@@ -691,15 +721,15 @@
      keeps its bespoke layout — it has its own search, tree, rename input,
      and per-row action menu that don't map cleanly to ui/Popover. */
   .mode-icon {
-    opacity: 0.25;
     display: inline-flex;
     margin-left: 0.125rem;
+    color: var(--ink-soft);
   }
 
   .mode-icon-small {
-    opacity: 0.25;
     display: inline-flex;
     margin-left: 0.1875rem;
+    color: var(--ink-soft);
   }
 
   .mode-toggle {
@@ -713,20 +743,19 @@
     border: none;
     cursor: pointer;
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.25;
+    color: var(--ink-soft);
     padding: 0.125rem 0.5rem;
     border-radius: 0.1875rem;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
 
   .mode-opt.active {
-    opacity: 0.55;
     background: color-mix(in srgb, var(--ink) 6%, transparent);
+    color: var(--ink-soft);
   }
 
   .mode-opt:hover {
-    opacity: 0.55;
+    color: var(--ink);
   }
 
   .lineage-overlay {
@@ -745,12 +774,11 @@
 
   .caret {
     font-size: 0.6875rem;
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
 
   .lineage-badge {
-    opacity: 0.35;
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
   .lineage-dropdown {
@@ -762,9 +790,9 @@
        the dropdown never demands more space than the screen has. */
     min-width: min(20rem, calc(100vw - 2rem));
     max-width: calc(100vw - 2rem);
-    background: var(--canvas-bg);
-    border: 1px solid var(--card-border);
-    box-shadow: 0 0.25rem 1rem var(--card-shadow);
+    background: var(--surface-raised);
+    border: 1px solid var(--elev-border);
+    box-shadow: var(--elev-1);
     border-radius: 0.5rem;
     padding: 0.375rem 0;
     z-index: 50;
@@ -817,18 +845,23 @@
     padding: 0.625rem 0.875rem;
     transition: border-color 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .lineage-search:focus {
-    border-bottom-color: color-mix(in srgb, var(--ink) 12%, transparent);
+  /* Focus is the underline turning accent, as the palette's field does.
+     The shared ring (global.css :focus-visible) drew a box wider than the
+     menu around the field, so it is off here and the underline carries it. */
+  .lineage-search:focus,
+  .lineage-search:focus-visible {
+    border-bottom-color: var(--warm-accent);
+    box-shadow: none;
   }
 
   .lineage-search::placeholder {
-    color: var(--ink);
-    opacity: 0.25;
+    color: var(--ink-soft);
   }
 
   .lineage-list {
     max-height: 15rem;
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 0.25rem 0;
     scrollbar-width: thin;
     scrollbar-color: color-mix(in srgb, var(--ink) 10%, transparent) transparent;
@@ -862,7 +895,6 @@
     /* Clearer than the old 0.55 wash so trail names are easy to read, and
        tighter vertical padding so the list is denser (more trails visible
        at once). */
-    opacity: 0.78;
     padding: 0.3125rem 0.875rem;
     transition: background 180ms cubic-bezier(0.2, 0, 0, 1),
                 opacity 180ms cubic-bezier(0.2, 0, 0, 1);
@@ -873,28 +905,29 @@
        chips, the memory mode toggle, and the sync pill — instead of a grey
        ink wash, so the dropdown reads as the same family. */
     background: var(--warm-accent-soft);
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 1;
   }
   /* The current trail reads orange persistently (its "active" state), like a
      selected chip. */
   .lineage-option.is-current {
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 1;
   }
 
   .lineage-option.is-parent {
-    opacity: 0.92;
+    color: var(--ink);
+    opacity: 1;
   }
 
   .lineage-option.is-child {
     font-size: 0.8125rem;
-    opacity: 0.68;
+    color: var(--ink-soft);
   }
 
   .lineage-option.is-child::before {
     content: "·";
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 0.35;
     font-size: 1rem;
     line-height: 1;
@@ -913,10 +946,9 @@
   }
 
   .child-count {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.625rem;
-    color: var(--warm-accent);
-    opacity: 0.55;
+    color: var(--accent-text);
     flex-shrink: 0;
   }
 
@@ -928,13 +960,13 @@
     justify-content: center;
     font-size: 0.625rem;
     flex-shrink: 0;
-    opacity: 0.35;
     cursor: pointer;
     line-height: 1;
     border-radius: 0.375rem;
     margin: -0.125rem 0;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
                 background 180ms cubic-bezier(0.2, 0, 0, 1);
+    color: var(--ink-soft);
   }
   .tree-chevron-spacer {
     width: 1.5rem;
@@ -945,8 +977,8 @@
   }
 
   .tree-chevron:hover {
-    opacity: 0.55;
     background: color-mix(in srgb, var(--ink) 6%, transparent);
+    color: var(--ink);
   }
 
   /* "no trail" row at the top of the picker when a trail is currently selected. */
@@ -956,13 +988,13 @@
   }
   .no-trail .lineage-option-name {
     font-style: italic;
-    opacity: 0.75;
+    color: var(--ink-soft);
   }
   .no-trail-hint {
     flex-shrink: 0;
     font-size: 0.625rem;
-    opacity: 0.35;
     letter-spacing: 0.02em;
+    color: var(--ink-soft);
   }
 
   /* Delete panel */
@@ -971,18 +1003,16 @@
     border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
   }
   .delete-title {
-    opacity: 0.55;
     margin-bottom: 0.625rem;
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
   .delete-radio {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.75rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     padding: 0.25rem 0;
     cursor: pointer;
   }
@@ -991,13 +1021,14 @@
     margin: 0;
   }
   .delete-hint {
-    opacity: 0.35;
     font-size: 0.625rem;
+    color: var(--ink-soft);
   }
   .move-target-list {
     margin: 0.375rem 0 0.375rem 1.375rem;
     max-height: 6.25rem;
     overflow-y: auto;
+    overscroll-behavior: contain;
     border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
     border-radius: 0.375rem;
     scrollbar-width: thin;
@@ -1012,19 +1043,18 @@
     text-align: left;
     font-family: "Lora", serif;
     font-size: 0.75rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     padding: 0.3125rem 0.625rem;
     transition: background 180ms cubic-bezier(0.2, 0, 0, 1),
                 opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
   .move-target-option:hover {
     background: color-mix(in srgb, var(--ink) 6%, transparent);
-    opacity: 0.75;
+    color: var(--ink);
   }
   .move-target-option.selected {
-    color: var(--warm-accent);
-    opacity: 0.92;
+    color: var(--accent-text);
+    opacity: 1;
   }
   .delete-actions {
     display: flex;
@@ -1036,22 +1066,25 @@
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     padding: 0.25rem 0;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .delete-cancel:hover { opacity: 0.75; }
+  .delete-cancel:hover {
+    color: var(--ink);
+  }
   .delete-confirm {
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--warm-accent);
-    opacity: 0.55;
-    padding: 0.25rem 0;
-    transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
+    /* Destructive, and readable at rest: it was the action orange at 55%
+       (visual pass, 2026-10-30). */
+    color: var(--danger-text);
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--radius-sm);
+    transition: background-color var(--motion-fast);
   }
-  .delete-confirm:hover:not(:disabled) { opacity: 0.92; }
+  .delete-confirm:hover:not(:disabled) { background: var(--danger-soft); }
   .delete-confirm:disabled { opacity: 0.25; cursor: default; }
 
   /* Row + actions menu */
@@ -1086,8 +1119,7 @@
        old 0.875rem horizontal ellipsis, which read as stray punctuation. */
     font-size: 1.125rem;
     line-height: 1;
-    color: var(--ink);
-    opacity: 0.3;
+    color: var(--ink-soft);
     cursor: pointer;
     padding: 0 0.375rem;
     border-radius: var(--radius-sm);
@@ -1096,7 +1128,11 @@
   .trail-actions:active {
     background: color-mix(in srgb, var(--warm-accent) 12%, transparent);
   }
-  .lineage-row-head:hover .trail-actions { opacity: 0.55; }
+  .lineage-row-head:hover .trail-actions { opacity: 1; color: var(--ink-soft); }
+  /* The trail the page is on shows its ⋮ without a hover: it is the one a
+     writer comes here to rename or delete, and a control that appears only
+     under the pointer is one they have to already know is there. */
+  .lineage-row-head:has(.is-current) .trail-actions { opacity: 1; color: var(--ink-soft); }
   .trail-actions:hover {
     opacity: 0.92 !important;
     background: color-mix(in srgb, var(--ink) 6%, transparent);
@@ -1113,8 +1149,7 @@
     cursor: pointer;
     font-size: 0.6875rem;
     letter-spacing: 0.02em;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     padding: 0.125rem 0.375rem;
     border-radius: 0.25rem;
     white-space: nowrap;
@@ -1122,12 +1157,13 @@
                 background 180ms cubic-bezier(0.2, 0, 0, 1);
   }
   .row-action:hover {
-    opacity: 0.92;
     background: color-mix(in srgb, var(--ink) 6%, transparent);
+    color: var(--ink);
+    opacity: 1;
   }
-  .row-action.danger { color: var(--warm-accent); }
+  .row-action.danger { color: var(--danger-text); }
   .row-action.danger:hover {
-    background: var(--warm-accent-soft);
+    background: var(--danger-soft);
   }
 
   /* Touch: the "…" trigger is always visible (no hover to reveal it on a
@@ -1135,11 +1171,11 @@
      target. Desktop dropdown sizing above is left untouched. */
   @media (pointer: coarse) {
     .trail-actions {
-      opacity: 0.45;
       font-size: 1.25rem;
       min-width: max(var(--touch-target), 44px);
       min-height: max(var(--touch-target), 44px);
-    }
+    color: var(--ink-soft);
+  }
     .row-actions {
       flex-direction: column;
       align-items: stretch;
@@ -1189,8 +1225,7 @@
   .row-error {
     padding: 0.25rem 0.875rem 0.375rem 1.75rem;
     font-size: 0.625rem;
-    color: var(--warm-accent);
-    opacity: 0.75;
+    color: var(--accent-text);
   }
   .rename-input {
     flex: 1;
@@ -1215,9 +1250,8 @@
     border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
   }
   .action-title {
-    opacity: 0.55;
     margin-bottom: 0.625rem;
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
   .action-buttons {
     display: flex;
@@ -1229,24 +1263,24 @@
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     padding: 0.25rem 0;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .action-cancel:hover { opacity: 0.75; }
+  .action-cancel:hover {
+    color: var(--ink);
+  }
   .action-confirm {
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     padding: 0.25rem 0;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
   .action-confirm:hover:not(:disabled) { opacity: 0.92; }
   .action-confirm:disabled { opacity: 0.25; cursor: default; }
-  .action-confirm.danger { color: var(--warm-accent); }
+  .action-confirm.danger { color: var(--danger-text); }
 
   /* Create inline */
   .create-inline {
@@ -1261,8 +1295,7 @@
     font-style: italic;
     font-size: 0.6875rem;
     line-height: 1.4;
-    color: var(--ink);
-    opacity: 0.4;
+    color: var(--ink-soft);
   }
   .mode-explainer {
     margin: 0;
@@ -1271,39 +1304,49 @@
     font-style: italic;
     font-size: 0.6875rem;
     line-height: 1.4;
-    color: var(--ink);
-    opacity: 0.4;
+    color: var(--ink-soft);
   }
   .create-line {
     display: block; width: 100%;
     background: none; border: none; cursor: pointer; text-align: left;
     font-family: "Lora", serif; font-size: 0.875rem;
-    color: var(--warm-accent); opacity: 0.75;
+    color: var(--accent-text);
     padding: 0.5rem 0.875rem;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .create-line:hover { opacity: 0.92; }
+  .create-line:hover {
+    color: var(--ink);
+    opacity: 1;
+  }
+  /* Quiet by colour, not by fading (the 2026-10-30 visual pass): these
+     were 35% ink, under any reading bar. */
   .nest-under {
     display: block; width: 100%;
     background: none; border: none; cursor: pointer; text-align: left;
-    font-family: "Inter", sans-serif; font-size: 0.6875rem;
-    color: var(--ink); opacity: 0.35;
+    font-family: var(--font-ui); font-size: 0.6875rem;
+    color: var(--ink-soft);
     padding: 0.125rem 0.875rem 0.375rem 1.5rem;
-    transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
+    transition: color var(--motion-fast);
   }
-  .nest-under:hover { opacity: 0.55; }
-  .nest-val { color: var(--warm-accent); font-style: italic; }
-  .nest-rm { font-size: 0.625rem; opacity: 0.55; margin-left: 0.25rem; }
-  .nest-rm:hover { opacity: 0.92; }
+  .nest-under:hover { color: var(--ink); }
+  .nest-under-row { display: flex; align-items: center; }
+  .nest-under-row .nest-under { flex: 1 1 auto; width: auto; min-width: 0; padding-right: 0.25rem; }
+  .nest-val { color: var(--accent-text); font-style: italic; }
+  .nest-rm {
+    background: none; border: none; cursor: pointer;
+    font-size: 0.75rem; color: var(--ink-soft);
+    padding: 0.125rem 0.875rem 0.375rem 0.25rem;
+    transition: color var(--motion-fast);
+  }
+  .nest-rm:hover { color: var(--ink); }
   .nest-pick {
     display: block; width: 100%;
     background: none; border: none; cursor: pointer; text-align: left;
     font-family: "Lora", serif; font-size: 0.75rem;
-    color: var(--ink); opacity: 0.35;
+    color: var(--ink-soft);
     padding: 0.3125rem 0.875rem 0.3125rem 2rem;
-    transition: background 180ms cubic-bezier(0.2, 0, 0, 1),
-                opacity 180ms cubic-bezier(0.2, 0, 0, 1);
+    transition: background var(--motion-fast), color var(--motion-fast);
   }
-  .nest-pick:hover { opacity: 0.55; background: color-mix(in srgb, var(--ink) 4%, transparent); }
-  .nest-pick.selected { color: var(--warm-accent); opacity: 0.75; }
+  .nest-pick:hover { color: var(--ink); background: var(--hover-tint); }
+  .nest-pick.selected { color: var(--accent-text); }
 </style>

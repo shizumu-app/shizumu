@@ -282,6 +282,12 @@ export const DISCONNECT_CONFIRM = "disconnect this phone";
  * @returns {"show"|"join"}
  */
 export function pairSide(status) {
+  // `user_id: null` with keys present is a pairing that saved the keys and
+  // was never enrolled (0.8.0 did that when the relay refused the finalize).
+  // It holds no account, so it joins. Tested against null, not falsiness:
+  // sync_status always sends the key, and a status read without it is not
+  // this state.
+  if (status?.configured && status.user_id === null) return "join";
   return status?.configured ? "show" : "join";
 }
 
@@ -309,7 +315,7 @@ const PROMPTS = Object.freeze({
   "show:done": "paired.",
   "join:waiting": "on the device that already has your writing, open settings, sync, add a device. then scan the code it shows.",
   "join:verify": "these digits must match the ones on the other device. if they do not, go back.",
-  "join:working": "joining.",
+  "join:working": "joining. press codes match on the other device too.",
   "join:done": "paired.",
 });
 
@@ -414,6 +420,27 @@ const PAIR_ERRORS = Object.freeze([
     "that code is unknown or expired. get a fresh one on the other device.",
   ],
   [["device_limit_reached"], "this account already holds its two devices."],
+  // pair_new_complete's own give-up after its fetch budget: the other device
+  // never sent the keys, which almost always means its codes match was never
+  // pressed. A 0.8.0 tester waited three minutes on "joining." and then read
+  // the catch-all, because this string matched nothing here.
+  [
+    ["never deposited"],
+    "the other device did not confirm. press codes match on it, then try a fresh code.",
+  ],
+  // The keys arrived, and the relay never said this device was added: the
+  // other device's finalize was refused, most often because the account
+  // is at its device limit. Only the other device is told the reason (a
+  // 0.8.0 tester read the catch-all three times), so say where to look.
+  // Before the rate-limit row: the 429 inside this message is not the reason.
+  [
+    ["never ready"],
+    "the other device could not add this one. its screen says why, often the account's device limit.",
+  ],
+  [
+    ["rate_limited", "429"],
+    "the relay asked for a pause. wait a minute, then try a fresh code.",
+  ],
   [
     ["no wrapped bundle deposited", "pair_token_state_invalid"],
     "the other device did not finish. start over with a fresh code.",

@@ -144,12 +144,13 @@
      an empty field showing its placeholder is the interface asking, not
      the writer answering. */
   .shell-title-field[data-tone="accent"]:not(:placeholder-shown) {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
+  /* ink-soft at full strength: at the tertiary opacity the prompt was
+     1.5 to 1.6:1, too faint to read (scripts/clarity, 2026-10-29). */
   .shell-title-field::placeholder {
     color: var(--ink-soft);
-    opacity: var(--ink-tertiary);
     font-style: italic;
   }
 </style>

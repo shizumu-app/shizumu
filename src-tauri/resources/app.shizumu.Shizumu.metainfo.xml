@@ -6,31 +6,33 @@
        listing-quality checker enforces all four on <summary>, and it is the
        one field where the store rules outrank the brand's lowercase voice.
        Nothing else in this file is sentence-cased for it. -->
-  <summary>Write to think, keep what matters</summary>
-  <summary xml:lang="fr">Écrire, penser, garder l'essentiel</summary>
+  <summary>A private writing app to think in</summary>
+  <summary xml:lang="fr">Une app d'écriture pour penser</summary>
 
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>Apache-2.0</project_license>
 
   <description>
     <p>
-      Shizumu is a private space to think by writing. Open it and start
-      the sentence: there is nothing to structure first, and nowhere to
+      Shizumu is a private writing app. Open it and start the
+      sentence: there is nothing to structure first, and nowhere to
       file it. You write to think, you pin what matters, and you trail
       what continues. The volume of writing is not the artifact; what
-      you pin is. Nothing to structure first, nowhere to file it, and no pile
-      waiting for you when you open the app.
+      you pin is. Every page starts empty, so the first sentence is
+      the first thing that happens.
     </p>
     <p>
       Pages flow into a daily memory you can scroll back through and
       search by content. Pins lift the lines that matter out of the
       daily stream: checklists, references, anything you want close at
       hand. Trails group writing that belongs together (a project, a
-      book, an ongoing thread of thought) without forcing you to design
-      a structure first, and the first time you put a page on a trail,
-      the pins you already kept there come back onto the page. Continuous
-      trails are the one intentional exception: when a single thread
-      should genuinely keep growing, you choose to trail it.
+      book, an ongoing thread of thought) without forcing you to
+      design a structure first, and the first time you put a page on a
+      trail, the pins you already kept there come back onto the page.
+      A trail can be a run of dated pages, or a continuous trail: one
+      living document for a thread that should keep growing, such as a
+      book, with a marker for each day you wrote in it. That is the
+      one intentional exception, and you choose it.
     </p>
     <p>
       The editor is keyboard driven. Type / for a table, a chart, an
@@ -43,22 +45,21 @@
       database you can open with any compatible tool. Sync is optional and
       end-to-end encrypted: your writing is sealed on your device before it
       leaves it, the keys are derived there and never leave, and the relay
-      holds what it cannot read. Neither can we. No account, no analytics.
-      Your writing remains yours.
+      holds what it cannot read. Neither can we. Your writing remains yours.
     </p>
     <p>
       Shizumu fits the writer who keeps a daily log, the developer with
-      one running notebook per project, the student capturing reading
+      one trail per project, the student capturing reading
       notes, and anyone who wants a private place to write to think
-      without learning a tagging system first.
+      without learning a system first.
     </p>
     <p xml:lang="fr">
-      Shizumu est un espace privé pour penser en écrivant. Ouvrez-le et
+      Shizumu est une application d'écriture privée. Ouvrez-la et
       commencez la phrase : rien à structurer d'abord, nulle part où
       classer. Vous écrivez pour penser, vous épinglez ce qui compte,
       vous suivez ce qui continue. Le volume d'écriture n'est pas
-      l'objet ; ce que vous épinglez l'est. Aucun tag, aucun dossier,
-      aucun gabarit, et aucune pile qui vous attend à l'ouverture.
+      l'objet ; ce que vous épinglez l'est. Chaque page commence vide,
+      alors la première phrase est la première chose qui arrive.
     </p>
     <p xml:lang="fr">
       Les pages s'écoulent dans une mémoire quotidienne que vous pouvez
@@ -68,9 +69,7 @@
       qui vont ensemble (un projet, un livre, un fil de pensée en
       cours) sans imposer de structure préalable, et la première fois
       qu'une page rejoint une piste, les épingles que vous y aviez
-      gardées reviennent sur la page. Les pistes continues sont
-      l'exception intentionnelle : quand un seul fil doit vraiment
-      continuer à grandir, vous choisissez de le suivre.
+      gardées reviennent sur la page. Une piste peut être une suite de pages datées, ou une piste continue : un seul document vivant pour un fil qui doit continuer à grandir, comme un livre, avec un repère pour chaque jour d'écriture. C'est l'exception intentionnelle, et vous la choisissez.
     </p>
     <p xml:lang="fr">
       L'éditeur se pilote au clavier. Tapez / pour un tableau, un
@@ -85,14 +84,13 @@
       compatible. La synchronisation est optionnelle et chiffrée de bout
       en bout : vos écrits sont scellés sur votre appareil avant d'en
       sortir, les clés y sont dérivées et n'en sortent jamais, et le relais
-      ne détient que ce qu'il ne peut pas lire. Nous non plus. Pas de
-      compte, pas d'analytique. Vos écrits vous appartiennent.
+      ne détient que ce qu'il ne peut pas lire. Nous non plus. Vos écrits vous appartiennent.
     </p>
     <p xml:lang="fr">
       Shizumu convient à l'auteur qui tient un journal, au développeur
-      avec un carnet par projet, à l'étudiant qui prend des notes de
+      avec une piste par projet, à l'étudiant qui prend des notes de
       lecture, et à quiconque cherche un endroit privé pour penser en
-      écrivant, sans devoir apprendre un système de tags d'abord.
+      écrivant, sans devoir apprendre un système d'abord.
     </p>
   </description>
 
@@ -201,6 +199,16 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.8.1" date="2026-11-01">
+      <description>
+        <p>A pin holds the whole passage. Select several blocks and pin them, and the pin keeps every one of them, in order, after an edit, after a restart and on your other device. Before, the pin came out with only the first block in it. Editing a pin of several blocks replaces each block on the page once, with nothing left over, and choosing a trail for a new page brings such a pin onto it whole. If part of a selection is already pinned, the app says so instead of offering a pin button that does nothing.</p>
+        <p>The desktop looks like the phone. The page sits on the desk as a sheet with a visible edge in cream, white and dark. Text that should step back uses a quieter colour instead of fading, and every screen was measured for contrast in all three tones. The page dots are crisp, with the current page as a small pill in the accent colour. Pin and modal titles rename in place, keyboard focus shows the same ring everywhere, and the interface labels use the phone's typeface.</p>
+        <p>On the phone, @ mentions a page, a pin or a new trail, and backlinks list the pages that mention them. Deleting a page from the pages of the day asks first. Ticking a task no longer jumps the page to its end, editing a pin no longer adds an empty line to it, and a table's last cell can be tapped again.</p>
+        <p>A trail can be renamed or deleted from where you look at it: the trail sheet on the phone, and ctrl+k on the desktop. Deleting a trail keeps its pages, without a trail, and trails inside it move up with their pins.</p>
+        <p>Pairing a device to an account that is already full no longer leaves the new device half set up. Its keys are saved only once pairing completes, it waits between retries, and the message says the account is full.</p>
+        <p>Smaller fixes: mentions follow a page renamed or deleted on the other device, backlinks include pages written on the other device, screen readers hear the desktop's notices and every icon button is named, reduced motion stills every animation, scrolling in a modal stops at its edge, and Android builds use 16 KB memory pages.</p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-10-25">
       <description>
         <p>A new layout for phones. On a phone, shizumu now opens on a page built for a thumb and a keyboard instead of the desktop window squeezed down. The header carries the day, the trail, how many pins the page keeps, and find. While you type, one strip sits above the keyboard and follows the caret: insert comes first and opens the slash menu as a sheet you can search by name. The block the caret is in gets a handle in the margin, and a long press on it lifts the block so you can drag it somewhere else. Tables are sized with a thumb and the chart builder works on a small screen. Sheets open at the size of what they hold and close with a flick.</p>

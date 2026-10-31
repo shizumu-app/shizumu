@@ -49,6 +49,6 @@
   }
 
   .shell-note[data-tone="warm"] {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 </style>

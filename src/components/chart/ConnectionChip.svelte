@@ -79,7 +79,7 @@
     appearance: none;
     background: color-mix(in srgb, var(--warm-accent) 8%, transparent);
     border: 1px solid color-mix(in srgb, var(--warm-accent) 25%, transparent);
-    color: var(--warm-accent);
+    color: var(--accent-text);
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
     padding: 0.0625rem 0.4375rem;
@@ -116,7 +116,9 @@
     font-family: "DM Mono", monospace;
     font-size: 0.5625rem;
   }
-  .conn-label { opacity: 0.55; width: 2.75rem; }
+  .conn-label { width: 2.75rem;
+    color: var(--ink-soft);
+  }
   .conn-input {
     flex: 1;
     appearance: none;
@@ -138,11 +140,15 @@
     border-radius: 0.25rem;
     font-family: "DM Mono", monospace;
     font-size: 0.5625rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     cursor: pointer;
   }
-  .conn-btn:hover { opacity: 0.92; background: color-mix(in srgb, var(--ink) 6%, transparent); }
-  .conn-btn.primary { color: var(--warm-accent); opacity: 0.92; }
-  .conn-btn.danger { color: var(--warm-accent); }
+  .conn-btn:hover { background: color-mix(in srgb, var(--ink) 6%, transparent);
+    color: var(--ink);
+    opacity: 1;
+  }
+  .conn-btn.primary { color: var(--accent-text);
+    opacity: 1;
+  }
+  .conn-btn.danger { color: var(--accent-text); }
 </style>

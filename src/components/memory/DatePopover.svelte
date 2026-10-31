@@ -250,15 +250,15 @@
        can't wrap inside itself. A floor keeps the narrow-content case looking
        the same; the content sets the width when it needs more. */
     min-width: 14rem;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     padding: 0.5rem;
   }
   .section-label {
     font-size: 0.5625rem;
     letter-spacing: 0.04em;
-    opacity: 0.35;
     text-transform: lowercase;
     margin-bottom: 0.375rem;
+    color: var(--ink-soft);
   }
   .preset-row {
     display: flex;
@@ -278,16 +278,14 @@
     font-family: "Lora", Georgia, serif;
     font-style: italic;
     font-size: 0.8125rem;
-    color: var(--ink);
-    opacity: 0.75;
+    color: var(--ink-soft);
   }
   .nav-btn {
     appearance: none;
     background: transparent;
     border: none;
     cursor: pointer;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     font-size: 1rem;
     line-height: 1;
     padding: 0.25rem 0.375rem;
@@ -304,9 +302,9 @@
   .cal-head {
     font-family: "DM Mono", monospace;
     font-size: 0.5rem;
-    opacity: 0.35;
     text-align: center;
     padding-bottom: 0.125rem;
+    color: var(--ink-soft);
   }
   .cal-cell {
     appearance: none;
@@ -329,7 +327,7 @@
     font-weight: 500;
   }
   .cal-cell.has-pins {
-    color: var(--warm-accent);
+    color: var(--accent-text);
     font-weight: 500;
   }
   .cal-cell.today {
@@ -348,13 +346,13 @@
     font-size: 0.5625rem;
   }
   .selected-label {
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
   .clear {
     appearance: none;
     background: transparent;
     border: none;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     cursor: pointer;
     font-family: inherit;
     font-size: inherit;
@@ -370,8 +368,8 @@
     .section-label {
       font-size: 0.75rem;
       margin-bottom: 0.5rem;
-      opacity: 0.55;
-    }
+    color: var(--ink-soft);
+  }
     .preset-row {
       gap: 0.375rem;
       margin-bottom: 1rem;
@@ -383,8 +381,8 @@
     .cal-head {
       font-size: 0.75rem;
       padding-bottom: 0.5rem;
-      opacity: 0.55;
-    }
+    color: var(--ink-soft);
+  }
     .month-nav {
       margin: 0.5rem 0 0.75rem;
       gap: 0.5rem;

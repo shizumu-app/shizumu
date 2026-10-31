@@ -26,22 +26,19 @@
 <style>
   .section-header {
     margin: 1.75rem 0 0.5rem;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
     font-weight: 500;
     line-height: 1.4;
     text-transform: lowercase;
     letter-spacing: 0.05em;
-    color: var(--ink);
-  }
-
-  .label {
-    opacity: 0.35;
+    /* An eyebrow, as the phone's (Eyebrow.svelte): soft ink at full
+       strength. At 0.35 and 0.25 opacity it measured 2:1 and 1.6:1. */
+    color: var(--ink-soft);
   }
 
   .count {
-    font-family: "DM Mono", monospace;
-    opacity: 0.25;
+    font-family: var(--font-ui);
     margin-left: 0.125rem;
   }
 
@@ -65,14 +62,12 @@
       border-top: none;
     }
     .label {
-      opacity: 0.7;
       font-family: "Lora", Georgia, serif;
       font-style: italic;
       font-weight: 500;
     }
     .count {
       font-size: 0.75rem;
-      opacity: 0.5;
     }
   }
 </style>

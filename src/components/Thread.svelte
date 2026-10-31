@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from "svelte";
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
   import { getLocalDateStr, getYesterdayStr, getWeekAgoStr } from "../lib/utils.js";
   import ThreadCard from "./ThreadCard.svelte";
   import ThreadPageView from "./ThreadPageView.svelte";
@@ -139,13 +139,13 @@
     <input
       type="text"
       class="search-input selectable"
-      placeholder="search your writing..."
+      placeholder="search your writing…"
       value={searchQuery}
       oninput={handleSearch}
       spellcheck="false"
     />
     {#if searchQuery.length > 0}
-      <button class="search-clear label" onclick={clearSearch}>×</button>
+      <button class="search-clear label" aria-label="clear the search" onclick={clearSearch}>×</button>
     {/if}
   </div>
 
@@ -261,18 +261,17 @@
     border: none;
     cursor: pointer;
     font-size: 18px;
-    color: var(--ink);
-    opacity: 0.4;
+    color: var(--ink-soft);
     padding: 8px;
   }
 
   .search-clear:hover {
-    opacity: 0.7;
+    color: var(--ink);
   }
 
   .result-count {
-    opacity: 0.35;
     margin-bottom: 12px;
+    color: var(--ink-soft);
   }
 
   /* Scrollable content */
@@ -288,9 +287,9 @@
   }
 
   .empty-state {
-    opacity: 0.35;
     padding-top: 40px;
     text-align: center;
+    color: var(--ink-soft);
   }
 
   /* Active focuses section */
@@ -306,10 +305,10 @@
   }
 
   .group-label {
-    opacity: 0.6;
     margin-bottom: 10px;
     margin-top: 8px;
     font-weight: 400;
+    color: var(--ink-soft);
   }
 
   .group-cards {
@@ -329,16 +328,15 @@
     background: none;
     border: none;
     cursor: pointer;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-weight: 400;
     font-size: 12px;
-    color: var(--ink);
-    opacity: 0.4;
+    color: var(--ink-soft);
     padding: 8px 16px;
     transition: opacity 200ms ease;
   }
 
   .back-btn:hover {
-    opacity: 0.7;
+    color: var(--ink);
   }
 </style>

@@ -109,6 +109,30 @@ describe("an edit to a pin reaches the node that is the pin", () => {
     expect(api.updatePinContent).not.toHaveBeenCalled();
   });
 
+  it("a pin over several blocks opens on all of them and saves all of them", async () => {
+    // The panel kept one node per pin id (the last one walked), so the
+    // modal opened on that block alone and its save handed back one block
+    // to replace the whole run, deleting the others from the page (found
+    // reviewing the J12 journey, 2026-10-28).
+    const blocks = [para("the ferry leaves at six"), para("the harbour master is gruff"), para("ask about the night boat")];
+    store.rows = [{ ...pinRow(blocks[0]), object_type: "board", content: JSON.stringify(docOf(...blocks)) }];
+    const onSamePagePinSave = vi.fn(() => true);
+    const { target } = render(SharedObjectsPanel, {
+      pageId: "q", editorDoc: docOf({ type: "paragraph", content: [{ type: "text", text: "chapter three" }] }, ...blocks), onClose: () => {}, onSamePagePinSave,
+    });
+    await editPin(target, "merlin");
+    await until(landed(onSamePagePinSave), "the edit to land somewhere");
+
+    expect(onSamePagePinSave).toHaveBeenCalledTimes(1);
+    const [, spliced] = onSamePagePinSave.mock.calls[0];
+    expect(spliced.type).toBe("doc");
+    expect(spliced.content.map((n) => n.content[0].text)).toEqual([
+      "the ferry leaves at six",
+      "the harbour master is gruff",
+      "ask about the night boat merlin",
+    ]);
+  });
+
   it("when the editor does not hold the stamp, the edit goes to the stored page and the editor re-reads it", async () => {
     const node = para("ibis on the mudflat");
     store.rows = [pinRow(node)];

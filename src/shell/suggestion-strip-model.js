@@ -6,19 +6,12 @@
 // because `toolbarFor`'s row 4 emitted `buttons: []` and won the slot with
 // it. The chips are the menu, laid flat into the one strip the shell has.
 //
-// SLASH ONLY, AND MENTION IS NOT A GAP TO FILL LATER BY ANALOGY. The two
-// triggers look symmetric from `computeSnapshot`, which reports both as
-// `{ kind, text }`, and they are not: the mention list is ASYNC. Its
-// `items` awaits searchPagesForMention, searchPinsForMention and
-// getLineages (mention-command.js:334-347) inside the extension's own
-// private suggestion config, which is reachable from nowhere else — so a
-// shell that wanted mention chips would have to re-implement that search
-// and its limits, and then own a second answer to "what does @ find".
-// `suggestionChips` therefore returns an empty list for a mention query,
-// and row 4 declines the slot rather than blanking it. See ShellApp's
-// toolbarFor call for what the writer sees instead, and why that is a
-// decision rather than a fallthrough nobody noticed.
-//
+// SLASH ONLY. `@` has its own chips (mention-chips.js), because its list
+// is ASYNC: it is the desktop menu's `mentionItems` (mention-command.js),
+// exported so the phone asks the same function rather than re-implementing
+// the search. `suggestionChips` therefore returns an empty list for a
+// mention query, and ShellApp fills the strip from that answer instead.
+
 // THE MATCHING RULE IS A HAND-COPY, and this is the second one in this
 // workstream (ShellApp's `insertionPoint` is the first, for the same
 // reason). `filterItems` (slash-commands.js:472) is module-private while

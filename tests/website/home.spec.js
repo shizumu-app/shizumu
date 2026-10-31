@@ -176,15 +176,15 @@ test.describe("homepage hero on a phone", () => {
   });
 });
 
-// the six sections after the cards, in reading order
-const SECTIONS = ["way-back", "memory", "private", "keyboard", "download", "closing"];
+// the seven sections after the cards, in reading order
+const SECTIONS = ["phone", "way-back", "memory", "private", "keyboard", "download", "closing"];
 const LINUX_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 
 test.describe("homepage sections", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
-  test("six sections after the cards, in order", async ({ page }) => {
+  test("seven sections after the cards, in order", async ({ page }) => {
     await page.goto("/");
     const ids = await page.locator("main section[id]").evaluateAll((els) => els.map((e) => e.id));
     expect(ids.filter((id) => SECTIONS.includes(id))).toEqual(SECTIONS);
@@ -192,6 +192,18 @@ test.describe("homepage sections", () => {
     for (const old of ["built-differently", "source", "whats-new", "sync", "pricing", "roadmap", "apple", "support"]) {
       await expect(page.locator(`#${old}`)).toHaveCount(0);
     }
+  });
+
+  test("the phone section shows the vertical film, unloaded until play, and both ways in", async ({ page }) => {
+    await page.goto("/");
+    const film = page.locator("#phone video");
+    await expect(film).toHaveAttribute("preload", "none");
+    await expect(film).toHaveAttribute("poster", "/assets/video/v1-beta-mobile-vertical-poster.png");
+    await expect(page.locator('#phone a[data-platform="phone-android"]')).toHaveAttribute("href", "/#dl-android");
+    await expect(page.locator('#phone a[data-platform="phone-iphone"]')).toHaveAttribute("href", "https://testflight.apple.com/join/QYvGcXBp");
+    // the other sections point at it
+    await expect(page.locator('#keyboard a[href="#phone"]')).toHaveCount(1);
+    await expect(page.locator('#dl-android a[href="#phone"], #dl-iphone a[href="#phone"]')).toHaveCount(2);
   });
 
   test("no inline styles and no scroll-reveal classes", async ({ page }) => {
@@ -202,7 +214,7 @@ test.describe("homepage sections", () => {
 
   test("one form outside the download tabs: the closing ask, a labelled email field a phone will not zoom", async ({ page }) => {
     await page.goto("/");
-    // the download tabs carry their own beta signups (mac, android, iphone); the rest of the page has one form
+    // the download tabs may carry a beta signup (mac today); the rest of the page has one form
     const outside = await page.locator("form").evaluateAll((els) => els.filter((f) => !f.closest("#download")).length);
     expect(outside).toBe(1);
     const form = page.locator("#closing form");
@@ -439,24 +451,29 @@ test.describe("download tabs on windows", () => {
 test.describe("download tabs on android", () => {
   test.use({ viewport: { width: 412, height: 915 }, userAgent: ANDROID_UA });
 
-  test("the android tab opens on the closed-test form, and no link hands out an apk", async ({ page }) => {
+  test("the android tab opens on the two steps into the play test, and the apk beside them", async ({ page }) => {
     await page.goto("/");
     await expect(selected(page)).toHaveText("android");
-    const form = shown(page).locator("form");
-    await expect(form.locator('input[name="tag"]')).toHaveValue("android-beta");
-    await expect(form.locator('button[type="submit"]')).toHaveText("ask to join");
-    await expect(form.locator('input[type="email"]')).toBeVisible();
-    await expect(shown(page)).toContainText("use the google account on your phone");
-    await expect(shown(page).locator('a[href="/journal-app-for-android"]')).toHaveCount(1);
-    const hrefs = await page.locator("a").evaluateAll((els) => els.map((a) => a.getAttribute("href") ?? ""));
-    expect(hrefs.filter((h) => /\.apk$/.test(h))).toEqual([]);
+    const steps = shown(page).locator(".home-dl-buttons a");
+    await expect(steps).toHaveCount(2);
+    await expect(steps.nth(0)).toHaveAttribute("href", "https://groups.google.com/g/shizumu-testers");
+    await expect(steps.nth(0)).toContainText("1 · join the testers group");
+    await expect(steps.nth(1)).toHaveAttribute("href", "https://play.google.com/apps/testing/app.shizumu.Shizumu");
+    await expect(steps.nth(1)).toContainText("2 · become a tester on play");
+    await expect(shown(page)).toContainText("google account on your phone");
+    // the group replaced the email signup: no form is left in this tab
+    await expect(shown(page).locator("form")).toHaveCount(0);
+    const apk = shown(page).locator('a[data-platform="android-apk"]');
+    await expect(apk).toHaveAttribute("href", /\/downloads\/shizumu-[0-9.]+\.apk$/);
+    await expect(shown(page)).toContainText("it does not update itself");
   });
 
   test("each form's label names its own field", async ({ page }) => {
     await page.goto("/");
     const ids = await page.locator('#download input[type="email"]').evaluateAll((els) => els.map((e) => e.id));
-    expect(ids.length).toBe(3);
-    expect(new Set([...ids, "notify-email"]).size).toBe(4);
+    // mac only: android joins through its group, iphone through the testflight link
+    expect(ids.length).toBe(1);
+    expect(new Set([...ids, "notify-email"]).size).toBe(2);
     for (const id of ids) await expect(page.locator(`label[for="${id}"]`)).toHaveCount(1);
   });
 
@@ -467,25 +484,27 @@ test.describe("download tabs on android", () => {
     expect(overflow).toBeLessThanOrEqual(0);
   });
 
-  test("the android page holds the signup, tagged for the closed test", async ({ page }) => {
+  test("the android page has the same two steps and the apk", async ({ page }) => {
     await page.goto("/journal-app-for-android");
-    const form = page.locator("#android-beta form");
-    await expect(form.locator('input[name="tag"]')).toHaveValue("android-beta");
-    await expect(form.locator('input[type="email"]')).toBeVisible();
+    const steps = page.locator("#android-beta a");
+    await expect(steps).toHaveCount(2);
+    await expect(steps.nth(0)).toHaveAttribute("href", "https://groups.google.com/g/shizumu-testers");
+    await expect(steps.nth(1)).toHaveAttribute("href", "https://play.google.com/apps/testing/app.shizumu.Shizumu");
+    await expect(page.locator('a[data-platform="android-apk"]')).toHaveAttribute("href", /\.apk$/);
   });
 });
 
 test.describe("download tabs on an iphone", () => {
   test.use({ viewport: { width: 390, height: 844 }, userAgent: IPHONE_UA });
 
-  test("the iphone tab opens on the testflight form, and points at the demo", async ({ page }) => {
+  test("the iphone tab opens on the testflight link, and points at the demo", async ({ page }) => {
     await page.goto("/");
     await expect(selected(page)).toHaveText("iphone");
-    const form = shown(page).locator("form");
-    await expect(form.locator('input[name="tag"]')).toHaveValue("iphone-beta");
-    await expect(form.locator('button[type="submit"]')).toHaveText("ask to join");
-    await expect(shown(page)).toContainText("join the iphone beta");
-    await expect(shown(page)).toContainText("testflight");
+    // no form: the public link lets anyone in without being added by hand
+    await expect(shown(page).locator("form")).toHaveCount(0);
+    const join = shown(page).locator('a[data-platform="iphone-testflight"]');
+    await expect(join).toHaveText("join on testflight");
+    await expect(join).toHaveAttribute("href", "https://testflight.apple.com/join/QYvGcXBp");
     await expect(shown(page).locator('a[href="/try/"]')).toHaveCount(1);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     expect(overflow).toBeLessThanOrEqual(0);

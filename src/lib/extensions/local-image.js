@@ -102,6 +102,7 @@ export const LocalImage = Image.extend({
         collapseBtn.className = "local-image-collapse-btn";
         collapseBtn.setAttribute("contenteditable", "false");
         collapseBtn.title = "collapse to chip";
+        collapseBtn.setAttribute("aria-label", "collapse the image to a chip");
         collapseBtn.textContent = "–";
 
         wrap.appendChild(img);

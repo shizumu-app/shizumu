@@ -101,7 +101,7 @@
   <div class="actions">
     <Button variant="ghost" onClick={onCancel} disabled={submitting}>cancel</Button>
     <Button variant="accent" onClick={submit} disabled={!form.valid || submitting}>
-      {submitting ? "..." : action}
+      {submitting ? "…" : action}
     </Button>
   </div>
 </div>
@@ -130,7 +130,7 @@
     border: none;
     border-bottom: 1px solid var(--horizon);
     outline: none;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 15px;
     color: var(--ink);
     padding: 8px 0;
@@ -162,7 +162,7 @@
   }
 
   .hint-warn {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
   .actions {

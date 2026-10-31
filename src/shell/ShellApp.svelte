@@ -227,9 +227,17 @@
   import { turnIntoRows } from "./turn-into-model.js";
   import { findStripModel } from "./find-strip-model.js";
   import { suggestionChips } from "./suggestion-strip-model.js";
+  import { mentionChips } from "./mention-chips.js";
+  import {
+    mentionItems,
+    commitMention,
+    mentionOptionsOf,
+    MentionCommandPluginKey,
+  } from "../lib/extensions/mention-command.js";
   import { blockSheetRows } from "./block-sheet-model.js";
   import { chartDraft, withKind, chartCanCommit, chartAttrs } from "./chart-draft.js";
-  import { pinIntent } from "./pin-intent.js";
+  import { pinIntent, pinRefusal } from "./pin-intent.js";
+  import { stampedPinIds } from "../lib/pin-node.js";
   import { insertMenuSections, firstInsertRow } from "./insert-menu.js";
   import { monthOf } from "./calendar-month.js";
   // The scopes the trail sheet offers — the same list memory's map hangs
@@ -289,6 +297,7 @@
   import { pinTitleAuthority } from "../lib/pin-title-authority.js";
   import { writePinEdit, textIntoNode, findPinNode } from "../lib/pin-edit-route.js";
   import { withNodesAtPinId, withTitleAtPinId } from "./pin-rename.js";
+  import { stampPinRun } from "../lib/pin-run.js";
   import { nodeKind } from "../lib/pin-display.js";
   import { convertTargetsFor, convertBlockNode } from "../lib/editor/block-convert.js";
   import { commandItems, SlashCommandsPluginKey } from "../lib/slash-commands.js";
@@ -324,6 +333,7 @@
     loadPageContentForModal,
     savePageContentWithPinRefresh,
     deletePin,
+    getPinForReference,
     searchPages,
     getSetting,
     setSetting,
@@ -356,6 +366,7 @@
     setLineageParent,
     deleteLineage,
     updatePinScope,
+    emitTrailMutated,
   } from "../lib/api.js";
 
   /** THE TWO APPEARANCE PROPS ARE NOT OVERRIDES, unlike the five header
@@ -1438,6 +1449,8 @@
     if (!pin) return;
     try {
       await deletePin(pin.id);
+      // Its stamp stays on the page; it no longer counts as kept.
+      deadPins = new Set([...deadPins, pin.id]);
       // `live` for the reason adoptPage and openPins carry it: the write is
       // after an await and the shell can be unmounted in between.
       //
@@ -1570,13 +1583,13 @@
    *  the stored copy of the open page is handed to the editor afterwards,
    *  so its next autosave does not put the old block back.
    *
-   *  MANY NODES, NOT ONE. The pin screen's editor can hand back more than
-   *  one block (a paragraph added under a pinned table), and the shell
-   *  keeps them all (pin-rename.js, withNodesAtPinId). `writePinEdit`
-   *  splices one node, so it is given the first, id stamped, and the
-   *  shell's two page writers put the whole list where that node went:
-   *  `spliceNodeAtPinId` takes a list, and the stored-page save re-splices
-   *  the list at the pinId the first node carries.
+   *  MANY NODES, NOT ONE. A pin can be several blocks, and the pin
+   *  screen's editor can hand back more than one (a paragraph added under
+   *  a pinned table). Every one is stamped and the pin's whole run is
+   *  replaced once (src/lib/pin-run.js). `writePinEdit` splices one node,
+   *  so it is given the first, and the shell's two page writers put the
+   *  whole list in place of the run: `spliceNodeAtPinId` takes a list, and
+   *  the stored-page save re-splices the list with `withNodesAtPinId`.
    *
    *  A NOTE'S TEXT goes into its paragraph or heading (`textIntoNode`);
    *  a block of any other shape cannot take plain text, and that edit is
@@ -1588,12 +1601,11 @@
   async function writePinBody(pin, draftContent, content, title) {
     const isNote = typeof draftContent === "string";
     const nodes = isNote ? [] : draftNodes(draftContent);
-    // THE ID RIDES ON THE FIRST BLOCK: a doc rebuilt by a serializer can
-    // come back without the attr, and a page spliced with no pinId in it
-    // is a pin orphaned by its own save.
-    const stamped = nodes.map((node, i) =>
-      i === 0 ? { ...node, attrs: { ...(node.attrs || {}), pinId: pin.id } } : node,
-    );
+    // THE ID RIDES ON EVERY BLOCK (pin-run.js): a doc rebuilt by a
+    // serializer can come back without the attr, a page spliced with no
+    // pinId in it is a pin orphaned by its own save, and a block left
+    // unstamped drops out of the pin at the next save.
+    const stamped = stampPinRun(nodes, pin.id);
     let written = null;
     // AN ARTIFACT DRAFT WITH NO BLOCKS is refused while a page holds the
     // pin's block (nodeFor answers null, and writePinEdit stops), on
@@ -2980,6 +2992,9 @@
   });
 
   async function onSyncPulled() {
+    // Mention labels name other pages and trails, which the pull may have
+    // renamed or deleted (api.js emitTrailMutated).
+    emitTrailMutated();
     const targets = pullRefreshTargets({
       pageOpen: !!page,
       active,
@@ -3291,6 +3306,26 @@
   // idiom — so the two surfaces cannot disagree about whether this block
   // is already kept.
 
+  /** Pin ids stamped on the open page whose pin no longer exists. A stamp
+   *  outlives its pin (unpin leaves it, by design), and until this is
+   *  known every stamp counts as live: refusing a pin for a moment is the
+   *  safe mistake, orphaning a live pin by stamping over it is not.
+   *  Checked once per stamp per session, when a page opens. */
+  let deadPins = $state(new Set());
+  const checkedStamps = new Set();
+  $effect(() => {
+    const json = page?.content_json;
+    if (typeof json !== "string" || !json.includes("pinId")) return;
+    let ids = [];
+    try { ids = stampedPinIds(JSON.parse(json)).filter((id) => !checkedStamps.has(id)); } catch { return; }
+    if (ids.length === 0) return;
+    ids.forEach((id) => checkedStamps.add(id));
+    Promise.all(ids.map((id) => getPinForReference(id).then((row) => (row ? null : id), () => null))).then((gone) => {
+      const dead = gone.filter(Boolean);
+      if (live && dead.length) deadPins = new Set([...deadPins, ...dead]);
+    });
+  });
+
   /** One top-level block, as pin-intent.js wants to be told about it.
    *  Every field is read off the ProseMirror node and none off the DOM. */
   function describeBlock(pos, node) {
@@ -3299,7 +3334,11 @@
       pos,
       isBoard: isBoardType(node.type.name),
       isAttachment: !!attachment,
-      pinned: !!node.attrs?.pinId,
+      // Its own stamp or one inside it, naming a pin that still exists:
+      // unpinning leaves the stamp on the page by design, and a stamp
+      // naming a deleted pin must not stop the block being kept again
+      // (block-already-pinned.js). `deadPins` says which are gone.
+      pinned: stampedPinIds(node).some((id) => !deadPins.has(id)),
       hasContent: mayPin(node),
       text: node.textContent || "",
       blockTitle: node.attrs?.blockTitle || "",
@@ -3434,20 +3473,25 @@
    *  assertion green. */
   async function pin(scope) {
     try {
-      await writePin(
-        pinIntent({
-          scope,
-          blocks: pinBlocksFor(scope),
-          selectionText:
-            scope === "selection"
-              ? editor.state.doc.textBetween(
-                  editor.state.selection.from,
-                  editor.state.selection.to,
-                  " ",
-                )
-              : "",
-        }),
-      );
+      const blocks = pinBlocksFor(scope);
+      const intent = pinIntent({
+        scope,
+        blocks,
+        selectionText:
+          scope === "selection"
+            ? editor.state.doc.textBetween(
+                editor.state.selection.from,
+                editor.state.selection.to,
+                " ",
+              )
+            : "",
+      });
+      const refusal = intent ? null : pinRefusal({ scope, blocks });
+      if (refusal) {
+        showToast(refusal);
+        return;
+      }
+      await writePin(intent);
     } catch (err) {
       console.error("shell: could not pin", err);
     }
@@ -4110,6 +4154,14 @@
   const liveSelectionPinIntent = $derived(
     snapshot?.selectionEmpty === false
       ? pinIntent({ scope: "selection", blocks: pinBlocksFor("selection") })
+      : null,
+  );
+
+  /** A selection that cannot be pinned but should say why: the button
+   *  stays live, and pressing it explains (pin-intent.js `PART_PINNED`). */
+  const liveSelectionPinRefusal = $derived(
+    snapshot?.selectionEmpty === false && !liveSelectionPinIntent
+      ? pinRefusal({ scope: "selection", blocks: pinBlocksFor("selection") })
       : null,
   );
 
@@ -5011,8 +5063,14 @@
     core?.scrollToDate?.(date);
   }
 
+  /** The page whose delete row has been tapped once (page-picker.js
+   *  pageSheetRows: the second tap deletes). Cleared whenever the pages
+   *  sheet is not open, so a confirm never waits for a writer who left. */
+  let armedDeleteId = $state(null);
+  $effect(() => { if (openSheet !== "pages") armedDeleteId = null; });
+
   const pageSheetRows = $derived(
-    composePageSheetRows({ summaries: pageList, currentPageId: page?.id ?? null }),
+    composePageSheetRows({ summaries: pageList, currentPageId: page?.id ?? null, armedDeleteId }),
   );
 
   /** Is the trail sheet asking WHERE a new trail begins, rather than which
@@ -5359,6 +5417,15 @@
       openCanonical(row.pageId);
       return;
     }
+    // THE TRAIL'S OWN SCREEN, from the page (trail-sheet-model.js "manage").
+    // It reads the trail live from memory's list, which is empty until
+    // memory has been opened once; this sheet's list is the same
+    // getLineages answer, so it stands in rather than a fetch.
+    if (row.kind === "manage") {
+      if (!memoryLineages.some((l) => l?.id === row.lineageId)) memoryLineages = trailList;
+      openTrailScreen(row.lineageId);
+      return;
+    }
     assignTrail(row.lineageId ?? null);
   }
 
@@ -5605,7 +5672,44 @@
   // keystroke that changed them and vanish on the one that closed the
   // trigger. Reading the plugin key directly instead would compute once
   // and never move.
-  const suggestions = $derived(suggestionChips(snapshot?.query));
+  // ── `@` on the phone ────────────────────────────────────────────────
+  //
+  // The desktop's floating `@` menu, laid flat into the same strip `/`
+  // uses. What `@` finds is `mentionItems`, the function the desktop menu
+  // calls (mention-command.js), read with the editor's own mention options
+  // so the current trail and the "new trail" callback are the desktop's
+  // too; mention-chips.js only turns the answer into chips. The answer is
+  // async, so each query gets a token and a late answer for an older query
+  // is dropped rather than shown under a newer one.
+  let mentionChipList = $state([]);
+  let mentionToken = 0;
+  $effect(() => {
+    const q = snapshot?.query;
+    if (!q || q.kind !== "mention" || !editor || editor.isDestroyed) {
+      mentionToken += 1;
+      if (mentionChipList.length) mentionChipList = [];
+      return;
+    }
+    const my = ++mentionToken;
+    const opts = mentionOptionsOf(editor);
+    const timer = setTimeout(() => {
+      mentionItems({
+        query: q.text,
+        currentLineage: opts?.getCurrentLineage?.() || null,
+        onCreate: opts?.onCreate ?? null,
+      })
+        .then((items) => {
+          if (live && my === mentionToken) mentionChipList = mentionChips(items);
+        })
+        .catch((err) => console.error("shell: the @ search failed", err));
+    }, 120);
+    return () => clearTimeout(timer);
+  });
+  const mentionLabels = $derived(Object.fromEntries(mentionChipList.map((c) => [c.id, c.label])));
+
+  const suggestions = $derived(
+    snapshot?.query?.kind === "mention" ? mentionChipList.map((c) => c.id) : suggestionChips(snapshot?.query),
+  );
 
   /** The `/query` range a chip has to consume, read off the live plugin
    *  state at tap time — the same place, and the same moment, the
@@ -5658,6 +5762,14 @@
    *  block strip, which a closed page shows). */
   function pickSuggestion(title) {
     if (!editor || editor.isDestroyed) return;
+    // A mention chip: committed by the desktop menu's own commit, over the
+    // live `@query` range the extension holds.
+    if (snapshot?.query?.kind === "mention") {
+      const chip = mentionChipList.find((c) => c.id === title);
+      const range = MentionCommandPluginKey.getState(editor.state)?.range;
+      if (chip && range) commitMention(editor, range, chip.item);
+      return;
+    }
     // The two titles the shell answers with a builder (BUILDER_SHEETS says
     // what each of them was doing here before). The trigger is consumed
     // and NOTHING ELSE is written: no `insertionPoint`, so no fresh line
@@ -5710,19 +5822,12 @@
       // takes `suggestions` now and declines the slot when it has nothing
       // to put in it (toolbar-model.js), so the query is safe to pass.
       //
-      // WHAT A MENTION QUERY DOES, decided here rather than fallen into.
-      // `suggestionChips` is slash-only — the mention list is async and
-      // private to its extension (suggestion-strip-model.js says why) — so
-      // `@ali` resolves to no chips and this row falls through to the
-      // block strip. That is the honest answer of the three available. A
-      // mention chip strip would mean re-implementing the shell's own page
-      // and pin search, which is a second answer to "what does @ find"; a
-      // strip saying "not on the phone yet" spends the slot on an apology;
-      // and blanking is the defect being fixed two lines up. Falling
-      // through leaves bold, italic and undo under the writer's thumb
-      // while they type a name, which is what they had a keystroke ago and
-      // what they will have a keystroke later. The desktop's `@` menu is
-      // still mounted and still does the picking.
+      // A MENTION QUERY gets chips too since 2026-10-29: the pages, pins
+      // and "new trail" rows `@` finds, from the same `mentionItems` the
+      // desktop menu calls (mention-chips.js; the `@` block above). The
+      // old answer, falling through to the block strip, left the phone no
+      // way to mention anything. A query with nothing found still falls
+      // through rather than blanking the slot.
       query: snapshot?.query ?? null,
       suggestions,
       findOpen,
@@ -5869,7 +5974,7 @@
       // and go as a drag handle moves across a divider is the shift the
       // gate above worries about at its worst. `pin` answers for a block
       // the caret merely sits in; this answers for a range being drawn.
-      ...(liveSelectionPinIntent ? [] : ["pin-selection"]),
+      ...(liveSelectionPinIntent || liveSelectionPinRefusal ? [] : ["pin-selection"]),
     ]),
   ]);
 
@@ -6225,7 +6330,7 @@
         uses — one implementation of "run a slash command", reached from
         two surfaces.
       -->
-      <SuggestionStrip chips={toolbar.buttons} onPick={pickSuggestion} />
+      <SuggestionStrip chips={toolbar.buttons} labels={mentionLabels} onPick={pickSuggestion} />
     {:else if toolbar.strip !== "none"}
       <!--
         TESTED EXPLICITLY rather than left as the else: "none" used to fall
@@ -6585,12 +6690,16 @@
     {#each pageSheetRows as row (row.id)}
       {#if row.kind === "delete"}
         <!--
-          THE ONE ROW THAT TAKES SOMETHING AWAY. `destructive` is the accent
+          THE ONE ROW THAT TAKES SOMETHING AWAY. `destructive` is the colour
           Row reserves for an act that cannot be undone (row-kind.js), and the
-          label names the page rather than saying "this page" — see
-          pageSheetRows for why that naming is the safeguard.
+          label names the page rather than saying "this page". The first tap
+          arms it, the second deletes (pageSheetRows).
         -->
-        <Row label={row.label} destructive={true} onSelect={() => deletePageRow(row)} />
+        <Row
+          label={row.label}
+          destructive={true}
+          onSelect={() => (row.armed ? deletePageRow(row) : (armedDeleteId = row.pageId))}
+        />
       {:else}
         <Row
           label={row.label}
@@ -6766,7 +6875,9 @@
         value={row.value}
         kind={row.kind === "create" || row.kind === "nest"
           ? "action"
-          : row.selectable
+          : row.kind === "manage"
+            ? "push"
+            : row.selectable
             ? "choice"
             : null}
         keepFocus={true}

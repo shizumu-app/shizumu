@@ -39,8 +39,7 @@
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
     line-height: 1.4;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     user-select: none;
   }
 
@@ -51,13 +50,13 @@
   }
 
   .plus {
-    opacity: 0.5;
     padding: 0 0.0625rem;
+    color: var(--ink-soft);
   }
 
   .sep {
     margin: 0 0.125rem;
-    opacity: 0.5;
+    color: var(--ink-soft);
   }
 
   .label {

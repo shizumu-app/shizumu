@@ -106,10 +106,11 @@
   shell needs the PLUGIN and refuses the RENDERER, and one boolean could
   not express that until src/lib grew `floatingMenu` to say it.
 
-  MentionCommand goes silent rather than absent for the same reason plus
-  one: the shell has no mention UI this phase, so `@` produces a live
-  query the chip strip deliberately declines (ShellApp says why), and an
-  absent extension would make `@` mean nothing at all instead.
+  MentionCommand goes silent rather than absent for the same reason: its
+  live `@` query is what the chip strip reads, and ShellApp fills the
+  strip with mention chips from the extension's own `mentionItems`
+  (mention-chips.js), so `@` on the phone finds what it finds on the
+  desktop, laid flat instead of floating.
 
   THE GUTTER HANDLE LIVES HERE, not in ShellApp, and the choice was
   between two real options rather than obvious. ShellApp holds the
@@ -1856,7 +1857,7 @@
     font-family: var(--font-ui);
     font-size: var(--text-xs);
     line-height: var(--leading-base);
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
   .ps-refusal {
@@ -1891,7 +1892,7 @@
      only — moving it would make the column jump under a stationary
      finger. */
   .ps-gutter.lifting {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
   /* currentColor throughout, so `.lifting` above still recolours it and the

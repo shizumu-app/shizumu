@@ -102,7 +102,7 @@
     font-family: "Lora", Georgia, serif;
     font-style: italic;
     font-size: 0.75rem;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 0.75;
     padding-bottom: 0.375rem;
     border-bottom: 1px dashed color-mix(in srgb, var(--warm-accent) 30%, transparent);

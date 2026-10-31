@@ -69,8 +69,8 @@
 <style>
   /* Opacity is the shared chevron value; the icon itself carries size. */
   .caret {
-    opacity: 0.55;
     display: inline-flex;
+    color: var(--ink-soft);
   }
   .pages-sheet-list {
     display: flex;
@@ -100,8 +100,7 @@
     flex-shrink: 0;
     font-family: "DM Mono", monospace;
     font-size: 0.75rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     min-width: 1.25rem;
   }
   .pages-sheet-title {
@@ -110,14 +109,14 @@
     font-style: italic;
     font-size: 0.9375rem;
     color: var(--ink);
-    opacity: 0.92;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    opacity: 1;
   }
   .pages-sheet-new .pages-sheet-title {
-    color: var(--warm-accent);
+    color: var(--accent-text);
     font-style: normal;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
   }
 </style>

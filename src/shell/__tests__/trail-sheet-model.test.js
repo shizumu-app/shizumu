@@ -22,6 +22,23 @@ describe("trailSheetRows", () => {
     expect(rows.every((r) => r.selectable)).toBe(true);
   });
 
+  it("offers to manage the page's own trail, right under 'no trail'", () => {
+    // The owner looked for "delete trail" in this sheet (2026-10-28) and it
+    // was only reachable from memory, by tapping a scoped row a second
+    // time. The row names the trail and says what managing means.
+    expect(byId(trailSheetRows({ lineages: [trail()] }), "manage")).toBeUndefined();
+    const rows = trailSheetRows({ lineages: [trail(), trail({ id: "L2", name: "job search" })], currentLineageId: "L1" });
+    const manage = byId(rows, "manage");
+    expect(manage).toMatchObject({ kind: "manage", label: "manage “the book”", value: "rename, move, delete", lineageId: "L1", selectable: true });
+    expect(rows.indexOf(manage)).toBe(rows.findIndex((r) => r.id === "unlink") + 1);
+  });
+
+  it("does not offer to manage a trail the list no longer holds", () => {
+    // A trail deleted on another device: a row to manage it would open a
+    // screen that says it is gone.
+    expect(byId(trailSheetRows({ lineages: [trail({ id: "L2" })], currentLineageId: "L1" }), "manage")).toBeUndefined();
+  });
+
   it("offers 'no trail' only when there is a trail to come off", () => {
     // On an untrailed page the row would name the state the page is
     // already in — a row that can do nothing, in a sheet whose whole job

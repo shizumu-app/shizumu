@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy, tick } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
   import ThreadCard from "./ThreadCard.svelte";
   import ThreadPageView from "./ThreadPageView.svelte";
   import TrailMap from "./TrailMap.svelte";
@@ -683,11 +683,15 @@
             indent={trail.depth * 1.125}
             tag={trail.mode === "continuous" ? "continuous" : "discrete"}
             onClick={() => setLineage(trail.id)}
+            expanded={trail.hasChildren ? !collapsedTrails.has(trail.id) : undefined}
+            onToggle={trail.hasChildren ? () => toggleTrailCollapse(trail.id) : undefined}
           >
             {#if trail.hasChildren}
+              <!-- The pointer's way to fold; the keyboard's is the row's own
+                   ArrowLeft / ArrowRight (SidebarNavRow `onToggle`). -->
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <span class="trail-chevron" onclick={(e) => { e.stopPropagation(); toggleTrailCollapse(trail.id); }}>{collapsedTrails.has(trail.id) ? "▸" : "▾"}</span>
+              <span class="trail-chevron" aria-hidden="true" onclick={(e) => { e.stopPropagation(); toggleTrailCollapse(trail.id); }}>{collapsedTrails.has(trail.id) ? "▸" : "▾"}</span>
             {:else if trail.depth > 0}
               <span class="trail-chevron-spacer" aria-hidden="true"></span>
             {/if}
@@ -983,8 +987,7 @@
     margin-left: auto;
     font-family: "DM Mono", monospace;
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     letter-spacing: 0.02em;
     white-space: nowrap;
   }
@@ -1027,13 +1030,12 @@
      screen gives a group label — interface face, small, quiet — so a list
      that gained headings does not read as a different screen. */
   .pin-group-heading {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.72rem;
     font-weight: 500;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--ink-soft, var(--ink));
-    opacity: 0.6;
     margin: 1.25rem 0 0.35rem;
   }
 
@@ -1048,21 +1050,19 @@
   }
 
   .loading-line {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     text-align: center;
     padding-top: 2.5rem;
   }
 
   .ground-stat {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
     text-transform: lowercase;
     letter-spacing: 0.05em;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     text-align: center;
     padding: 1.25rem 0 0.5rem;
   }
@@ -1095,10 +1095,9 @@
   }
 
   .filter-label {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     text-transform: lowercase;
     letter-spacing: 0.05em;
     margin-right: 0.25rem;
@@ -1114,7 +1113,7 @@
 
   .caret {
     font-size: 0.6875rem;
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
 
   :global(.trail-branch) {
@@ -1126,14 +1125,14 @@
     display: inline-block;
     width: 0.875rem;
     text-align: center;
-    color: color-mix(in srgb, var(--ink) 45%, transparent);
+    color: var(--ink-soft);
     font-size: 0.625rem;
     margin-right: 0.1875rem;
     cursor: pointer;
     user-select: none;
   }
   :global(.trail-chevron:hover) {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
   :global(.trail-chevron-spacer) {
     display: inline-block;
@@ -1200,11 +1199,10 @@
     display: none;
     align-items: center;
     justify-content: center;
-    color: var(--ink);
+    color: var(--ink-soft);
     font-family: "Lora", Georgia, serif;
     font-size: 1.5rem;
     line-height: 1;
-    opacity: 0.75;
     cursor: pointer;
     border-radius: 0.375rem;
     position: absolute;

@@ -1,5 +1,5 @@
 <script>
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
 
   /** @type {{ onComplete: () => void, onCancel: () => void }} */
   let { onComplete, onCancel } = $props();
@@ -109,7 +109,7 @@
       disabled={!valid || submitting}
       onclick={handleSubmit}
     >
-      {submitting ? "encrypting..." : "encrypt"}
+      {submitting ? "encrypting…" : "encrypt"}
     </button>
 
     <button class="cancel-btn label" disabled={submitting} onclick={onCancel}>cancel</button>
@@ -139,8 +139,7 @@
   .app-name {
     font-family: "Lora", serif;
     font-size: 20px;
-    color: var(--ink);
-    opacity: 0.2;
+    color: var(--ink-soft);
     letter-spacing: 0.04em;
     margin: 0;
     user-select: none;
@@ -150,8 +149,7 @@
     font-family: "Lora", serif;
     font-style: italic;
     font-size: 14px;
-    color: var(--ink);
-    opacity: 0.4;
+    color: var(--ink-soft);
     text-align: center;
     line-height: 1.7;
     margin: 0;
@@ -170,7 +168,7 @@
     border: none;
     border-bottom: 1px solid var(--horizon);
     outline: none;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 15px;
     color: var(--ink);
     padding: 8px 0;
@@ -200,22 +198,19 @@
     font-family: "Lora", serif;
     font-style: italic;
     font-size: 12px;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     margin: 0;
   }
 
   .hint-warn {
-    color: var(--warm-accent);
-    opacity: 0.6;
+    color: var(--accent-text);
   }
 
   .keyring-note {
     font-family: "Lora", serif;
     font-style: italic;
     font-size: 12px;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     text-align: center;
     line-height: 1.6;
     margin: 0;
@@ -227,8 +222,7 @@
     border: 1px solid var(--horizon);
     border-radius: 6px;
     cursor: pointer;
-    color: var(--ink);
-    opacity: 0.5;
+    color: var(--ink-soft);
     padding: 10px 32px;
     font-size: 13px;
     letter-spacing: 0.04em;
@@ -251,8 +245,7 @@
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--ink);
-    opacity: 0.4;
+    color: var(--ink-soft);
     font-size: 12px;
     letter-spacing: 0.04em;
     padding: 4px 12px;

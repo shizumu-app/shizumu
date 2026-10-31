@@ -250,8 +250,7 @@
   .save-hint {
     font-family: "DM Mono", monospace;
     font-size: 0.6875rem;
-    color: var(--warm-accent);
-    opacity: 0.75;
+    color: var(--accent-text);
     align-self: center;
     margin-right: 0.4375rem;
   }

@@ -68,13 +68,13 @@
     background: transparent;
     border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
     border-radius: var(--radius-md);
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.8125rem;
     line-height: 1.3;
     color: var(--ink);
-    opacity: 0.92;
     cursor: pointer;
     transition: background-color var(--motion-fast), opacity var(--motion-fast), transform var(--motion-fast);
+    opacity: 1;
   }
   .trigger-chip:hover {
     background: color-mix(in srgb, var(--ink) 5%, transparent);
@@ -83,13 +83,9 @@
     transform: scale(0.97);
     background: color-mix(in srgb, var(--warm-accent) 12%, transparent);
   }
-  .trigger-chip:focus-visible {
-    outline: 2px solid var(--warm-accent);
-    outline-offset: 2px;
-  }
   .trigger-chip.active {
     background: var(--warm-accent-soft);
-    color: var(--warm-accent);
+    color: var(--accent-text);
     border-color: color-mix(in srgb, var(--warm-accent) 30%, transparent);
     opacity: 1;
   }
@@ -110,14 +106,13 @@
     font-family: "DM Mono", ui-monospace, monospace;
     font-style: normal;
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     background: color-mix(in srgb, var(--ink) 6%, transparent);
     border-radius: 0.25rem;
     padding: 0.0625rem 0.375rem;
   }
   .trigger-chip.active .count {
-    color: var(--warm-accent);
+    color: var(--accent-text);
     background: color-mix(in srgb, var(--warm-accent) 12%, transparent);
     opacity: 1;
   }

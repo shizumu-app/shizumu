@@ -46,16 +46,14 @@
     font-family: "Lora", serif;
     font-size: 1.125rem;
     line-height: 1.4;
-    color: var(--ink);
-    opacity: 0.4;
+    color: var(--ink-soft);
   }
 
   .empty-body {
     font-family: "Lora", serif;
     font-size: 0.8125rem;
     line-height: 1.5;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     max-width: 28rem;
   }
 

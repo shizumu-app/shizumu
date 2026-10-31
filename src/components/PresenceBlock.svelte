@@ -63,8 +63,8 @@
   }
 
   .presence-label {
-    opacity: 0.35;
     margin-bottom: 1rem;
+    color: var(--ink-soft);
   }
 
   .grid {
@@ -82,12 +82,11 @@
   }
 
   .square.filled {
-    background-color: var(--ink);
-    opacity: 0.25;
+    background-color: var(--ink-soft);
   }
 
   .presence-stats {
-    opacity: 0.35;
     margin-top: 0.75rem;
+    color: var(--ink-soft);
   }
 </style>

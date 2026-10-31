@@ -92,7 +92,7 @@
 
 /* Anchor styling */
 .prose a {
-  color: var(--warm-accent);
+  color: var(--accent-text);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -112,8 +112,9 @@
   font-size: inherit;
   font-style: italic;
   font-weight: inherit;
-  color: var(--ink);
-  opacity: var(--ink-tertiary);
+  /* ink-soft, not ink at the tertiary opacity: that was 2.0 to 2.6:1,
+     a prompt too faint to read (scripts/clarity, 2026-10-29). */
+  color: var(--ink-soft);
   pointer-events: none;
 }
 
@@ -121,8 +122,7 @@
 .prose .ProseMirror .is-empty::before {
   content: attr(data-placeholder);
   float: left;
-  color: var(--ink);
-  opacity: var(--ink-tertiary);
+  color: var(--ink-soft);
   font-style: italic;
   pointer-events: none;
   height: 0;
@@ -245,8 +245,7 @@
   font-family: "Lora", Georgia, serif;
   font-style: italic;
   font-size: 0.625rem;
-  color: var(--warm-accent);
-  opacity: 0.92;
+  color: var(--accent-text);
   padding: 0.0625rem 0.4375rem;
   border-radius: 0.5rem;
   background: var(--warm-accent-soft);
@@ -313,7 +312,7 @@
   font-family: var(--canvas-font-family, "Lora", serif);
   font-style: italic;
   font-size: 0.95em;
-  color: var(--warm-accent);
+  color: var(--accent-text);
   opacity: 0.85;
   margin: 0 0 0.25rem;
 }
@@ -349,7 +348,7 @@
 
 .prose th {
   background: color-mix(in srgb, var(--ink) 3%, var(--canvas-bg));
-  font-family: "Inter", sans-serif;
+  font-family: var(--font-ui);
   font-weight: 400;
   font-size: 0.6875em;
   opacity: 0.75;
@@ -373,8 +372,10 @@
 }
 
 /* ── Strikethrough ──────────────────────────────────────────────────── */
+/* Struck words stay readable: ink-soft rather than ink at 55%, which was
+   2.9 to 3.4:1 in the light tones. The line through them says "struck". */
 .prose s {
-  opacity: 0.55;
+  color: var(--ink-soft);
 }
 
 /* ── Day marker (continuous-trail decorator) ─────────────────────────── */
@@ -410,7 +411,7 @@
   font-family: var(--canvas-font-family, "Lora", serif);
   font-style: italic;
   font-size: 0.75em;
-  color: var(--warm-accent);
+  color: var(--accent-text);
   opacity: 0.75;
 }
 
@@ -418,10 +419,9 @@
 .prose .page-ref {
   display: inline;
   cursor: pointer;
-  color: var(--warm-accent);
+  color: var(--accent-text);
   border-bottom: 1px dotted color-mix(in srgb, var(--warm-accent) 35%, transparent);
   padding: 0 1px;
-  opacity: 0.92;
   transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
               border-color 180ms cubic-bezier(0.2, 0, 0, 1);
   white-space: nowrap;
@@ -445,21 +445,22 @@
   border-radius: 0.125rem;
 }
 .prose .page-ref .page-ref-arrow {
-  opacity: 0.55;
+  /* Full strength: at 55% the arrow was 1.9 to 2.2:1, the one glyph that
+     says "this goes somewhere". */
   margin-right: 1px;
 }
 .prose .page-ref .page-ref-label {
   font-family: inherit;
 }
 .prose .page-ref.page-ref--deleted {
-  color: var(--ink);
-  opacity: 0.35;
+  /* Quieter than a live link, still readable: ink at 35% was under 2.5:1. */
+  color: var(--ink-soft);
   cursor: default;
   border-bottom-style: dashed;
   border-bottom-color: color-mix(in srgb, var(--ink) 20%, transparent);
 }
 .prose .page-ref.page-ref--deleted:hover {
-  opacity: 0.55;
+  color: var(--ink);
 }
 .prose .page-ref .page-ref-remove {
   background: none;
@@ -485,10 +486,9 @@
 .prose .pin-ref {
   display: inline;
   cursor: pointer;
-  color: var(--warm-accent);
+  color: var(--accent-text);
   border-bottom: 1px dotted color-mix(in srgb, var(--warm-accent) 35%, transparent);
   padding: 0 1px;
-  opacity: 0.92;
   transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
               border-color 180ms cubic-bezier(0.2, 0, 0, 1);
   white-space: nowrap;
@@ -509,7 +509,8 @@
   border-radius: 0.125rem;
 }
 .prose .pin-ref .pin-ref-arrow {
-  opacity: 0.55;
+  /* Full strength, as the page mention's arrow: at 55% it was 2.2:1
+     (scripts/clarity/visual-phone.mjs, 2026-10-30). */
   margin-right: 1px;
 }
 .prose .pin-ref .pin-ref-label {
@@ -547,12 +548,13 @@
    a stronger accent. Static-rendered previews never include these — the
    plugin only runs in the writable editor. */
 .prose .find-match {
-  background: color-mix(in srgb, var(--warm-accent) 18%, transparent);
+  background: var(--find-fill);
   border-radius: 0.125rem;
   padding: 0 1px;
 }
 .prose .find-match-active {
-  background: color-mix(in srgb, var(--warm-accent) 35%, transparent);
+  background: var(--find-fill-active);
+  box-shadow: 0 0 0 1px var(--warm-accent);
 }
 
 /* ── Inline code mark + fenced code block ───────────────────────────────
@@ -683,7 +685,7 @@
   opacity: 0.9;
 }
 .prose .code-block-copy.copied {
-  color: var(--warm-accent);
+  color: var(--accent-text);
   opacity: 0.92;
 }
 .prose .code-block-wrap pre {
@@ -750,7 +752,7 @@
      follow the chart's centered layout. Collapsed by default, reveals on
      hover with the same sleek fade + slide. */
   font-size: 0.78em;
-  color: var(--warm-accent);
+  color: var(--accent-text);
   text-align: center;
   letter-spacing: 0.01em;
   max-height: 0;
@@ -962,8 +964,11 @@
    text and across container width) with a line-clean fill + left-edge
    accent border that hugs each logical line the selection covers. */
 .prose .selection-accent {
-  background: color-mix(in srgb, var(--warm-accent) 12%, transparent);
-  border-left: 2px solid color-mix(in srgb, var(--warm-accent) 55%, transparent);
+  /* Per-tone fill (global.css --selection-fill): 12% was 1.17:1 against
+     the canvas, and in dark a selection on the phone could not be seen.
+     The edge is the full accent, the mark that says "this is selected". */
+  background: var(--selection-fill);
+  border-left: 2px solid var(--warm-accent);
   padding-left: 6px;
   margin-left: -8px;
   border-radius: 0 4px 4px 0;
@@ -996,6 +1001,13 @@
    off the page. */
 .prose .tableWrapper {
   position: relative;
+  /* Room for the chip UNDER the table. It is absolutely placed at the
+     wrapper's bottom-right, and a table's last cell runs to that corner:
+     the chip sat over it and took every tap meant for that cell (on the
+     phone the chip is the block-actions control). Found driving the A16,
+     2026-10-29: a tap on a pinned table's last cell put the caret in the
+     first. 1.5rem clears the chip's 0.25rem inset and its own height. */
+  padding-bottom: 1.5rem;
 }
 
 .prose .block-type-chip {
@@ -1005,8 +1017,10 @@
   font-family: "DM Mono", monospace;
   font-size: 0.625rem;
   letter-spacing: 0.02em;
-  color: var(--ink);
-  opacity: 0.5;
+  /* Quiet by colour, not by fading: ink at 50% was 2.0 to 3.0:1 on 10px
+     text, and on the phone this chip is the block-actions control. The
+     family shows in the border; the text takes the accent on hover. */
+  color: var(--ink-soft);
   padding: 0.125rem 0.375rem;
   border: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
   border-radius: 0.25rem;
@@ -1018,7 +1032,7 @@
   pointer-events: auto;
   cursor: pointer;
   user-select: none;
-  transition: opacity 120ms cubic-bezier(0.2, 0, 0, 1);
+  transition: color 120ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 /* Comfortable tap target on touch WITHOUT resizing the visible pill — a
@@ -1044,34 +1058,29 @@
 .prose .code-block-wrap:hover .block-type-chip,
 .prose .tableWrapper:hover .block-type-chip,
 .prose .block-type-chip-anchor:hover .block-type-chip {
-  opacity: 0.8;
+  color: var(--ink);
 }
 
 /* On touch viewports there's no hover state, so the hover-brighten
    never fires. Default the chip a bit brighter so it stays legible
    without a hover gesture that doesn't exist. */
-@media (pointer: coarse) {
-  .prose .block-type-chip {
-    opacity: 0.65;
-  }
-}
 
 .prose .block-type-chip[data-family="lists"],
 .prose .block-type-chip[data-family="structure"] {
-  color: var(--warm-accent);
   border-color: color-mix(in srgb, var(--warm-accent) 22%, transparent);
 }
 .prose .block-type-chip[data-family="charts"] {
-  color: var(--warm-accent);
   border-color: color-mix(in srgb, var(--warm-accent) 30%, transparent);
 }
 .prose .block-type-chip[data-family="code"] {
-  color: var(--ink);
   border-color: color-mix(in srgb, var(--ink) 18%, transparent);
 }
 .prose .block-type-chip[data-family="files"] {
-  color: var(--warm-accent);
   border-color: color-mix(in srgb, var(--warm-accent) 25%, transparent);
+}
+.prose .block-shell:hover .block-type-chip:not([data-family="code"]),
+.prose .block-type-chip-anchor:hover .block-type-chip:not([data-family="code"]) {
+  color: var(--accent-text);
 }
 
 /* ── Touch-only synthetic block handle ──────────────────────────────────
@@ -1171,4 +1180,38 @@
     align-items: center;
     padding: 0.5rem 0;
   }
+}
+
+/* ── The laptop page: one accent, chrome on demand (cream council,
+   2026-10-31) ───────────────────────────────────────────────────────────
+   On the laptop's writing page the accent belongs to the caret, a ticked
+   box and the current page dot. The block region hairline and the
+   block-type chip's family border take neutral ink there, and the chip
+   itself (a label that read as a tag inside the writing) shows only while
+   its block is hovered or holds the caret. Scoped to `.page-body`, which
+   only the laptop's Page.svelte renders: the phone keeps its orange rules
+   and its always-visible chip, which is its block-actions handle. */
+.page-body .prose .block-shell,
+.page-body .prose blockquote.board-content > .board-nested {
+  border-left-color: var(--horizon);
+}
+.page-body .prose .block-type-chip[data-family] {
+  border-color: color-mix(in srgb, var(--ink) 12%, transparent);
+}
+.page-body .prose .block-type-chip {
+  visibility: hidden;
+}
+/* Shown by the editor's own mouse tracking (.block-mouse-hovered, stamped
+   by TipTapEditor's mousemove), not by `:hover` inside `@media (hover:
+   hover)`: webkit2gtk under X11 reports hover:hover false with a real
+   mouse (global.css, the board title reveal). A tapped block
+   (.block-active-touch) and a block holding the caret show it too, so
+   touch and keyboard still reach the block's actions. */
+.page-body .prose .block-mouse-hovered .block-type-chip,
+.page-body .prose .block-active-touch .block-type-chip,
+.page-body .prose .block-shell:focus-within .block-type-chip,
+.page-body .prose .code-block-wrap:focus-within .block-type-chip,
+.page-body .prose .block-type-chip-anchor:hover .block-type-chip,
+.page-body .prose .block-type-chip:hover {
+  visibility: visible;
 }

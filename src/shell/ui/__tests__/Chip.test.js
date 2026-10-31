@@ -49,7 +49,7 @@ describe("Chip", () => {
     // READ FROM SOURCE: jsdom applies no scoped stylesheet, so nothing
     // rendered can tell a mono chip from a Lora one or a pill from a box.
     // The four base declarations are what make it a tag rather than a
-    // word; the accent rule is TrailMap's `.pins-chip` — --warm-accent on
+    // word; the accent rule is TrailMap's `.pins-chip` — --accent-text on
     // --warm-accent-soft — which is why a count of pins on the phone reads
     // as the same thing it is on the desktop.
     const src = readFileSync("src/shell/ui/Chip.svelte", "utf8");
@@ -63,7 +63,7 @@ describe("Chip", () => {
 
     const accent = /\.shell-chip\[data-tone="accent"\]\s*\{([^}]*)\}/.exec(src);
     expect(accent, "no accent rule in Chip.svelte").toBeTruthy();
-    expect(accent[1]).toMatch(/color:\s*var\(--warm-accent\)/);
+    expect(accent[1]).toMatch(/color:\s*var\(--accent-text\)/);
     expect(accent[1]).toMatch(/background:\s*var\(--warm-accent-soft\)/);
   });
 });

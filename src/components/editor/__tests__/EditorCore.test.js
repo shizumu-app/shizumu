@@ -29,9 +29,11 @@ vi.mock("../../../lib/render/shared-extensions.js", async () => {
   const { BlockTitle } = await import("../../../lib/extensions/block-title.js");
   const { PinId } = await import("../../../lib/extensions/pin-id.js");
   const { BlockMovement } = await import("../../../lib/extensions/block-movement.js");
+  // A divider: the one block kind here that carries no pinId.
+  const { HorizontalRule } = await import("@tiptap/extension-horizontal-rule");
   return {
     READONLY_EXTENSIONS: [],
-    buildEditingExtensions: () => [Document, Paragraph, Text, Blockquote, UndoRedo, BlockTitle, PinId, BlockMovement],
+    buildEditingExtensions: () => [Document, Paragraph, Text, Blockquote, HorizontalRule, UndoRedo, BlockTitle, PinId, BlockMovement],
   };
 });
 
@@ -217,6 +219,22 @@ describe("EditorCore", () => {
     expect(savePageContent).toHaveBeenCalled();
     expect(onPinCreated).toHaveBeenCalledTimes(1);
     expect(instance.hasPinnedContent(updatePinContent.mock.calls[0][1])).toBe(true);
+  });
+
+  it("stores only the blocks it could stamp, so the pin and the page agree", async () => {
+    // A range over two paragraphs and a divider between them. A divider
+    // carries no pinId, so the save right after would leave it out of the
+    // pin; storing it at creation made the pin change shape a second
+    // after it was made.
+    const content = doc(para("the ferry leaves at six"), { type: "horizontalRule" }, para("ask about the night boat"));
+    const { instance, editor } = await mountCore({ initialContent: content });
+    const positions = [];
+    editor.state.doc.forEach((_n, offset) => positions.push(offset));
+    const pinContent = JSON.stringify(editor.getJSON());
+    await instance.confirmPin({ title: "ferry", category: "board", content: pinContent, nodePositions: positions });
+    const stored = JSON.parse(updatePinContent.mock.calls[0][1]).content;
+    expect(stored.map((n) => n.type)).toEqual(["paragraph", "paragraph"]);
+    expect(stored.every((n) => n.attrs.pinId === "pin-1")).toBe(true);
   });
 
   it("calls onStamped after the stamp but before the durable save", async () => {

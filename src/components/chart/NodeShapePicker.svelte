@@ -47,16 +47,18 @@
     border: none;
     padding: 0.125rem 0.375rem;
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     cursor: pointer;
     border-radius: 0.25rem;
     line-height: 1.4;
   }
-  .shape-btn:hover { opacity: 0.92; }
+  .shape-btn:hover {
+    color: var(--ink);
+    opacity: 1;
+  }
   .shape-btn.active {
-    opacity: 0.92;
     background: color-mix(in srgb, var(--warm-accent) 12%, transparent);
-    color: var(--warm-accent);
+    color: var(--accent-text);
+    opacity: 1;
   }
 </style>

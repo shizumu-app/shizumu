@@ -15,6 +15,7 @@
 
 <script>
   import { isInsertableImage, imageFilename, clipboardImage } from "../../lib/editor/image-file.js";
+  import { replacePinRunInEditor } from "../../lib/pin-run.js";
   import { pasteNeedsNativeRead, nativeClipboardImage } from "../../lib/editor/native-clipboard.js";
   // EditorCore — the headless editor. Owns the TipTap instance, the save
   // loop, paste/drop/clipboard, attachments, yjs, the pin cache, page
@@ -831,9 +832,13 @@
             // Re-serialize with pinId attribute now embedded so the stored
             // snapshot matches what the editor would produce on next sync.
             if (category !== "note") {
+              // Only what carries the stamp: a divider in range has no
+              // pinId, the next save's walk would leave it out of the pin
+              // (refresh_pin_caches), and the pin would change shape a
+              // second after it was made.
               const updatedNodes = positions.map((pos) => {
                 const n = editor.state.doc.nodeAt(pos);
-                return n ? n.toJSON() : null;
+                return n && n.attrs?.pinId === newPin.id ? n.toJSON() : null;
               }).filter(Boolean);
               if (updatedNodes.length > 0) {
                 const updatedJson = JSON.stringify({ type: "doc", content: updatedNodes });
@@ -1261,40 +1266,16 @@
    * the pin row's content/title cache.
    * Returns true on success, false if the pinId is not found in the doc.
    *
-   * AN ARRAY IS ACCEPTED, and the shell's pin screen sends one. A writer who
-   * splits a pinned block in two there has written two blocks; taking the
-   * first and dropping the rest — the desktop modal's behaviour — loses the
-   * second half of an edit. All of them land, the pin keeps the first (the
-   * caller stamps the id), and refresh_pin_caches re-derives the cache from
-   * that node, so the pin still covers one block. withNodesAtPinId
-   * (src/shell/pin-rename.js) is the same rule for a page this editor is
-   * not showing.
+   * AN ARRAY IS ACCEPTED, and the shell's pin screen sends one. A pin
+   * can be several blocks (made from a selection over them), and an edit
+   * can split one block in two. The whole run of the pin's blocks is
+   * replaced once, where it began, and every edited block carries the id:
+   * `replacePinRunInEditor` (src/lib/pin-run.js), whose header has the
+   * rule and the bug it closed. `withPinRun` there is the same rule for a
+   * page this editor is not showing.
    */
   export function spliceNodeAtPinId(pinId, newNodeJson) {
-    if (!editor || !pinId || !newNodeJson) return false;
-    const json = Array.isArray(newNodeJson) ? newNodeJson.filter(Boolean) : [newNodeJson];
-    if (json.length === 0) return false;
-    let firstPos = null;
-    let lastEnd = null;
-    editor.state.doc.descendants((node, pos) => {
-      if (firstPos !== null) return false;
-      if (node.attrs?.pinId === pinId) {
-        firstPos = pos;
-        lastEnd = pos + node.nodeSize;
-        return false;
-      }
-      return true;
-    });
-    if (firstPos === null) return false;
-    try {
-      const nodes = json.map((n) => editor.state.schema.nodeFromJSON(n));
-      const tr = editor.state.tr.replaceWith(firstPos, lastEnd, nodes);
-      editor.view.dispatch(tr);
-      return true;
-    } catch (err) {
-      console.error("spliceNodeAtPinId failed:", err);
-      return false;
-    }
+    return replacePinRunInEditor(editor, pinId, newNodeJson);
   }
 
   /**

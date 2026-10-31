@@ -14,6 +14,8 @@
 // The whole doc is walked, not just the top level: a pinned board can sit
 // inside a list item, and `spliceNodeAtPinId` finds it at any depth too.
 
+import { withPinRun } from "../lib/pin-run.js";
+
 /**
  * @param {object} node a TipTap doc or any node inside one
  * @param {string} pinId
@@ -49,18 +51,12 @@ export function withTitleAtPinId(node, pinId, title) {
  * afterwards, which is what keeps the two from disagreeing. This is the
  * cross-page half of that.
  *
- * MANY NODES, NOT ONE. The desktop keeps the first node of its editor's
- * doc and drops the rest; a writer who split a pinned block in two would
- * lose the second half. All of them are spliced in here, and the pin then
- * points at the first — `refresh_pin_caches` re-derives its cache from
- * the node carrying the id, so the pin covers one block and the page
- * keeps everything that was written.
- *
- * THE ID RIDES ON THE FIRST NODE. Whatever the editor handed back, the
- * block that replaces a pinned block is that pin's block: the id is
- * stamped rather than trusted, because a doc rebuilt by a serializer can
- * come back without the attr, and a spliced page with no pinId in it is a
- * pin orphaned by its own save.
+ * MANY NODES, NOT ONE. A pin can be several blocks (made from a
+ * selection over them), and an edit can split one block in two. The pin's
+ * whole run is replaced once, where it began, and every edited block
+ * carries the id: `withPinRun` (src/lib/pin-run.js), whose header has the
+ * rule and the bug it closed. This used to put the edit in place of EVERY
+ * stamped block — a three-block pin came back three times.
  *
  * @param {object} node a TipTap doc or any node inside one
  * @param {string} pinId
@@ -70,24 +66,5 @@ export function withTitleAtPinId(node, pinId, title) {
  * @returns {object} a new tree; the input is not mutated
  */
 export function withNodesAtPinId(node, pinId, nodes) {
-  const replacement = Array.isArray(nodes) ? nodes.filter(Boolean) : [];
-  if (!node || typeof node !== "object" || replacement.length === 0) return node;
-  if (!Array.isArray(node.content)) return node;
-  const out = [];
-  let hit = false;
-  for (const child of node.content) {
-    if (child?.attrs?.pinId === pinId) {
-      hit = true;
-      out.push(
-        ...replacement.map((n, i) =>
-          i === 0 ? { ...n, attrs: { ...(n.attrs || {}), pinId } } : n,
-        ),
-      );
-    } else {
-      out.push(withNodesAtPinId(child, pinId, replacement));
-    }
-  }
-  return hit || out.some((child, i) => child !== node.content[i])
-    ? { ...node, content: out }
-    : node;
+  return withPinRun(node, pinId, nodes);
 }

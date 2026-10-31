@@ -174,7 +174,7 @@
     font-family: "DM Mono", "JetBrains Mono", monospace;
     font-size: 0.625rem;
     letter-spacing: 0.03em;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 0.85;
     margin-bottom: 0.25rem;
   }
@@ -207,7 +207,7 @@
     background: var(--canvas-bg, transparent);
   }
   .reshape-pill.danger {
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 0.85;
   }
 </style>

@@ -215,8 +215,7 @@
   .find-count {
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     letter-spacing: 0.02em;
     white-space: nowrap;
     background: color-mix(in srgb, var(--ink) 6%, transparent);
@@ -228,8 +227,7 @@
     border: none;
     cursor: pointer;
     font-size: 0.75rem;
-    color: var(--ink);
-    opacity: 0.7;
+    color: var(--ink-soft);
     padding: 0.1875rem 0.375rem;
     border-radius: 0.25rem;
     transition: opacity var(--motion-fast), background var(--motion-fast);
@@ -251,8 +249,7 @@
     border: none;
     cursor: pointer;
     font-size: 1rem;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     padding: 0.125rem 0.25rem;
     line-height: 1;
     transition: opacity var(--motion-fast), background var(--motion-fast);
@@ -265,7 +262,6 @@
     background: color-mix(in srgb, var(--warm-accent) 12%, transparent);
   }
   .find-sep {
-    color: var(--ink);
-    opacity: 0.25;
+    color: var(--ink-soft);
   }
 </style>

@@ -1,7 +1,7 @@
 {
   "name": "shizumu",
-  "version": "0.8.0",
-  "description": "write to think. pin what matters. trail what continues. the rest sinks.",
+  "version": "0.8.1",
+  "description": "a private writing app. write to think, pin what matters, trail what continues.",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",

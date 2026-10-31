@@ -1,12 +1,17 @@
 <script>
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
   /** @type {{ message: string | null }} */
   let { message } = $props();
 </script>
 
-{#if message}
-  <div class="editor-toast" transition:fade={{ duration: 180 }}>{message}</div>
-{/if}
+<!-- The region is always mounted and only the band inside it comes and
+     goes: a live region inserted already holding its message is announced
+     unreliably (the shell Toast's finding; Vercel's guidelines, 2026-10-31). -->
+<div class="editor-toast-live" role="status" aria-live="polite">
+  {#if message}
+    <div class="editor-toast" transition:fade={{ duration: 180 }}>{message}</div>
+  {/if}
+</div>
 
 <style>
   .editor-toast {
@@ -20,10 +25,9 @@
     box-shadow: 0 0.5rem 1.5rem var(--card-shadow-hover);
     border-radius: var(--radius-md);
     padding: 0.5rem 0.875rem;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-prose);
     font-size: 0.75rem;
     color: var(--ink);
-    opacity: 0.95;
     pointer-events: none;
     user-select: none;
     max-width: 90vw;

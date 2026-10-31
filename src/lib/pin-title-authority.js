@@ -37,6 +37,12 @@ import { isBoardType } from "./extensions/block-title.js";
  * @returns {string|null}
  */
 export function pinNodeType(pin, liveNode = null) {
+  // A pin over several blocks is held live as a doc of them (pin-run.js);
+  // its title lives on the first, as the stored row's does below.
+  if (liveNode?.type === "doc") {
+    const first = Array.isArray(liveNode.content) ? liveNode.content[0] : null;
+    return typeof first?.type === "string" ? first.type : null;
+  }
   if (liveNode && typeof liveNode.type === "string") return liveNode.type;
   const raw = pin?.content;
   if (typeof raw !== "string") return null;

@@ -115,8 +115,19 @@
     touch-action: manipulation;
   }
 
+  /* Visual pass (2026-10-30): the button answers a press with a soft
+     tint inside a rounded touch area, the way the rows do. */
+  .shell-toolbar-button {
+    border-radius: var(--radius-md);
+    transition: background-color var(--motion-fast);
+  }
+  .shell-toolbar-button:not(:disabled):active { background: var(--press-tint); }
+  @media (hover: hover) {
+    .shell-toolbar-button:not(:disabled):hover { background: var(--hover-tint); }
+  }
+
   .shell-toolbar-button.active {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
   .shell-toolbar-button:disabled {

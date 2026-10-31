@@ -243,10 +243,14 @@ export function pageRows({ summaries = [], currentPageId = null } = {}) {
  * other page from the list leaves the writer where they are and is a
  * different interaction with a different confirmation; it is not offered.
  *
- * THE LABEL NAMES THE PAGE, and that is the whole safeguard. This acts at one
- * tap on writing that does not come back, so the row says which page it will
- * take rather than "delete this page" — and naming it is also the shortest
- * honest label, which is what the voice asks for. The ordinal is the one the
+ * THE LABEL NAMES THE PAGE, so the row says which page it will take rather
+ * than "delete this page" — and naming it is also the shortest honest label,
+ * which is what the voice asks for. It used to be the whole safeguard, at one
+ * tap on writing that does not come back. Since 2026-10-31 (Vercel's
+ * interface guidelines: a destructive act needs a confirmation or an undo)
+ * the first tap ARMS the row, which then reads "tap again to delete page 7",
+ * and only a second tap on that page deletes it — the desktop rail's
+ * two-step (FocusRail confirmDeleteId). The caller holds `armedDeleteId`. The ordinal is the one the
  * SHEET shows (page-ordinal.js): a row reading "delete page 7" over a list
  * labelled 1..3 would be naming a page the writer cannot see.
  *
@@ -261,10 +265,11 @@ export function pageRows({ summaries = [], currentPageId = null } = {}) {
  * because a reader of this function would otherwise expect to find the row on
  * screen and not find it.
  *
- * @param {object} [args]  as `pageRows`
+ * @param {object} [args]  as `pageRows`, plus `armedDeleteId`: the page whose
+ *   delete row was tapped once
  * @returns {Array<object>}  `pageRows` plus at most one `kind: "delete"` row
  */
-export function pageSheetRows({ summaries = [], currentPageId = null } = {}) {
+export function pageSheetRows({ summaries = [], currentPageId = null, armedDeleteId = null } = {}) {
   const rows = pageRows({ summaries, currentPageId });
   const showing = rows.find((r) => r.showing);
   // No page open, no row: it acts on the one being looked at, and a sheet
@@ -275,7 +280,8 @@ export function pageSheetRows({ summaries = [], currentPageId = null } = {}) {
     {
       id: `delete:${showing.id}`,
       kind: "delete",
-      label: `delete ${showing.label}`,
+      armed: armedDeleteId === showing.id,
+      label: armedDeleteId === showing.id ? `tap again to delete ${showing.label}` : `delete ${showing.label}`,
       value: "",
       destructive: true,
       pageId: showing.id,

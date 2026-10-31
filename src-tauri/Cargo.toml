@@ -1,6 +1,6 @@
 [package]
 name = "shizumu"
-version = "0.8.0"
+version = "0.8.1"
 description = "write to think. pin what matters. the rest sinks."
 authors = []
 license = "Apache-2.0"

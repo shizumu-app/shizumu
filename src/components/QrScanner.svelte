@@ -126,12 +126,12 @@
     font-size: 0.9375rem;
     line-height: 1.5;
     color: var(--ink);
-    opacity: 0.85;
+    opacity: 1;
   }
   .rationale-cta {
     appearance: none;
     background: var(--warm-accent-soft);
-    color: var(--warm-accent);
+    color: var(--accent-text);
     border: 1px solid color-mix(in srgb, var(--warm-accent) 25%, transparent);
     border-radius: 0.375rem;
     padding: 0.625rem 0.875rem;

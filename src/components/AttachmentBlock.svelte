@@ -370,7 +370,7 @@
           title={node.attrs.sync ? "synced. click to keep local-only" : "local only. click to authorize syncing"}
           onclick={onToggleSync}
         >{node.attrs.sync ? "synced" : "local"}</button>
-        <button type="button" class="action delete-btn" title="remove" onclick={onDelete}>✕</button>
+        <button type="button" class="action delete-btn" title="remove" aria-label="remove the attachment" onclick={onDelete}>✕</button>
       </span>
     </span>
     {#if errorMsg}
@@ -414,8 +414,8 @@
   }
   .size {
     font-size: 0.75rem;
-    opacity: 0.5;
     flex-shrink: 0;
+    color: var(--ink-soft);
   }
   /* Persistent privacy indicator: muted = local, warm = synced. */
   .state-dot {
@@ -446,16 +446,15 @@
     cursor: pointer;
     padding: 0.125rem 0.3125rem;
     border-radius: 0.25rem;
-    opacity: 0.7;
     font-family: "DM Mono", monospace;
     font-size: 0.6875rem;
-    color: var(--ink);
+    color: var(--ink-soft);
   }
   .delete-btn { font-size: 0.75rem; }
   .action:hover {
     opacity: 1;
     background: var(--warm-accent-soft);
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
   /* Own line, not inline after the chip: rendered as an inline span right
      next to the block it belongs to, this used to run straight into
@@ -491,8 +490,9 @@
       min-width: 0;
       min-height: 0;
       font-size: 0.75rem;
-      opacity: 0.85;
-    }
+    color: var(--ink);
+    opacity: 1;
+  }
   }
 
   /* The image branch is styled entirely by global.css's .local-image-*

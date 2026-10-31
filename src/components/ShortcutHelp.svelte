@@ -141,17 +141,18 @@
     bottom: 1rem; right: 1rem;
     width: 1.75rem; height: 1.75rem;
     border-radius: 50%;
-    background: var(--ink);
-    color: var(--canvas-bg);
-    opacity: 0.25;
+    /* Bare at rest: a filled disc was the loudest neutral shape on the
+       page (cream council, 2026-10-31). The fill arrives on hover. */
+    background: transparent;
+    color: var(--ink-soft);
     border: 0;
     font-size: 0.875rem;
     font-family: "DM Mono", monospace;
     cursor: pointer;
-    transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
+    transition: color 180ms cubic-bezier(0.2, 0, 0, 1), background 180ms cubic-bezier(0.2, 0, 0, 1);
     z-index: 50;
   }
-  .help-toggle:hover { opacity: 0.55; }
+  .help-toggle:hover { color: var(--ink); background: var(--press-tint); }
 
   .help-panel {
     min-width: 28rem;
@@ -166,20 +167,18 @@
     scrollbar-width: thin;
   }
   .help-title {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
     text-transform: lowercase;
     letter-spacing: 0.05em;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     margin: 0 0 0.5rem;
   }
   .help-section-title {
     font-family: "Lora", serif;
     font-style: italic;
     font-size: 0.75rem;
-    color: var(--warm-accent);
-    opacity: 0.78;
+    color: var(--accent-text);
     margin: 0.5rem 0 0.125rem;
     letter-spacing: 0.005em;
   }
@@ -249,7 +248,7 @@
     font-size: 0.8125rem;
     line-height: 1.35;
     color: var(--ink);
-    opacity: 0.85;
+    opacity: 1;
   }
   /* `/` and `@` are gateways, not actions: they open whole menus, and
      naming what is inside is the reason the `@` row was wrong for so
@@ -258,8 +257,7 @@
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
     line-height: 1.5;
-    color: var(--ink);
-    opacity: 0.4;
+    color: var(--ink-soft);
   }
   .help-keys {
     display: inline-flex;
@@ -270,7 +268,8 @@
      shared .55-over-6% they were the faintest thing on it. Raised here
      only — onboarding and the playground keep the quieter inline chip. */
   .help-keys :global(.key-hint) {
-    opacity: 0.85;
+    color: var(--ink);
+    opacity: 1;
   }
   .help-keys :global(.key) {
     background: color-mix(in srgb, var(--ink) 12%, transparent);

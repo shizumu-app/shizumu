@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from "svelte";
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
   import { navPush, navClose } from "../lib/navstack.js";
 
   /**
@@ -97,7 +97,7 @@
       bind:this={inputEl}
       type="text"
       class="panel-input selectable"
-      placeholder="jump to a day..."
+      placeholder="jump to a day…"
       bind:value={filter}
       onkeydown={handleKeydown}
       spellcheck="false"
@@ -132,7 +132,7 @@
   .overlay {
     position: fixed;
     inset: 0;
-    background: color-mix(in srgb, var(--ink) 25%, transparent);
+    background: var(--scrim-soft);
     z-index: 200;
     display: flex;
     align-items: flex-start;
@@ -179,6 +179,7 @@
   .panel-list {
     max-height: 20rem;
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 0.25rem 0;
     scrollbar-width: thin;
     scrollbar-color: color-mix(in srgb, var(--ink) 10%, transparent) transparent;
@@ -188,8 +189,7 @@
     font-family: "Lora", serif;
     font-style: italic;
     font-size: 0.8125rem;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     padding: 1.125rem;
     text-align: center;
   }
@@ -216,8 +216,7 @@
   .row-date {
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     letter-spacing: 0.02em;
     flex-shrink: 0;
     min-width: 4.5rem;
@@ -226,16 +225,15 @@
   .row-sep {
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
-    opacity: 0.35;
     flex-shrink: 0;
+    color: var(--ink-soft);
   }
 
   .row-focus {
     font-family: "Lora", serif;
     font-style: italic;
     font-size: 0.875rem;
-    color: var(--ink);
-    opacity: 0.75;
+    color: var(--ink-soft);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -243,15 +241,15 @@
   }
 
   .panel-row.active .row-focus {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
   .panel-hint {
     padding: 0.5rem 1.125rem 0.625rem;
     border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
     font-size: 0.625rem;
-    opacity: 0.35;
     display: flex;
     justify-content: flex-end;
+    color: var(--ink-soft);
   }
 </style>

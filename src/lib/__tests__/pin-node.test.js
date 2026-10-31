@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { holdsPin } from "../pin-node.js";
+import { holdsPin, stampedPinIds } from "../pin-node.js";
 import { findPinNode, splicePinNode } from "../pin-edit-route.js";
 
 // An @-mention of a pin is a `pinRef` node that carries the pin's id in the
@@ -42,6 +42,21 @@ describe("pin edits skip a mention that comes first", () => {
     const edited = { ...block, content: [{ type: "text", text: "milk, eggs" }] };
     const out = splicePinNode(doc, "P", edited);
     expect(out.content[0].content[0]).toBe(mention);
-    expect(out.content[1]).toBe(edited);
+    // A stamped copy of the edit, not the same object (pin-run.js stamps
+    // every block it puts back).
+    expect(out.content[1]).toEqual(edited);
+  });
+});
+
+describe("stampedPinIds", () => {
+  it("lists every pin stamped on a block or inside it, and no mention", () => {
+    const list = {
+      type: "list", attrs: { pinId: "outer" },
+      content: [{ type: "listItem", content: [
+        { type: "paragraph", attrs: { pinId: "inner" }, content: [{ type: "pinRef", attrs: { pinId: "mentioned" } }] },
+      ] }],
+    };
+    expect(stampedPinIds(list).sort()).toEqual(["inner", "outer"]);
+    expect(stampedPinIds({ type: "paragraph", content: [{ type: "text", text: "plain" }] })).toEqual([]);
   });
 });

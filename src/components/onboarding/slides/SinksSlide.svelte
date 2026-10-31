@@ -142,7 +142,7 @@
   }
   .seg-opt.active {
     background: var(--warm-accent-soft);
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 1;
   }
 

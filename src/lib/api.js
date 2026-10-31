@@ -4,9 +4,13 @@ import { resolveInvokeSource } from "./invoke-source.js";
 const isTauri = typeof window !== "undefined" && window.__TAURI_INTERNALS__;
 
 // Fired after any mutation that could change inline `pageRef` labels —
-// rename / move / fold / delete a trail, or reassign a page's lineage.
-// The pageRef NodeView listens and re-resolves cached labels.
-function emitTrailMutated() {
+// rename / move / fold / delete a trail, reassign a page's lineage, change
+// a page's focus (its label's last part) or delete a page. The pageRef and
+// pinRef NodeViews listen and re-resolve cached labels. Both shells also
+// fire it after a sync pull that brought ops: a rename or delete made on
+// the other device left the old label, or a live link to a deleted page,
+// for the rest of the session (found reading the J16 journey, 2026-10-28).
+export function emitTrailMutated() {
   if (typeof window !== "undefined") {
     try { window.dispatchEvent(new CustomEvent("shizumu:trail-mutated")); } catch {}
   }
@@ -1166,7 +1170,9 @@ export async function cleanupEmptyDayMarkers() {
 }
 
 export async function updateWhatMattersNow(pageId, text) {
-  return call("update_what_matters_now", { pageId, text });
+  const r = await call("update_what_matters_now", { pageId, text });
+  emitTrailMutated();
+  return r;
 }
 
 export async function updateWhatShifted(pageId, text) {
@@ -1286,7 +1292,9 @@ export async function getInheritedSharedBlocks(pageId) {
 }
 
 export async function deleteFocus(pageId) {
-  return call("delete_focus", { pageId });
+  const r = await call("delete_focus", { pageId });
+  emitTrailMutated();
+  return r;
 }
 
 export async function getLineages() {

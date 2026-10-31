@@ -95,17 +95,35 @@ describe("withNodesAtPinId", () => {
     expect(out.content[1].attrs.pinId).toBe("P1");
   });
 
-  it("keeps every block the writer left behind, with the pin on the first", () => {
-    // The desktop keeps the first node and drops the rest; a writer who
-    // split a pinned block in two would lose the second half.
+  it("keeps every block the writer left behind, all of them the pin's", () => {
+    // A writer who split a pinned block in two keeps both halves. Both
+    // carry the id: since 2026-10-28 a pin holds every block stamped with
+    // it, and a half left unstamped would drop out of the pin at the next
+    // save while the pin screen had shown it as part of the pin.
     const out = withNodesAtPinId(doc(), "P1", [
       { type: "table", content: [] },
       { type: "paragraph", content: [{ type: "text", text: "and a thought" }] },
     ]);
     expect(out.content.map((n) => n.type)).toEqual(["paragraph", "table", "paragraph", "paragraph"]);
     expect(out.content[1].attrs.pinId).toBe("P1");
-    expect(out.content[2].attrs?.pinId).toBeUndefined();
+    expect(out.content[2].attrs.pinId).toBe("P1");
     expect(out.content[2].content[0].text).toBe("and a thought");
+  });
+
+  it("puts an edited pin of several blocks back once, not once per block", () => {
+    // It replaced every stamped block with the whole edit: a three-block
+    // pin came back three times.
+    const three = {
+      type: "doc",
+      content: ["one", "two", "three"].map((t) => ({
+        type: "paragraph", attrs: { pinId: "P1" }, content: [{ type: "text", text: t }],
+      })),
+    };
+    const out = withNodesAtPinId(three, "P1", [
+      { type: "paragraph", content: [{ type: "text", text: "one, edited" }] },
+      { type: "paragraph", content: [{ type: "text", text: "two" }] },
+    ]);
+    expect(out.content.map((n) => n.content[0].text)).toEqual(["one, edited", "two"]);
   });
 
   it("reaches a pinned block nested inside another", () => {

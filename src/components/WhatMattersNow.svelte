@@ -115,24 +115,25 @@
     font-size: calc(var(--editor-font-size, 17px) * 1.12);
     line-height: 1.3;
     color: var(--ink);
-    opacity: var(--ink-secondary);
-    padding: 0;
-    transition: opacity var(--motion-fast);
+    /* Room under the descenders for the focus rule (global.css). */
+    padding: 0 0 0.3125rem;
     /* Long titles hard-clip a glyph at narrow viewports (e.g. 360px store
        screenshots) without this — ellipsis when unfocused; the native
        input scroll takes over while focused/editing. */
     text-overflow: ellipsis;
   }
 
+  /* ink-soft at full strength, like the phone's TitleField: the field's
+     0.6 fade times the placeholder's 0.3 left the prompt at about 18%,
+     unreadable in every tone (2026-10-31, owner's screenshot). */
   .what-matters-input::placeholder {
-    color: var(--ink-soft, var(--ink));
-    opacity: 0.3;
+    color: var(--ink-soft);
+    opacity: 1;
     font-style: italic;
   }
 
   .filled .what-matters-input {
-    color: var(--warm-accent);
-    opacity: 0.92;
+    color: var(--accent-text);
   }
 
   .what-matters-text {
@@ -140,7 +141,7 @@
     font-style: italic;
     font-size: calc(var(--editor-font-size, 17px) * 1.12);
     line-height: 1.3;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     margin: 0;
     /* Read-only title (past pages / trail views): clip long titles cleanly
        instead of hard-cutting the final glyph. */

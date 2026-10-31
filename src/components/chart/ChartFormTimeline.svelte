@@ -137,7 +137,7 @@
     font-size: 0.625rem;
     text-transform: lowercase;
     letter-spacing: 0.05em;
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
   .title-input {
     appearance: none;
@@ -173,10 +173,9 @@
     cursor: grab;
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
-    opacity: 0.45;
     padding: 0 0.25rem;
     user-select: none;
-    color: var(--ink);
+    color: var(--ink-soft);
   }
   .drag-handle:active { cursor: grabbing; }
   .event-input {
@@ -203,27 +202,31 @@
     border-radius: 0.25rem;
     padding: 0.125rem 0.4375rem;
     font-size: 0.75rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     cursor: pointer;
   }
-  .milestone-btn:hover { opacity: 0.92; }
+  .milestone-btn:hover {
+    color: var(--ink);
+    opacity: 1;
+  }
   .milestone-btn.active {
-    color: var(--warm-accent);
-    opacity: 0.92;
+    color: var(--accent-text);
     border-color: color-mix(in srgb, var(--warm-accent) 25%, transparent);
     background: color-mix(in srgb, var(--warm-accent) 8%, transparent);
+    opacity: 1;
   }
   .event-remove {
     appearance: none;
     background: transparent;
     border: none;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     cursor: pointer;
     font-size: 1rem;
     line-height: 1;
     padding: 0 0.25rem;
   }
-  .event-remove:hover { opacity: 0.85; }
+  .event-remove:hover {
+    color: var(--ink);
+    opacity: 1;
+  }
 </style>

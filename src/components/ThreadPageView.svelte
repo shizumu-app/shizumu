@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { mayReplaceWithPulled } from "../lib/editor/pull-reload.js";
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
   import { Editor } from "@tiptap/core";
   import { READONLY_EXTENSIONS } from "../lib/render/shared-extensions.js";
   import { getPage, createLineage, setFocusLineage } from "../lib/api.js";
@@ -154,14 +154,14 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="page-view" onclick={(e) => e.stopPropagation()}>
     {#if loading}
-      <p class="pv-status label">loading...</p>
+      <p class="pv-status label">loading…</p>
     {:else if !page}
       <p class="pv-status label">page not found</p>
     {:else}
       <div class="pv-header">
         <span class="pv-date label">{formatDate(page.date)}</span>
         <button class="pv-continue" onclick={() => { onContinue(); }}>open in editor →</button>
-        <button class="pv-close" onclick={onClose}>×</button>
+        <button class="pv-close" aria-label="close" onclick={onClose}>×</button>
       </div>
 
       {#if editAttempted}
@@ -216,7 +216,7 @@
     position: fixed; inset: 0;
     background: color-mix(in srgb, var(--margin-bg) 85%, transparent);
     display: flex; justify-content: center; align-items: flex-start;
-    padding-top: 3rem; z-index: 100; overflow-y: auto;
+    padding-top: 3rem; z-index: 100; overflow-y: auto; overscroll-behavior: contain;
   }
 
   .page-view {
@@ -247,6 +247,7 @@
          Modal.svelte applies here (see that file's phone block comment). */
       max-height: calc(var(--app-height, 100dvh) - 2rem);
       overflow-y: auto;
+      overscroll-behavior: contain;
       /* Universal bar-clearance rule: this is the real scroll container
          (the .overlay it centers in doesn't itself clip content), and
          nothing here registers a navstack hideBar entry, so the fixed
@@ -257,29 +258,38 @@
     }
   }
 
-  .pv-status { opacity: 0.35; padding: 1rem 0; }
+  .pv-status { padding: 1rem 0;
+    color: var(--ink-soft);
+  }
 
   .pv-header {
     display: flex; align-items: center; gap: 0.5rem;
     margin-bottom: 1.25rem;
   }
-  .pv-date { opacity: 0.35; }
+  .pv-date {
+    color: var(--ink-soft);
+  }
   .pv-continue {
     margin-left: auto;
     background: none; border: none; cursor: pointer;
-    font-family: "Inter", sans-serif; font-size: 0.75rem;
-    color: var(--warm-accent); opacity: 0.75;
+    font-family: var(--font-ui); font-size: 0.75rem;
+    color: var(--accent-text);
     padding: 0.25rem 0.625rem; border-radius: 0.375rem;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
                 background 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .pv-continue:hover { opacity: 0.92; background: var(--warm-accent-soft); }
+  .pv-continue:hover { background: var(--warm-accent-soft);
+    color: var(--ink);
+    opacity: 1;
+  }
   .pv-close {
     background: none; border: none; cursor: pointer;
-    font-size: 1.125rem; color: var(--ink); opacity: 0.35; padding: 0 0.25rem;
+    font-size: 1.125rem; color: var(--ink-soft); padding: 0 0.25rem;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .pv-close:hover { opacity: 0.75; }
+  .pv-close:hover {
+    color: var(--ink);
+  }
 
   /* Continue-the-thread collision bar — quiet, surfaced only on edit attempt. */
   .pv-collision {
@@ -292,17 +302,18 @@
   }
   .pv-collision-text {
     font-family: "Lora", serif; font-style: italic;
-    font-size: 0.9375rem; color: var(--ink); opacity: 0.7;
+    font-size: 0.9375rem; color: var(--ink-soft);
   }
   .pv-collision-action {
     margin-left: auto;
     background: none; cursor: pointer;
-    font-family: "Inter", sans-serif; font-size: 0.75rem;
-    color: var(--warm-accent); opacity: 0.92;
+    font-family: var(--font-ui); font-size: 0.75rem;
+    color: var(--accent-text);
     border: 1px solid color-mix(in srgb, var(--warm-accent) 35%, transparent);
     padding: 0.3125rem 0.75rem; border-radius: 0.5rem;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
                 background 180ms cubic-bezier(0.2, 0, 0, 1);
+    opacity: 1;
   }
   .pv-collision-action:hover:not(:disabled) { opacity: 1; background: color-mix(in srgb, var(--warm-accent) 14%, transparent); }
   .pv-collision-action:disabled { opacity: 0.35; cursor: default; }
@@ -319,13 +330,15 @@
   .pv-collision-hint {
     margin: -0.5rem 0 1rem; padding: 0 0.875rem;
     font-family: "Lora", serif; font-style: italic;
-    font-size: 0.6875rem; color: var(--ink); opacity: 0.4;
+    font-size: 0.6875rem; color: var(--ink-soft);
   }
-  .pv-collision-hint.error { color: var(--warm-accent); opacity: 0.85; font-style: normal; }
+  .pv-collision-hint.error { color: var(--accent-text); font-style: normal;
+    opacity: 1;
+  }
 
   .pv-matters {
     font-family: "Lora", serif; font-style: italic;
-    font-size: 1.0625rem; color: var(--warm-accent);
+    font-size: 1.0625rem; color: var(--accent-text);
     margin-bottom: 1rem;
   }
 
@@ -335,5 +348,7 @@
      row spacing) stays here. */
 
   .pv-lines { margin-bottom: 1rem; }
-  .pv-line { font-family: "Lora", serif; font-size: 1.0625rem; line-height: 1.7; color: var(--ink); opacity: 0.92; }
+  .pv-line { font-family: "Lora", serif; font-size: 1.0625rem; line-height: 1.7; color: var(--ink);
+    opacity: 1;
+  }
 </style>

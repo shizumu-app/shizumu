@@ -1,7 +1,7 @@
 <script>
   import { pinAlreadyHolds } from "../lib/editor/block-already-pinned.js";
   import { onMount, onDestroy } from "svelte";
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
   import { DOMSerializer, Fragment } from "@tiptap/pm/model";
   import { TextSelection, NodeSelection } from "@tiptap/pm/state";
   import { isBoardType } from "../lib/extensions/block-title.js";
@@ -11,7 +11,7 @@
   import { writeClipboard } from "../lib/clipboard-write.js";
   import { resolveCopyTarget } from "../lib/extensions/block-copy-target.js";
   import { serializeBlockToHtml } from "../lib/block-clipboard.js";
-  import { getPins, getSetting, setSetting } from "../lib/api.js";
+  import { getPins, getPinForReference, getSetting, setSetting } from "../lib/api.js";
   import { serializeSelection } from "../lib/markdown-clipboard.js";
   import { isCoarsePointer } from "../lib/responsive.js";
   import { blockActionsFor, BLOCK_ACTION_LABELS } from "../lib/editor/block-actions.js";
@@ -20,6 +20,8 @@
   import { showsGutterCard } from "../lib/editor/touch-block-handle.js";
   import { shouldDismissOnBlur, isAffordanceTarget } from "../lib/editor/touch-reveal-dismiss.js";
   import { getViewportHeight, keyboardOpen } from "../lib/keyboard-state.js";
+  import { stampedPinIds, PART_PINNED } from "../lib/pin-node.js";
+  import { selectionEndRect, pinButtonTop } from "../lib/editor/selection-pin-place.js";
   import SharePopup from "./SharePopup.svelte";
   import FindBar from "./FindBar.svelte";
   import ChartBuilder from "./ChartBuilder.svelte";
@@ -1444,19 +1446,22 @@
     // where the mouse button was released than ProseMirror's own cursor
     // coords (PM updates selection state after pointerup, so those lag).
     // Fall back to PM coords if no DOM selection range exists.
+    // The END of the selection, not the box around all of it: that box's
+    // top is the first line, above where a downward drag began
+    // (selection-pin-place.js).
     let rect = null;
     try {
       const sel = window.getSelection();
       if (sel && sel.rangeCount > 0) {
-        rect = sel.getRangeAt(0).getBoundingClientRect();
+        rect = selectionEndRect(sel.getRangeAt(0));
       }
     } catch {}
-    if (!rect || (rect.width === 0 && rect.height === 0)) {
+    if (!rect) {
       const coords = ed.view.coordsAtPos(to);
       rect = { top: coords.top, bottom: coords.bottom, left: coords.left, right: coords.left };
     }
     selectionPinPosition = {
-      top: rect.top - wrapperRect.top + wrapperEl.scrollTop - 32,
+      top: pinButtonTop(rect, wrapperRect, wrapperEl.scrollTop),
       left: Math.max(4, rect.right - wrapperRect.left - 28),
     };
     selectionPinVisible = true;
@@ -1535,15 +1540,32 @@
     // [from, to]. These are the nodes we'll stamp with the new pinId.
     const positions = [];
     const nodes = [];
+    const stamps = new Set();
     editor.state.doc.forEach((node, offset) => {
       const start = offset;
       const end = offset + node.nodeSize;
       if (start < to && end > from) {
         positions.push(offset);
         nodes.push(node.toJSON());
+        for (const id of stampedPinIds(node)) stamps.add(id);
       }
     });
     if (nodes.length === 0) return;
+    // A block in range already holds a LIVE pin. Stamping this one over it
+    // would take that pin's stamp and orphan it on the next save; the
+    // phone refuses the same range in the same words (pin-intent.js). A
+    // stamp whose pin was deleted does not count: unpinning leaves it on
+    // the page by design, and it must not stop the block being kept again
+    // (block-already-pinned.js `pinAlreadyHolds`, same rule).
+    let overlapsPin = false;
+    for (const id of stamps) {
+      try { if (await getPinForReference(id)) { overlapsPin = true; break; } } catch {}
+    }
+    if (overlapsPin) {
+      selectionPinVisible = false;
+      showToast(PART_PINNED);
+      return;
+    }
 
     const jsonContent = { type: "doc", content: nodes };
     pinContent = JSON.stringify(jsonContent);
@@ -2242,9 +2264,13 @@
   />
 
   <!-- Quick-pin toast (E.1) — brief confirmation after Cmd/Ctrl+P -->
-  {#if quickPinToast}
-    <div class="quick-pin-toast" transition:fade={{ duration: 180 }}>{quickPinToast}</div>
-  {/if}
+  <!-- Always-mounted live region, so the pin's confirmation is read aloud
+       (EditorToast's reason, 2026-10-31). -->
+  <div class="quick-pin-toast-live" role="status" aria-live="polite">
+    {#if quickPinToast}
+      <div class="quick-pin-toast" transition:fade={{ duration: 180 }}>{quickPinToast}</div>
+    {/if}
+  </div>
 
   <!-- Generic editor toast (T15) — slash-command errors etc. -->
   <EditorToast message={toastMessage} />
@@ -2431,7 +2457,7 @@
     background: none;
     border: none;
     cursor: pointer;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 12px;
     font-weight: 400;
     color: var(--ink);
@@ -2491,7 +2517,7 @@
     }
     .pin-handle,
     .pin-handle:hover {
-      color: var(--warm-accent);
+      color: var(--accent-text);
       opacity: 0.85;
       background: none;
     }
@@ -2519,7 +2545,7 @@
 
   .pin-handle {
     font-size: 12px;
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
   .pin-handle:hover {
@@ -2744,7 +2770,7 @@
   }
 
   .block-action-row.danger {
-    color: var(--warm-accent);
+    color: var(--danger-text);
   }
 
   .block-action-glyph {
@@ -2800,7 +2826,7 @@
     flex-direction: column;
     gap: 3px;
     animation: bubble-menu-in 120ms ease;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 13px;
     pointer-events: none;  /* container ignored; buttons re-enable below */
   }
@@ -2839,11 +2865,11 @@
   }
   .bubble-btn.active {
     background: var(--warm-accent-soft);
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 1;
   }
   .bubble-btn.mono { font-family: "DM Mono", monospace; font-size: 11px; }
-  .bubble-btn-pin { color: var(--warm-accent); }
+  .bubble-btn-pin { color: var(--accent-text); }
 
   /* Phone: bigger bubble-menu hit targets so the formatting toolbar
      is actually tappable above a text selection. */
@@ -2919,7 +2945,7 @@
     box-shadow: 0 0.5rem 1.5rem var(--card-shadow-hover);
     border-radius: var(--radius-md);
     padding: 0.5rem 0.875rem;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.75rem;
     color: var(--ink);
     opacity: 0.92;

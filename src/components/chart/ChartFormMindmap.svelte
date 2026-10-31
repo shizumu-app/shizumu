@@ -135,7 +135,7 @@
     font-size: 0.625rem;
     text-transform: lowercase;
     letter-spacing: 0.05em;
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
   .central-input {
     appearance: none;

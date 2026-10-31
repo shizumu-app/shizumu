@@ -591,7 +591,10 @@
     background: var(--surface);
     border-top-left-radius: var(--radius-lg);
     border-top-right-radius: var(--radius-lg);
-    box-shadow: 0 -0.25rem 1.5rem var(--card-shadow-hover);
+    /* A hairline along the top edge, then a soft shadow upward: in dark
+       the shadow alone vanished against the canvas and the sheet read as
+       part of the page (visual pass, 2026-10-30). */
+    box-shadow: 0 -1px 0 var(--elev-border), 0 -0.75rem 2rem var(--card-shadow-hover);
     padding-bottom: var(--safe-bottom);
     margin-bottom: var(--kb-overlay, 0px);
     /* max-height, not the height rule below, accounts for the top safe

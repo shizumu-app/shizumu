@@ -1,5 +1,5 @@
 <script>
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
 
   /** @type {{ onUnlock: () => void }} */
   let { onUnlock } = $props();
@@ -104,8 +104,7 @@
   .app-name {
     font-family: "Lora", serif;
     font-size: 20px;
-    color: var(--ink);
-    opacity: 0.2;
+    color: var(--ink-soft);
     letter-spacing: 0.04em;
     margin: 0;
     user-select: none;
@@ -116,7 +115,7 @@
     border: none;
     border-bottom: 1px solid var(--horizon);
     outline: none;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 15px;
     color: var(--ink);
     padding: 8px 0;

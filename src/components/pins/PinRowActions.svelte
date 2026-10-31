@@ -82,26 +82,33 @@
     align-items: center;
     gap: 0.125rem;
     flex-shrink: 0;
-    opacity: 0.55;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
+    color: var(--ink-soft);
   }
-  :global(.pin-row-wrap:hover) .row-actions { opacity: 0.92; }
-  :global(.card:hover) .row-actions { opacity: 0.92; }
+  :global(.pin-row-wrap:hover) .row-actions {
+    color: var(--ink);
+    opacity: 1;
+  }
+  :global(.card:hover) .row-actions {
+    color: var(--ink);
+    opacity: 1;
+  }
 
   /* Touch devices can't hover. Make the actions always visible
      so they're discoverable; bigger hit targets for the row icons. */
   @media (pointer: coarse) {
     .row-actions {
-      opacity: 0.92;
       gap: 0.25rem;
-    }
+    color: var(--ink);
+    opacity: 1;
+  }
     .row-act {
       min-width: 2.25rem;
       min-height: 2.25rem;
       padding: 0.375rem 0.5rem;
       font-size: 0.875rem;
-      opacity: 0.75;
-    }
+    color: var(--ink-soft);
+  }
   }
 
   .row-act {
@@ -109,8 +116,7 @@
     border: none;
     cursor: pointer;
     font-size: 0.75rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     padding: 0.1875rem 0.3125rem;
     border-radius: 0.25rem;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
@@ -118,15 +124,16 @@
                 color 180ms cubic-bezier(0.2, 0, 0, 1);
   }
   .row-act:hover {
-    opacity: 0.92;
     background: color-mix(in srgb, var(--ink) 6%, transparent);
+    color: var(--ink);
+    opacity: 1;
   }
   .row-act.active {
-    color: var(--warm-accent);
-    opacity: 0.92;
+    color: var(--accent-text);
+    opacity: 1;
   }
   .row-act-del:hover {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
   .scope-menu {
@@ -150,10 +157,9 @@
     text-align: left;
     padding: 0.375rem 0.5rem;
     border-radius: 0.3125rem;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.75;
+    color: var(--ink-soft);
     white-space: nowrap;
     transition: background 180ms cubic-bezier(0.2, 0, 0, 1),
                 opacity 180ms cubic-bezier(0.2, 0, 0, 1),
@@ -161,7 +167,7 @@
   }
   .scope-opt:hover {
     background: color-mix(in srgb, var(--ink) 6%, transparent);
-    opacity: 0.92;
-    color: var(--warm-accent);
+    color: var(--accent-text);
+    opacity: 1;
   }
 </style>

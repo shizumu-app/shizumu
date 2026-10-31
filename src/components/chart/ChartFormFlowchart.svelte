@@ -139,7 +139,7 @@
     font-size: 0.625rem;
     text-transform: lowercase;
     letter-spacing: 0.05em;
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
   .dir-row { display: flex; gap: 0.4375rem; }
 
@@ -181,14 +181,16 @@
     appearance: none;
     background: transparent;
     border: none;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     cursor: pointer;
     font-size: 1rem;
     line-height: 1;
     padding: 0 0.25rem;
   }
-  .node-remove:hover { opacity: 0.85; }
+  .node-remove:hover {
+    color: var(--ink);
+    opacity: 1;
+  }
 
   .node-conns {
     display: flex;
@@ -200,7 +202,6 @@
   .conn-prefix {
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
-    opacity: 0.45;
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 </style>

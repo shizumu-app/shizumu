@@ -190,9 +190,14 @@ export const ListItem = Node.create({
           } catch {
             return;
           }
+          // NO FOCUS. Ticking a box is not writing: it focused the editor
+          // here, and on a phone with the keyboard down that put the caret
+          // back where it last was, often the end of the page, raised the
+          // keyboard and scrolled the view down to it (2026-10-30). The
+          // tick is a transaction and nothing else; a writer who was
+          // typing keeps their caret, one who was reading keeps their place.
           editor
             .chain()
-            .focus(undefined, { scrollIntoView: false })
             .command(({ tr }) => {
               const cur = tr.doc.nodeAt(itemPos);
               if (!cur || cur.type.name !== "listItem") return false;

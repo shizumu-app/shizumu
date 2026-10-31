@@ -72,8 +72,8 @@
   font-display: block;
 }
 
-/* ═══ Canvas Font ═══ */
-/* Canvas-only — interface labels stay in Inter regardless of choice. */
+/* Canvas-only: the interface keeps its own faces (DM Mono for chrome, Lora
+   for what is read, as the phone shell does) whatever the writer picks. */
 :root {
   --canvas-font-family: "Lora", serif;
 
@@ -181,56 +181,122 @@
 
 :root,
 [data-tone="cream"] {
+  --shade: var(--ink);
   --editor-font-size: 16px;
   --editor-line-height: 1.6;
   --canvas-bg: #f5f0e8;
   --surface: #f0ebe2;
-  --margin-bg: #f0ebe2;
+  /* The desk the page lies on. The owner wants to see where the page
+     starts (2026-10-31): one colour edge to edge lost it, and the old
+     #f0ebe2 was a 1.04:1 seam that read as a smudge. A clearer step, with
+     a hairline on the column's sides (Page.svelte), reads as a sheet. */
+  --margin-bg: #efe9df;
   --ink: #2c2420;
   --ink-soft: #5c5248;
   --horizon: #d8d0c4;
   --warm-accent: #c44d28;
+  /* Accent as TEXT: the brand accent darkened just enough to read at
+     4.5:1 on the canvas, the surface and an accent-tinted chip. The
+     accent itself stays the fill. Measured with scripts/clarity (the
+     owner found highlighted text unclear, 2026-10-29). */
+  --accent-text: #a94222;
   --warm-accent-soft: rgba(196, 77, 40, 0.08);
+  /* What a selection and find matches paint behind text. 12% was 1.17:1
+     against the canvas, so a selection on the phone was close to
+     invisible; text on these still reads at 8:1 or better. */
+  --selection-fill: color-mix(in srgb, var(--warm-accent) 25%, transparent);
+  --find-fill: color-mix(in srgb, var(--warm-accent) 25%, transparent);
+  --find-fill-active: color-mix(in srgb, var(--warm-accent) 45%, transparent);
+  color-scheme: light;
   --ink-primary: 1.0;
   --ink-secondary: 0.6;
   --ink-tertiary: 0.35;
   --card-shadow: rgba(44, 36, 32, 0.08);
   --card-shadow-hover: rgba(44, 36, 32, 0.16);
   --card-border: rgba(216, 208, 196, 0.5);
+  /* Visual pass (2026-10-30): one destructive colour, one raised surface,
+     two elevations. Destructive reads at 5:1 or better on canvas, surface
+     and its own soft fill (scripts/clarity). */
+  --danger-text: #a33a2c;
+  --danger-soft: rgba(163, 58, 44, 0.1);
+  --surface-raised: #fbf8f2;
+  --elev-border: rgba(44, 36, 32, 0.08);
+  --elev-1: 0 1px 2px rgba(44, 36, 32, 0.06), 0 4px 12px rgba(44, 36, 32, 0.08);
+  --elev-2: 0 2px 6px rgba(44, 36, 32, 0.08), 0 16px 40px rgba(44, 36, 32, 0.14);
 }
 
 [data-tone="white"] {
+  --shade: var(--ink);
   --canvas-bg: #ffffff;
   --surface: #f7f6f3;
-  --margin-bg: #ffffff;
+  --margin-bg: #f6f5f2;
   --ink: #37352f;
-  --ink-soft: #787774;
+  /* #787774 was 4.48:1 on white and 4.14:1 on the surface; this clears
+     4.5:1 inside a paragraph's 92% too (struck words, deleted mentions). */
+  --ink-soft: #676663;
   --horizon: #e3e2e0;
   --warm-accent: #c44d28;
+  --accent-text: #b64825;
   --warm-accent-soft: rgba(196, 77, 40, 0.06);
+  --selection-fill: color-mix(in srgb, var(--warm-accent) 25%, transparent);
+  --find-fill: color-mix(in srgb, var(--warm-accent) 25%, transparent);
+  --find-fill-active: color-mix(in srgb, var(--warm-accent) 45%, transparent);
+  color-scheme: light;
   --ink-primary: 1.0;
   --ink-secondary: 0.55;
   --ink-tertiary: 0.3;
   --card-shadow: rgba(15, 15, 15, 0.06);
   --card-shadow-hover: rgba(15, 15, 15, 0.12);
   --card-border: rgba(55, 53, 47, 0.09);
+  --danger-text: #b03a2a;
+  --danger-soft: rgba(176, 58, 42, 0.08);
+  --surface-raised: #ffffff;
+  --elev-border: rgba(55, 53, 47, 0.1);
+  --elev-1: 0 1px 2px rgba(15, 15, 15, 0.05), 0 4px 12px rgba(15, 15, 15, 0.07);
+  --elev-2: 0 2px 6px rgba(15, 15, 15, 0.06), 0 16px 40px rgba(15, 15, 15, 0.12);
 }
 
 [data-tone="dark"] {
+  --shade: #000;
   --canvas-bg: #181614;
   --surface: #252220;
-  --margin-bg: #121110;
+  /* The desk is darker than the page by a clearer step than cream and
+     white need, and the page's edge line is a touch stronger: at #131210
+     and the shared --elev-border the dark edge read 1.04:1 and 1.19:1,
+     nearly gone (owner, 2026-10-31). */
+  --margin-bg: #0e0d0c;
+  --page-edge: rgba(224, 216, 200, 0.15);
   --ink: #e0d8c8;
-  --ink-soft: #8a8070;
+  /* #8a8070 was 4.07:1 on the surface (row values, chevrons); this clears
+     4.5:1 on every dark surface, a hovered row in a raised menu included. */
+  --ink-soft: #a39a8a;
   --horizon: rgba(224, 216, 200, 0.1);
   --warm-accent: #e07050;
+  /* Lighter than the fill so accent text clears 4.5:1 on a raised menu's
+     hovered row too (the laptop's trail picker, scripts/clarity). */
+  --accent-text: #e57a5c;
   --warm-accent-soft: rgba(224, 112, 80, 0.08);
+  /* Dark needs a stronger fill to be seen at all: 12% was #30211b on
+     #181614, a difference a phone's panel crushes to nothing. */
+  --selection-fill: color-mix(in srgb, var(--warm-accent) 30%, transparent);
+  --find-fill: color-mix(in srgb, var(--warm-accent) 30%, transparent);
+  --find-fill-active: color-mix(in srgb, var(--warm-accent) 50%, transparent);
+  /* Native controls (scrollbars, checkboxes, inputs) follow the tone. */
+  color-scheme: dark;
   --ink-primary: 1.0;
   --ink-secondary: 0.6;
   --ink-tertiary: 0.35;
   --card-shadow: rgba(0, 0, 0, 0.2);
   --card-shadow-hover: rgba(0, 0, 0, 0.4);
   --card-border: rgba(224, 216, 200, 0.08);
+  --danger-text: #f2867a;
+  --danger-soft: rgba(242, 134, 122, 0.14);
+  /* Dark lifts by lightness and a hairline, not by shadow: a shadow on a
+     near-black canvas is invisible, and a raised panel read as a hole. */
+  --surface-raised: #2c2825;
+  --elev-border: rgba(224, 216, 200, 0.1);
+  --elev-1: 0 0 0 1px rgba(224, 216, 200, 0.06), 0 6px 16px rgba(0, 0, 0, 0.35);
+  --elev-2: 0 0 0 1px rgba(224, 216, 200, 0.08), 0 20px 48px rgba(0, 0, 0, 0.5);
 }
 
 /* ═══ Reset ═══ */
@@ -248,6 +314,9 @@
    refers to <html>, not the parent. */
 html {
   font-size: calc(16px * var(--ui-scale));
+  /* Android paints a grey flash on every tap by default; the controls
+     draw their own pressed state. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 html,
@@ -288,7 +357,7 @@ body {
 
 /* Interface labels */
 .label {
-  font-family: "Inter", sans-serif;
+  font-family: var(--font-ui);
   font-weight: 400;
   font-size: 12px;
   letter-spacing: -0.01em;
@@ -310,7 +379,7 @@ body {
   opacity: 0.08;
 }
 .date-separator-text {
-  font-family: "Inter", sans-serif;
+  font-family: var(--font-ui);
   font-size: 11px;
   color: var(--ink);
   opacity: 0.25;
@@ -490,13 +559,36 @@ body {
   align-items: center;
   justify-content: center;
 }
+/* The box is drawn, not native: WebKitGTK paints a native checkbox white
+   whatever the color-scheme, so dark showed bright white squares down every
+   task list (2026-10-31). A soft outline on the page's own colour, filled
+   with the accent and a check when done; the label around it stays the
+   tap target. */
 .ProseMirror ul[data-list] > li[data-marker="task"] > label input[type="checkbox"] {
   cursor: pointer;
-  accent-color: var(--warm-accent);
+  appearance: none;
+  -webkit-appearance: none;
+  width: 0.9375rem;
+  height: 0.9375rem;
+  margin: 0;
+  border: 1.5px solid color-mix(in srgb, var(--ink) 52%, transparent);
+  border-radius: 0.25rem;
+  background: var(--canvas-bg) center / 0.6875rem 0.6875rem no-repeat;
+  transition: background-color var(--motion-fast), border-color var(--motion-fast);
 }
+.ProseMirror ul[data-list] > li[data-marker="task"] > label input[type="checkbox"]:hover {
+  border-color: var(--warm-accent);
+}
+.ProseMirror ul[data-list] > li[data-marker="task"] > label input[type="checkbox"]:checked {
+  border-color: var(--warm-accent);
+  background-color: var(--warm-accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2 5 8.6 9.6 3.6' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+/* A done task is struck and quieter, and still readable: ink at 50% was
+   2.8:1 in white (visual pass, 2026-10-30). */
 .ProseMirror ul[data-list] > li[data-marker="task"][data-checked="true"] > div > p {
   text-decoration: line-through;
-  opacity: 0.5;
+  color: var(--ink-soft);
 }
 
 /* Modal-editor specific: suppress the BlockTitle inline title slot inside
@@ -549,7 +641,7 @@ body {
      bottom. Do not take this below ~1.45; the ink needs 1.362. */
   line-height: 1.6;
   letter-spacing: 0.01em;
-  color: var(--warm-accent);
+  color: var(--accent-text);
   outline: none;
   /* The title is quiet pin metadata — collapsed by default (filled OR empty),
      it reveals on hover of the block (or on focus) with a sleek fade + slide.
@@ -843,7 +935,7 @@ body {
   border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
   border-radius: 50%;
   cursor: pointer;
-  font-family: "Inter", sans-serif;
+  font-family: var(--font-ui);
   font-size: 14px;
   line-height: 1;
   padding: 0;
@@ -887,7 +979,7 @@ body {
 .local-image-collapse-btn:hover {
   opacity: 1;
   background: var(--canvas-bg);
-  color: var(--warm-accent);
+  color: var(--accent-text);
   border-color: var(--warm-accent);
 }
 
@@ -954,7 +1046,7 @@ body {
   cursor: pointer;
   font-family: var(--canvas-font-family, "Lora", serif);
   font-style: italic;
-  color: var(--warm-accent);
+  color: var(--accent-text);
   background: var(--warm-accent-soft, rgba(196, 77, 40, 0.06));
   padding: 0 4px;
   border-radius: 3px;
@@ -1115,11 +1207,11 @@ html {
   opacity: 0.8;
 }
 .slash-command-row.selected .slash-command-title {
-  color: var(--warm-accent);
+  color: var(--accent-text);
   opacity: 1;
 }
 .slash-command-desc {
-  font-family: "Inter", sans-serif;
+  font-family: var(--font-ui);
   font-weight: 400;
   font-size: 0.6875rem;
   color: var(--ink);
@@ -1139,7 +1231,7 @@ html {
 .slash-command-menu-empty {
   padding: 0.5rem 1rem;
   opacity: 0.4;
-  font-family: "Inter", sans-serif;
+  font-family: var(--font-ui);
   font-size: 0.75rem;
 }
 /* Touch: comfy row height + wider menu, same treatment SlashMenu.svelte
@@ -1303,7 +1395,13 @@ html {
      BottomSheet's 55%: the shell's half detent leaves the page showing on
      purpose (midnight's "stay on yesterday" is a sentence about that page),
      so the wash has to dim it without making it unreadable. */
-  --scrim: color-mix(in srgb, var(--ink) 40%, transparent);
+  /* Mixed from --shade, not --ink (2026-10-31): --ink is light text in
+     dark, and an ink wash LIFTED the page to grey behind every sheet and
+     modal there. --shade is ink in cream and white, black in dark. */
+  --scrim: color-mix(in srgb, var(--shade) 40%, transparent);
+  /* The desktop's lighter wash, behind a modal, the palette or a panel that
+     leaves the page in view. */
+  --scrim-soft: color-mix(in srgb, var(--shade) 25%, transparent);
 
   /* The line BETWEEN rows inside a group. Softer than --hairline (12%),
      which stays the rule for a folded nav bar's edge and a field's border:
@@ -1324,4 +1422,88 @@ html {
      height on <html> so ShellRoot can pad the frame by it and no shell
      control sits under the strip. Nothing else should read it. */
   --demo-band-h: 0px;
+
+  /* ── Visual pass (2026-10-30), shared by both trees ─────────────────
+     Interaction tints, mixed from --ink so one declaration is right in
+     every tone: a hover is a whisper, a press a little more. */
+  --hover-tint: color-mix(in srgb, var(--ink) 5%, transparent);
+  --press-tint: color-mix(in srgb, var(--ink) 9%, transparent);
+  /* The keyboard focus ring: a canvas-coloured gap, then the accent, so it
+     reads on any surface without touching what it rings. */
+  /* --accent-text, not a 75% mix of the accent: the mix was 2.89:1 on the
+     cream canvas, under the 3:1 a focus indicator needs; this is 5.3:1. */
+  --focus-ring: 0 0 0 2px var(--canvas-bg), 0 0 0 4px var(--accent-text);
 }
+
+/* ── Keyboard focus, everywhere ───────────────────────────────────────
+   Many controls removed the browser's outline and replaced it with
+   nothing (the guidelines audit counted a dozen). One ring for every
+   control a keyboard can reach. :where() keeps it at zero specificity,
+   so a control that draws its own focus still wins; the page's own
+   editor is a contenteditable with a tabindex, excluded by name, and
+   keeps its caret alone (typing always matches :focus-visible). */
+:where(button, [role="button"], a[href], input, select, textarea, summary, [tabindex]:not([tabindex="-1"]):not([contenteditable="true"])):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Title fields are typed into in place: "what matters now", the phone's
+   title line, a pin's title. The ring above drew a tight box hugging their
+   italic text, the only boxed thing on the page (owner, 2026-10-31: "the
+   input outline looks ugly"). They take an accent caret and a short accent
+   rule under the start of the line instead: still unmistakable, and in the
+   page's own editorial language rather than a form control's. */
+:where(.what-matters-input, .shell-title-field, .modal-title-input, .row-title-input) {
+  caret-color: var(--accent-text);
+}
+/* Element-qualified so it outranks each component's own scoped
+   `background: transparent` (class + scoping hash), which would wipe the rule. */
+input.what-matters-input:focus, input.shell-title-field:focus, input.modal-title-input:focus, input.row-title-input:focus,
+textarea.modal-title-input:focus {
+  outline: none;
+  box-shadow: none;
+  background-image: linear-gradient(var(--accent-text), var(--accent-text));
+  background-repeat: no-repeat;
+  background-position: left bottom;
+  background-size: 2.5rem 2px;
+}
+/* The page's warm selection, not the system's blue (inputs do not inherit
+   the prose ::selection). */
+:where(.what-matters-input, .shell-title-field, .modal-title-input, .row-title-input)::selection {
+  background: var(--selection-fill);
+  color: var(--ink);
+}
+
+/* ── Type that reads cleanly ──────────────────────────────────────────
+   Titles wrap into balanced lines instead of one long and one orphan;
+   prose avoids a lone last word. Numbers that sit in columns or change
+   while you look (counts, dates, the calendar) keep one width so they
+   do not jitter. */
+:where(h1, h2, h3, .shell-title, .title-slot, .board-title-slot) {
+  text-wrap: balance;
+}
+:where(.prose p, .shell-row-label) {
+  text-wrap: pretty;
+}
+:where(.ph-dot-count, .shell-find-count, .shell-calendar-day, .shell-calendar-weekday, .child-count, .word-count, .day-marker-date, time) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Reduced motion, for the CSS the tokens do not reach (Vercel's interface
+   guidelines, 2026-10-31). The --motion-* tokens above go to 0ms, but about
+   ninety rules carry a fixed duration, and the sync pill pulses forever.
+   This stills them all: transitions land at once, and an animation plays
+   its end state once rather than looping. Svelte's script transitions go
+   through src/lib/motion.js. The VR harness's [data-vr] rule (vr.css)
+   already does the same for screenshots, so no baseline moves. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+

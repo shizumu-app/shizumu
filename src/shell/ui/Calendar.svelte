@@ -179,7 +179,6 @@
     font-family: var(--font-ui);
     font-size: var(--text-xs);
     line-height: var(--leading-xs);
-    opacity: var(--ink-secondary);
   }
 
   /* The cell is the tap target — one --tap high, the floor every control
@@ -207,15 +206,15 @@
      drawn back so the month the writer is reading is the one that reads
      as present. */
   .shell-calendar-day[data-outside="true"] {
+    /* Set back by colour, not faded: at the tertiary opacity these were
+       1.6:1 and could not be read at all. */
     color: var(--ink-soft);
-    opacity: var(--ink-tertiary);
   }
 
   /* A day with nothing to open (the day sheet). Legible, and not a
      control: a calendar with holes in it cannot be read. */
   .shell-calendar-day[data-empty="true"] {
     color: var(--ink-soft);
-    opacity: var(--ink-tertiary);
     cursor: default;
   }
 

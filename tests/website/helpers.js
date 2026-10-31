@@ -42,6 +42,9 @@ export const REBUILT = [
   "/docs/in-practice/founder",
   "/docs/in-practice/novelist",
   "/docs/in-practice/phd-researcher",
+  "/docs/in-practice/reader",
+  "/docs/in-practice/decision",
+  "/docs/in-practice/developer",
   // the blog
   "/blog/",
   "/blog/2026-06-12-what-we-keep",

@@ -206,7 +206,7 @@
   .scrim {
     position: fixed;
     inset: 0;
-    background: color-mix(in srgb, var(--ink) 25%, transparent);
+    background: var(--scrim-soft);
     z-index: 200;
     animation: scrim-in var(--motion-sheet-open);
   }
@@ -226,11 +226,12 @@
     max-width: 32rem;
     max-height: calc(100vh - 4rem - var(--safe-top) - var(--safe-bottom));
     overflow-y: auto;
-    background: var(--canvas-bg);
-    border: 1px solid var(--card-border);
+    overscroll-behavior: contain;
+    background: var(--surface-raised);
+    border: 1px solid var(--elev-border);
     border-radius: var(--radius-lg);
     padding: 1.75rem;
-    box-shadow: 0 1rem 3rem var(--card-shadow-hover);
+    box-shadow: var(--elev-2);
     animation: modal-in var(--motion-sheet-open);
     outline: none;
   }
@@ -343,15 +344,16 @@
     font-weight: 500;
     line-height: 1.3;
     color: var(--ink);
-    opacity: 0.92;
   }
 
   .modal-body {
     font-family: "Lora", serif;
     font-size: 0.9375rem;
     line-height: 1.55;
+    /* Full strength (2026-10-31): 0.75 opacity here faded EVERYTHING in
+       every modal, settings included, so a soft description landed at 3:1
+       and an accent title under it. Quiet text inside sets its own colour. */
     color: var(--ink);
-    opacity: 0.75;
     /* Fill the remaining height (below the header) so a fixed-height modal's
        content area can own its scroll instead of the modal resizing. */
     flex: 1 1 auto;
@@ -367,6 +369,7 @@
        means the body scrolls its own remaining space while the header and
        actions row stay put, never overlapping either. */
     overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .modal-actions {

@@ -3105,15 +3105,22 @@ fn refresh_pin_caches(
         Err(_) => return Ok(Vec::new()),
     };
     let mut changed: Vec<PinCacheChange> = Vec::new();
-    let mut found: std::collections::HashMap<String, serde_json::Value> =
+    let mut found: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
     collect_pin_nodes(&doc, &mut found);
 
     let now = chrono::Utc::now().to_rfc3339();
 
-    for (pin_id, node) in &found {
-        let node_json = node.to_string();
-        let title = extract_block_title(node);
+    for (pin_id, nodes) in &found {
+        // One stamped node is the pin as it always was. Several are a pin
+        // made from a selection over several blocks (EditorCore
+        // `confirmPin`), stored as the doc confirmPin wrote, so pinToNodes
+        // reads both shapes back unchanged.
+        let node_json = match nodes.as_slice() {
+            [one] => one.to_string(),
+            many => serde_json::json!({ "type": "doc", "content": many }).to_string(),
+        };
+        let title = extract_block_title(&nodes[0]);
         // What the row holds now, to send only what this save changed
         // (emit_pin_cache_changes). No row: nothing to update or send.
         let before: Option<(Option<String>, Option<String>)> = conn
@@ -3200,15 +3207,21 @@ pub(crate) fn is_pin_mention(node: &serde_json::Value) -> bool {
     node.get("type").and_then(|t| t.as_str()) == Some("pinRef")
 }
 
+/// Every node stamped with a pin's id, in document order. A pin over
+/// several blocks stamps each of them; keeping only the first shrank the
+/// pin to its first block on the next save.
 fn collect_pin_nodes(
     node: &serde_json::Value,
-    out: &mut std::collections::HashMap<String, serde_json::Value>,
+    out: &mut std::collections::HashMap<String, Vec<serde_json::Value>>,
 ) {
     let is_mention = is_pin_mention(node);
     if let Some(attrs) = node.get("attrs").and_then(|a| a.as_object()) {
         if let Some(pin_id) = attrs.get("pinId").and_then(|v| v.as_str()) {
             if !is_mention {
-                out.entry(pin_id.to_string()).or_insert_with(|| node.clone());
+                out.entry(pin_id.to_string()).or_default().push(node.clone());
+                // The node already carries everything inside it; a child
+                // stamped with the same id would be counted twice.
+                return;
             }
         }
     }
@@ -6558,7 +6571,7 @@ pub async fn pair_existing_fetch_sas(
 
     let max_attempts = attempts.unwrap_or(40); // 40 * 500ms = 20s
     let mut last_err = String::new();
-    for _ in 0..max_attempts {
+    for attempt in 0..max_attempts {
         match crate::sync::wire::pair::pair_ephemeral(
             &relay_url,
             &device_keys,
@@ -6576,6 +6589,7 @@ pub async fn pair_existing_fetch_sas(
                 let mut pub_bytes = [0u8; 32];
                 pub_bytes.copy_from_slice(&raw);
                 let sas = crate::sync::pair::compute_sas(&user_uuid, &pub_bytes);
+                log::info!("pair show: the other device joined, attempt {attempt}");
                 return Ok(PairSasDto {
                     sas,
                     ephemeral_pub_b64: resp.ephemeral_pub,
@@ -6583,6 +6597,10 @@ pub async fn pair_existing_fetch_sas(
             }
             Err(e) => {
                 last_err = e.to_string();
+                // Every pairing step logs its outcome per attempt (never the
+                // token or a key): a failed pairing on someone else's phone
+                // is otherwise a three-minute spinner with nothing to read.
+                log::info!("pair show: waiting for the other device, attempt {attempt}: {last_err}");
                 // Only retry on Wire 4xx (token-not-yet-uploaded) — surface other errors immediately.
                 if !last_err.contains("404") && !last_err.contains("pair_token") {
                     return Err(last_err);
@@ -6677,6 +6695,7 @@ pub async fn pair_existing_confirm(
     let wrapped = crate::sync::pair::wrap_bundle(&bundle, &pub_bytes)?;
     let wrapped_b64 = B64.encode(&wrapped);
 
+    log::info!("pair show: codes match pressed, sending the keys");
     crate::sync::wire::pair::pair_upload_wrapped(
         &relay_url,
         &device_keys,
@@ -6684,7 +6703,11 @@ pub async fn pair_existing_confirm(
         &pair_token,
         &wrapped_b64,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        log::warn!("pair show: sending the keys failed: {e}");
+        e.to_string()
+    })?;
+    log::info!("pair show: keys sent, finalizing");
 
     // authorized_sig = user_sign_priv.sign(new device's sign_pub bytes).
     let authorized_sig = user_keys.user_sign_priv.sign(&new_dev_pub_bytes);
@@ -6700,11 +6723,56 @@ pub async fn pair_existing_confirm(
         &new_device_label,
         &authorized_sig_b64,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        log::warn!("pair show: finalize failed: {e}");
+        e.to_string()
+    })?;
+    log::info!("pair show: finalized");
     Ok(())
     })
     .await
     .map_err(|e| format!("blocking task panicked: {e}"))?
+}
+
+/// The joining device waits for the existing one to finalize: poll the
+/// relay's pair status until it says `ready`, at most `max_attempts`
+/// times. 1.5 s between polls and 3 s after a 429: the status route shares
+/// the relay's per-IP pairing limit (30 a minute) with the other device's
+/// finalize, and two devices on one home network are one IP. Polling every
+/// half second, as this did, spent that limit in twenty seconds on its own.
+/// `sleep` is the wait, passed in so a test can count it.
+pub(crate) fn wait_for_pair_ready(
+    relay: &str,
+    uid: &str,
+    tok: &str,
+    max_attempts: u32,
+    sleep: &mut dyn FnMut(u64),
+) -> Result<crate::sync::wire::pair::PairStatusResponse, String> {
+    let mut last = String::new();
+    for attempt in 0..max_attempts {
+        match crate::sync::wire::pair::pair_status(relay, uid, tok) {
+            Ok(resp) => {
+                log::info!("pair join: status attempt {attempt}: {}", resp.status);
+                match resp.status.as_str() {
+                    "ready" => return Ok(resp),
+                    "pending" => {
+                        last = "still pending".to_string();
+                        sleep(1500);
+                    }
+                    other => return Err(format!("unexpected pair status: {other}")),
+                }
+            }
+            Err(e) => {
+                last = e.to_string();
+                log::info!("pair join: status attempt {attempt}: {last}");
+                if last.contains("expired") {
+                    return Err(last);
+                }
+                sleep(if last.contains("429") || last.contains("rate_limited") { 3000 } else { 1500 });
+            }
+        }
+    }
+    Err(format!("pair_status never ready: {last}"))
 }
 
 #[derive(serde::Serialize)]
@@ -6807,18 +6875,20 @@ pub async fn pair_new_complete(
     let fetch_budget = poll_attempts.unwrap_or(40);
     let mut wrapped_resp = None;
     let mut last_fetch_err = String::new();
-    for _ in 0..fetch_budget {
+    for attempt in 0..fetch_budget {
         match crate::sync::wire::pair::pair_fetch_wrapped(
             &payload.relay,
             &payload.uid,
             &payload.tok,
         ) {
             Ok(r) => {
+                log::info!("pair join: keys arrived, attempt {attempt}");
                 wrapped_resp = Some(r);
                 break;
             }
             Err(e) => {
                 last_fetch_err = e.to_string();
+                log::info!("pair join: waiting for the keys, attempt {attempt}: {last_fetch_err}");
                 if last_fetch_err.contains("expired")
                     || last_fetch_err.contains("pair_token_unknown")
                 {
@@ -6875,11 +6945,28 @@ pub async fn pair_new_complete(
         device_kex_priv,
     };
 
-    // 4. Persist device keys + relay URL + raw user keys. The BIP-39
-    //    phrase isn't transmitted via pairing (paired devices receive
-    //    derived keys, not the phrase). `persist_user_keys_raw`
-    //    stores the four derived secrets directly so the worker can
-    //    reload after a relaunch without needing the phrase.
+    // 4. Wait for the other device to finalize. A relay that refuses the
+    //    finalize (an account at its device limit, `device_limit_reached`)
+    //    leaves the status pending forever, and only the OTHER device is
+    //    told why; this one runs out of attempts.
+    let max_attempts = poll_attempts.unwrap_or(120);
+    let ready = wait_for_pair_ready(&payload.relay, &payload.uid, &payload.tok, max_attempts, &mut |ms| {
+        std::thread::sleep(std::time::Duration::from_millis(ms))
+    })?;
+    let assigned_user_id = ready.user_id.unwrap_or(bundle_user_id.clone());
+    let assigned_device_id = ready
+        .device_id
+        .unwrap_or_else(|| new_device_keys.device_id.to_string());
+
+    // 5. Persist device keys + relay URL + raw user keys, ONLY NOW. This
+    //    used to run before the wait above, so a pairing the relay refused
+    //    left the device holding an account's keys with no enrolment:
+    //    `sync_status` said configured with no user id, the phone then took
+    //    itself for the device that SHOWS a code, and every retry failed
+    //    until sync was reset (0.8.0 report, reproduced 2026-10-28). The
+    //    BIP-39 phrase isn't transmitted via pairing (paired devices receive
+    //    derived keys, not the phrase); `persist_user_keys_raw` stores the
+    //    four derived secrets so the worker can reload after a relaunch.
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
         crate::sync::config::set_relay_url(&conn, &payload.relay)
@@ -6888,43 +6975,6 @@ pub async fn pair_new_complete(
             .map_err(|e| e.to_string())?;
         crate::sync::keys::persist_user_keys_raw(&conn, &user_keys)
             .map_err(|e| e.to_string())?;
-    }
-
-    // 5. Poll status until ready.
-    let max_attempts = poll_attempts.unwrap_or(120); // 120 * 500ms = 60s
-    let mut assigned_user_id = String::new();
-    let mut assigned_device_id = String::new();
-    let mut last_err = String::new();
-    let mut ready = false;
-    for _ in 0..max_attempts {
-        match crate::sync::wire::pair::pair_status(&payload.relay, &payload.uid, &payload.tok) {
-            Ok(resp) => match resp.status.as_str() {
-                "ready" => {
-                    assigned_user_id = resp.user_id.unwrap_or(bundle_user_id.clone());
-                    assigned_device_id = resp
-                        .device_id
-                        .unwrap_or_else(|| new_device_keys.device_id.to_string());
-                    ready = true;
-                    break;
-                }
-                "pending" => {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
-                other => {
-                    return Err(format!("unexpected pair status: {other}"));
-                }
-            },
-            Err(e) => {
-                last_err = e.to_string();
-                if last_err.contains("expired") {
-                    return Err(last_err);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-        }
-    }
-    if !ready {
-        return Err(format!("pair_status never ready: {last_err}"));
     }
 
     let now_ms = std::time::SystemTime::now()
@@ -7395,6 +7445,113 @@ mod tests {
             Some("grocery list"),
             "a paragraph cannot carry a title, so the save must leave the row's alone"
         );
+    }
+
+    /// A pin made from a selection over several blocks stamps the same
+    /// `pinId` on each of them (EditorCore `confirmPin`) and stores them all
+    /// as one doc. The save right after used to keep only the first stamped
+    /// node and write it over the row, so the pin shrank to its first block
+    /// a second after it was made ("select multiple blocks, pin is not
+    /// working", 2026-10-28). A pin is every node carrying its id, in order.
+    #[test]
+    fn a_pin_over_several_blocks_keeps_every_block_through_each_save() {
+        let db = test_db();
+        let page = { insert_page(&db.lock().unwrap(), "2026-10-28", 1) };
+        let pin = untrailed_pin(&db, &page, "board", "chapter three notes");
+        let para = |text: &str| serde_json::json!({
+            "type": "paragraph", "attrs": { "pinId": &pin },
+            "content": [{ "type": "text", "text": text }]
+        });
+        let doc = |second: &str| serde_json::json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": "before the pin" }] },
+                para("the ferry leaves at six"),
+                para(second),
+                { "type": "list", "attrs": { "pinId": &pin }, "content": [
+                    { "type": "listItem", "content": [
+                        { "type": "paragraph", "content": [{ "type": "text", "text": "ask about the night boat" }] }
+                    ] }
+                ] },
+                { "type": "paragraph", "content": [{ "type": "text", "text": "after the pin" }] }
+            ]
+        }).to_string();
+        let stored = || -> serde_json::Value {
+            let s: String = db.lock().unwrap()
+                .query_row("SELECT content FROM shared_objects WHERE id = ?", params![&pin], |r| r.get(0))
+                .unwrap();
+            serde_json::from_str(&s).unwrap()
+        };
+        let texts = |v: &serde_json::Value| -> Vec<String> {
+            fn walk(n: &serde_json::Value, out: &mut Vec<String>) {
+                if let Some(t) = n.get("text").and_then(|t| t.as_str()) { out.push(t.to_string()); }
+                if let Some(c) = n.get("content").and_then(|c| c.as_array()) { for x in c { walk(x, out); } }
+            }
+            let mut out = Vec::new();
+            walk(v, &mut out);
+            out
+        };
+
+        save_page_content_inner(&db, &page, &doc("the harbour master is gruff"), None).unwrap();
+        assert_eq!(
+            texts(&stored()),
+            vec!["the ferry leaves at six", "the harbour master is gruff", "ask about the night boat"],
+            "all three stamped blocks, in document order, and nothing unstamped"
+        );
+
+        // A later edit to the middle block reaches the pin too.
+        save_page_content_inner(&db, &page, &doc("the harbour master was kind"), None).unwrap();
+        assert_eq!(
+            texts(&stored()),
+            vec!["the ferry leaves at six", "the harbour master was kind", "ask about the night boat"]
+        );
+    }
+
+    /// The joining device's wait backs off on a 429 instead of spending the
+    /// relay's per-IP pairing allowance, which the other device's finalize
+    /// shares on a home network.
+    #[test]
+    fn the_pair_wait_backs_off_on_a_rate_limit_and_takes_ready() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let path = "/v1/users/u/devices/pair/status";
+        let mut limited = server.mock(|when, then| {
+            when.method(GET).path(path);
+            then.status(429).json_body(serde_json::json!({ "error": { "code": "rate_limited", "message": "too many requests" } }));
+        });
+        let mut waits: Vec<u64> = Vec::new();
+        let mut swapped = false;
+        let ready = wait_for_pair_ready(&server.base_url(), "u", "tok", 5, &mut |ms| {
+            waits.push(ms);
+            if !swapped {
+                swapped = true;
+                limited.delete();
+                server.mock(|when, then| {
+                    when.method(GET).path(path);
+                    then.status(200).json_body(serde_json::json!({ "status": "ready", "user_id": "u", "device_id": "d" }));
+                });
+            }
+        })
+        .unwrap();
+        assert_eq!(ready.device_id.as_deref(), Some("d"));
+        assert_eq!(waits, vec![3000], "one 3 s back-off after the 429, then ready");
+    }
+
+    /// A finalize the relay refused (the account at its device limit)
+    /// leaves the status pending; the wait gives up with the sentence the
+    /// phone maps, and never polls faster than every 1.5 s.
+    #[test]
+    fn the_pair_wait_gives_up_on_a_status_that_stays_pending() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/users/u/devices/pair/status");
+            then.status(200).json_body(serde_json::json!({ "status": "pending" }));
+        });
+        let mut waits: Vec<u64> = Vec::new();
+        let err = wait_for_pair_ready(&server.base_url(), "u", "tok", 3, &mut |ms| waits.push(ms)).unwrap_err();
+        assert!(err.starts_with("pair_status never ready"), "{err}");
+        assert_eq!(waits, vec![1500, 1500, 1500]);
     }
 
     /// "Delete all writing" promises it wipes every page, pin, trail,

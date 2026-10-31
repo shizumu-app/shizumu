@@ -245,13 +245,13 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    opacity: 0.55;
     transition: opacity var(--motion-fast);
     position: relative;
   }
 
   .page-nav:hover {
-    opacity: 0.92;
+    color: var(--ink);
+    opacity: 1;
   }
 
 
@@ -259,19 +259,30 @@
     background: transparent;
     border: none;
     border-radius: var(--radius-md);
-    color: var(--ink);
+    color: var(--ink-soft);
     cursor: pointer;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-weight: 400;
     font-size: 0.9375rem;
-    padding: 0.25rem 0.5rem;
-    opacity: 0.55;
-    transition: opacity var(--motion-fast), background var(--motion-fast);
+    min-height: 2rem;
+    padding: 0 0.625rem;
+    display: inline-flex;
+    align-items: center;
+    transition: color var(--motion-fast), background var(--motion-fast);
+  }
+
+  /* One weight for the whole bottom bar: the arrows are bare, so the date
+     and pages chips are too, at the same 2rem height, each taking the
+     hover tint (cream council, 2026-10-31). A past date keeps its accent
+     fill: that one is a state, not decoration. */
+  .page-nav :global(.trigger-chip:not(.active)) {
+    border-color: transparent;
   }
 
   .nav-btn:hover {
-    opacity: 0.92;
     background: color-mix(in srgb, var(--ink) 5%, transparent);
+    color: var(--ink);
+    opacity: 1;
   }
 
   .nav-btn:active {
@@ -291,33 +302,34 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
+  /* The page rail's dots in miniature (FocusRail.svelte): whole pixels,
+     soft ink at full strength, the page on screen an accent pill. */
   .page-dot {
     display: inline-block;
-    width: 0.3125rem;
-    height: 0.3125rem;
-    border-radius: 50%;
-    background: var(--ink);
-    opacity: 0.25;
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--ink-soft);
   }
 
   .page-dot-active {
-    opacity: 0.92;
+    width: 12px;
+    background: var(--warm-accent);
   }
 
   .caret {
     font-size: 0.6875rem;
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
 
   .go-today {
     background: none;
     border: none;
     cursor: pointer;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-weight: 400;
     font-size: 0.6875rem;
-    color: var(--warm-accent);
-    opacity: 0.55;
+    color: var(--accent-text);
     padding: 0.125rem 0.375rem;
     border-radius: 0.1875rem;
     transition: opacity var(--motion-fast),
@@ -325,8 +337,9 @@
   }
 
   .go-today:hover {
-    opacity: 0.92;
     background: var(--warm-accent-soft);
+    color: var(--ink);
+    opacity: 1;
   }
 
   /* Wrapper for TriggerChip anchors — TriggerChip doesn't forward an
@@ -347,8 +360,7 @@
   .cal-title {
     font-family: "Lora", serif;
     font-size: 0.8125rem;
-    color: var(--ink);
-    opacity: 0.75;
+    color: var(--ink-soft);
   }
 
   .cal-nav {
@@ -356,14 +368,16 @@
     border: none;
     cursor: pointer;
     font-size: 1rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     padding: 0.125rem 0.375rem;
     border-radius: 0.25rem;
     transition: opacity var(--motion-fast);
   }
 
-  .cal-nav:hover { opacity: 0.92; }
+  .cal-nav:hover {
+    color: var(--ink);
+    opacity: 1;
+  }
 
   .cal-grid {
     display: grid;
@@ -374,8 +388,7 @@
   .cal-day-header {
     text-align: center;
     font-size: 0.625rem;
-    color: var(--ink);
-    opacity: 0.25;
+    color: var(--ink-soft);
     padding: 0.125rem 0;
   }
 
@@ -384,10 +397,9 @@
     background: none;
     border: none;
     cursor: pointer;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.75rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     padding: 0.25rem 0.125rem;
     border-radius: 0.25rem;
     transition: background var(--motion-fast),
@@ -397,22 +409,24 @@
 
   .cal-day:hover:not(:disabled) {
     background: color-mix(in srgb, var(--ink) 6%, transparent);
-    opacity: 0.92;
+    color: var(--ink);
   }
 
   .cal-day.current {
     background: var(--warm-accent);
     color: var(--canvas-bg);
-    opacity: 0.92;
     font-weight: 500;
+    opacity: 1;
   }
 
   .cal-day.today:not(.current) {
     border: 1px solid color-mix(in srgb, var(--warm-accent) 35%, transparent);
-    opacity: 0.75;
+    color: var(--ink-soft);
   }
 
-  .cal-day.future { opacity: 0.12; cursor: default; }
+  .cal-day.future { cursor: default;
+    color: var(--ink-soft);
+  }
   .cal-day.empty { pointer-events: none; }
 
   /* Focus list dropdown */
@@ -443,18 +457,17 @@
     font-style: italic;
     font-size: 0.8125rem;
     color: var(--ink);
-    opacity: 0.92;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    opacity: 1;
   }
 
   .focus-list-num {
     flex-shrink: 0;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.625rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     background: color-mix(in srgb, var(--ink) 6%, transparent);
     border-radius: 0.25rem;
     padding: 0.0625rem 0.375rem;
@@ -462,7 +475,7 @@
     text-align: center;
   }
 
-  .focus-list-new .focus-list-name { color: var(--warm-accent); }
+  .focus-list-new .focus-list-name { color: var(--accent-text); }
 
   /* Bottom-sheet variants: comfy touch targets. `.sheet-cal`/
      `.sheet-focus-list` wrap the same content on desktop (inside the
@@ -521,26 +534,29 @@
     .go-today {
       font-size: 0.8125rem;
       padding: 0.25rem 0.5rem;
-      opacity: 0.92;
-    }
+    color: var(--ink);
+    opacity: 1;
+  }
   }
 
   .pn-title { display: inline-flex; align-items: baseline; gap: var(--space-3); min-width: 0; }
   .pn-date {
     appearance: none; background: none; border: none; padding: 0;
     font-family: "DM Mono", monospace; font-size: 1rem; letter-spacing: 0.02em;
-    color: var(--ink); opacity: 0.85; cursor: pointer;
+    color: var(--ink); cursor: pointer;
     min-height: max(var(--touch-target), 44px);
     display: inline-flex; align-items: center; gap: 0.375rem;
+    opacity: 1;
   }
   .pn-date:active { opacity: 1; }
-  .pn-date:focus-visible { outline: 2px solid var(--warm-accent); outline-offset: 2px; }
   /* Matches the chevron opacity used by the trail and pages chips. */
-  .pn-caret { opacity: 0.55; display: inline-flex; margin-left: 0.125rem; }
+  .pn-caret { display: inline-flex; margin-left: 0.125rem;
+    color: var(--ink-soft);
+  }
   .pn-today {
     appearance: none; background: none; border: none; padding: 0 var(--space-2);
-    font-family: "Inter", sans-serif; font-size: 0.8125rem;
-    color: var(--warm-accent); cursor: pointer;
+    font-family: var(--font-ui); font-size: 0.8125rem;
+    color: var(--accent-text); cursor: pointer;
     min-height: max(var(--touch-target), 44px);
   }
 </style>

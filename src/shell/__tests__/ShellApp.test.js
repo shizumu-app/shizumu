@@ -32,6 +32,7 @@ import { MentionCommandPluginKey } from "../../lib/extensions/mention-command.js
 // own 4000 would still pass with the two out of step, and the failure would
 // be a breadcrumb that stays on screen for a duration nothing agrees on.
 import { PIN_TOAST_MS } from "../pin-toast.js";
+import { PART_PINNED } from "../pin-intent.js";
 // Memory's search debounce, imported for the same reason: a test carrying
 // its own 200 would still pass with the two out of step.
 import { SEARCH_DEBOUNCE_MS } from "../memory-model.js";
@@ -169,6 +170,9 @@ const api = vi.hoisted(() => ({
   setLineageParent: vi.fn((id, parentId) => Promise.resolve({ id, parent_id: parentId })),
   deleteLineage: vi.fn(() => Promise.resolve()),
   updatePinScope: vi.fn(() => Promise.resolve()),
+  // Every stamp names a live pin unless a test says otherwise.
+  getPinForReference: vi.fn((id) => Promise.resolve({ id })),
+  emitTrailMutated: vi.fn(),
 }));
 
 /** A 24-word phrase the generate mock answers and the typed tests
@@ -1587,6 +1591,81 @@ describe("ShellApp — the pin", () => {
     expect(rows[0].object_type).toBe("board");
     expect(JSON.parse(rows[0].content).content).toHaveLength(2);
     expect(ed.state.doc.child(0).attrs.pinId).toBe(rows[0].id);
+    expect(ed.state.doc.child(1).attrs.pinId).toBe(rows[0].id);
+  });
+
+  it("says why a selection over an already-pinned block cannot be pinned", async () => {
+    // The button used to go dead on this range with nothing said, and the
+    // writer read it as "select multiple blocks, pin is not working"
+    // (2026-10-28). It stays live, pressing it says why, and the pin the
+    // second paragraph already belongs to keeps its stamp.
+    api.getOrCreateToday.mockResolvedValue(
+      textPage([{ type: "paragraph", attrs: { pinId: "old" }, content: [{ type: "text", text: "and then" }] }]),
+    );
+    const rows = pinLedger();
+    const { target } = render(ShellApp, { editing: true, keyboardOpen: true });
+    await settleWithEditor();
+
+    const ed = editorOf(target);
+    selectText(ed, 6, 16);
+    expect(target.querySelector('[data-button-id="pin-selection"]').disabled).toBe(false);
+    tap(target, "pin-selection");
+    await settlePin();
+
+    expect(rows).toHaveLength(0);
+    expect(target.querySelector(".shell-toast")?.textContent).toContain(PART_PINNED);
+    expect(ed.state.doc.child(1).attrs.pinId).toBe("old");
+  });
+
+  it("pins a table from a caret inside one of its cells", async () => {
+    // A caret inside a table cell sits two levels below the table, and
+    // the pin must still find the top-level block: a table is pinned
+    // whole, like any block the caret is in. (J13.6 edits such a pin's
+    // cell from the pins screen; this is the half before it.)
+    const cell = (text) => ({ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text }] }] });
+    api.getOrCreateToday.mockResolvedValue(
+      textPage([{ type: "table", content: [{ type: "tableRow", content: [cell("monday"), cell("the early ferry")] }] }]),
+    );
+    const rows = pinLedger();
+    const { target } = render(ShellApp, { editing: true, keyboardOpen: true });
+    await settleWithEditor();
+
+    const ed = editorOf(target);
+    let pos = null;
+    ed.state.doc.descendants((n, p) => {
+      if (pos === null && n.isText && n.text === "monday") pos = p + 2;
+      return pos === null;
+    });
+    ed.commands.setTextSelection(pos);
+    flushSync();
+    tap(target, "pin");
+    await settlePin();
+
+    expect(rows).toHaveLength(1);
+    expect(ed.state.doc.child(1).type.name).toBe("table");
+    expect(ed.state.doc.child(1).attrs.pinId).toBe(rows[0].id);
+  });
+
+  it("pins a block again once the pin its stamp names was deleted", async () => {
+    // Unpinning leaves the stamp on the page by design, and a stamp naming
+    // a deleted pin must not stop the block being kept again
+    // (block-already-pinned.js). The phone counted every stamp, so a block
+    // pinned once and unpinned could never be pinned again.
+    api.getPinForReference.mockImplementation((id) => Promise.resolve(id === "gone" ? null : { id }));
+    api.getOrCreateToday.mockResolvedValue(
+      textPage([{ type: "paragraph", attrs: { pinId: "gone" }, content: [{ type: "text", text: "and then" }] }]),
+    );
+    const rows = pinLedger();
+    const { target } = render(ShellApp, { editing: true, keyboardOpen: true });
+    await settleWithEditor();
+    await settle();
+
+    const ed = editorOf(target);
+    selectText(ed, 6, 16);
+    tap(target, "pin-selection");
+    await settlePin();
+
+    expect(rows).toHaveLength(1);
     expect(ed.state.doc.child(1).attrs.pinId).toBe(rows[0].id);
   });
 
@@ -4357,23 +4436,71 @@ describe("ShellApp — the suggestion strip", () => {
     expect(buttonIds(target)).toContain("undo");
   });
 
-  it("keeps the block strip while a mention is being typed", async () => {
-    // Step 4's decision, asserted where a reader can see it. The chips are
-    // slash-only this phase: the mention list is async and private to its
-    // own extension, so there is no list here to lay out. The honest
-    // answer is to leave the writer the strip they already had rather
-    // than blank the slot or spend it on an apology — which is a decision
-    // and not a fallthrough, and this is what makes it visible.
+  // `@` on the phone: the desktop's mention menu laid flat into the strip,
+  // from the same `mentionItems` (mention-chips.js). Waited past the
+  // strip's 120 ms debounce and the async search before reading.
+  const mentionSettle = async () => {
+    await new Promise((r) => setTimeout(r, 200));
+    await settle();
+    flushSync();
+  };
+
+  it("offers the pages @ finds as chips, and a tap writes the reference in place of what was typed", async () => {
+    api.searchPagesForMention.mockResolvedValue([
+      { page_id: "P9", date: "2026-10-28", page_number: 1, what_matters_now: "ferry times", lineage_id: null },
+    ]);
     api.getOrCreateToday.mockResolvedValue(textPage());
     const { target } = render(ShellApp, { editing: true, keyboardOpen: true });
     await settleWithEditor();
 
-    const ed = typeTrigger(target, " @al");
-    // Same guard as the no-match test above, and it matters more here:
-    // "the mention trigger produces no chips" and "the mention trigger
-    // never fired" are indistinguishable from the strip's absence alone,
-    // and only the first is the decision being recorded.
+    const ed = typeTrigger(target, " @fer");
     expect(MentionCommandPluginKey.getState(ed.state).active).toBe(true);
+    await mentionSettle();
+
+    expect(chipIds(target)).toContain("page:P9");
+    const chip = target.querySelector('.shell-suggestion-strip [data-button-id="page:P9"]');
+    expect(chip.textContent).toContain("ferry times");
+
+    tap(target, "page:P9");
+    await settle();
+
+    const refs = [];
+    ed.state.doc.descendants((n) => { if (n.type.name === "pageRef") refs.push(n.attrs.targetId); });
+    expect(refs).toEqual(["P9"]);
+    expect(docText(ed)).not.toContain("@fer");
+  });
+
+  it("offers a pin @ finds, and a tap writes a pin reference", async () => {
+    api.searchPinsForMention.mockResolvedValue([{ id: "PIN4", title: "the night boat", scope_label: "global" }]);
+    api.getOrCreateToday.mockResolvedValue(textPage());
+    const { target } = render(ShellApp, { editing: true, keyboardOpen: true });
+    await settleWithEditor();
+
+    const ed = typeTrigger(target, " @night");
+    await mentionSettle();
+    expect(chipIds(target)).toContain("pin:PIN4");
+
+    tap(target, "pin:PIN4");
+    await settle();
+    const refs = [];
+    ed.state.doc.descendants((n) => { if (n.type.name === "pinRef") refs.push(n.attrs.pinId); });
+    expect(refs).toEqual(["PIN4"]);
+  });
+
+  it("keeps the block strip while @ has found nothing yet", async () => {
+    // A bare `@` with no pages, no pins and nothing typed to make a trail
+    // from: an empty answer, so the slot keeps the strip the writer had
+    // rather than blanking. (A real bare `@` lists recent pages, as on the
+    // desktop; here the searches answer with nothing.)
+    api.searchPagesForMention.mockResolvedValue([]);
+    api.searchPinsForMention.mockResolvedValue([]);
+    api.getOrCreateToday.mockResolvedValue(textPage());
+    const { target } = render(ShellApp, { editing: true, keyboardOpen: true });
+    await settleWithEditor();
+
+    const ed = typeTrigger(target, " @");
+    expect(MentionCommandPluginKey.getState(ed.state).active).toBe(true);
+    await mentionSettle();
 
     expect(target.querySelector(".shell-suggestion-strip")).toBeNull();
     expect(buttonIds(target)).toContain("undo");
@@ -4966,7 +5093,12 @@ describe("ShellApp — the header's sheets", () => {
 
     await openFromHeader(target, "button.ph-dots");
     flushSync();
+    // Two taps (page-picker.js pageSheetRows): the first arms the row and
+    // deletes nothing.
     sheetRow(target, "pages", "delete page 1").click();
+    await settle();
+    expect(api.deleteFocus).not.toHaveBeenCalled();
+    sheetRow(target, "pages", "tap again to delete page 1").click();
     await settle();
 
     expect(api.deleteFocus).toHaveBeenCalledWith("p1");
@@ -5014,9 +5146,38 @@ describe("ShellApp — the header's sheets", () => {
     flushSync();
     sheetRow(target, "pages", "delete page 1").click();
     await settle();
+    sheetRow(target, "pages", "tap again to delete page 1").click();
+    await settle();
 
     expect(api.deleteFocus).toHaveBeenCalledWith("p1");
     expect(api.getOrCreateToday).toHaveBeenCalled();
+  });
+
+  it("forgets an armed delete when the sheet closes, so one later tap deletes nothing", async () => {
+    // A confirm that outlived its sheet would make the NEXT visit's first
+    // tap the second one: the two-step only protects if it starts over.
+    api.getFocusesForDate.mockResolvedValue([
+      summary({ id: "p1", page_number: 1 }),
+      summary({ id: "p2", page_number: 2 }),
+    ]);
+    const { target } = render(ShellApp);
+    await settle();
+
+    await openFromHeader(target, "button.ph-dots");
+    flushSync();
+    sheetRow(target, "pages", "delete page 1").click();
+    await settle();
+    expect(sheetRow(target, "pages", "tap again to delete page 1")).toBeTruthy();
+    target.querySelector(".shell-sheet-scrim").click();
+    await settle();
+
+    await openFromHeader(target, "button.ph-dots");
+    flushSync();
+    const row = sheetRow(target, "pages", "delete page 1");
+    expect(row, "the reopened sheet starts unarmed").toBeTruthy();
+    row.click();
+    await settle();
+    expect(api.deleteFocus).not.toHaveBeenCalled();
   });
 
   it("switches to another page of the day", async () => {
@@ -6924,7 +7085,9 @@ describe("ShellApp — the pins screen", () => {
     expect(saved.content[1].attrs.pinId).toBe("a");
     expect(JSON.stringify(saved.content[1])).toContain("not time, scope");
     expect(saved.content[2].content[0].text).toBe("and a second block");
-    expect(saved.content[2].attrs?.pinId ?? null).toBeNull();
+    // Both halves are the pin's (pin-run.js): a half left unstamped would
+    // drop out of the pin at the next save.
+    expect(saved.content[2].attrs.pinId).toBe("a");
     expect(saved.content[3]).toEqual(source.content[2]);
   });
 
@@ -6959,7 +7122,7 @@ describe("ShellApp — the pins screen", () => {
     expect(blocks.map((n) => n.type)).toEqual(["blockquote", "paragraph", "paragraph"]);
     expect(blocks[0].attrs.pinId).toBe("a");
     expect(blocks[1].content[0].text).toBe("and a second block");
-    expect(blocks[1].attrs?.pinId ?? null).toBeNull();
+    expect(blocks[1].attrs.pinId).toBe("a");
     expect(blocks[2].content[0].text).toBe("after");
     expect(api.savePageContentWithPinRefresh).not.toHaveBeenCalled();
   });
@@ -8599,6 +8762,32 @@ describe("ShellApp — the reading view, and the index of trails", () => {
     expect(api.setLineageParent).toHaveBeenCalledWith("L3", null);
   });
 
+  it("reaches delete from the page's own trail sheet, without memory", async () => {
+    // The owner looked for "delete trail" in the page's trail sheet
+    // (2026-10-28); it was only reachable from memory, by tapping a scoped
+    // row a second time. Memory is never opened here, on purpose: the
+    // trail screen must not depend on memory's list having been loaded.
+    api.getOrCreateToday.mockResolvedValue(withLines(pageRow({ lineage_id: "L1" })));
+    api.getLineages.mockResolvedValue(LINEAGES);
+    const { target } = render(ShellApp, {});
+    await settle();
+
+    target.querySelector(".ph-trail-button").click();
+    flushSync();
+    await settle();
+    tapSheetRowIn(target, "trail", "manage “the book”");
+    await settle();
+
+    expect(depth(target)).toBe(2);
+    tapTopRow(target, "delete trail");
+    tapSheetRowIn(target, "trail-delete", "delete “the book”");
+    await settle();
+
+    expect(api.deleteLineage).toHaveBeenCalledWith("L1", null);
+    // The page it was open on lost the trail, as an unlinked page does.
+    expect(target.querySelector(".ph-trail")).toBeNull();
+  });
+
   it("asks before it deletes, then deletes the way the laptop does", async () => {
     api.getThread.mockResolvedValue([summary()]);
     api.getLineages.mockResolvedValue(LINEAGES);
@@ -8967,6 +9156,10 @@ describe("ShellApp — settings, and the sections it pushes", () => {
     expect(row, "the pages sheet offers a delete row").toBeTruthy();
     api.savePageContent.mockClear();
     row.click();
+    await settle();
+    // The first tap arms the row (pageSheetRows); the second deletes.
+    [...target.querySelectorAll('[data-sheet="pages"] .shell-row')]
+      .find((r) => (r.textContent || "").startsWith("tap again to delete "))?.click();
     await settle();
 
     expect(api.deleteFocus).toHaveBeenCalledWith("P1");
@@ -10188,6 +10381,20 @@ describe("ShellApp — a sync pull while a page is open", () => {
     await settle();
 
     expect(editorOf(target).getText()).toContain("the laptop's later words");
+  });
+
+  it("tells the mentions on screen to read their labels again", async () => {
+    // A rename or delete on the other device left the old label, or a
+    // live link to a deleted page, for the rest of the session: the label
+    // caches cleared only on this device's own writes (api.js
+    // emitTrailMutated, found reading the J16 journey, 2026-10-28).
+    api.getOrCreateToday.mockResolvedValue(withLines(pageRow({ content_json: doc("see the prices page") })));
+    render(ShellApp);
+    await settleWithEditor();
+    api.emitTrailMutated.mockClear();
+    events.handlers["sync-pulled"]();
+    await settle();
+    expect(api.emitTrailMutated).toHaveBeenCalled();
   });
 
   it("keeps the typing a pending save holds, when a pull lands inside that second", async () => {

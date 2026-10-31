@@ -14,6 +14,7 @@ import { BlockTitle } from "../block-title.js";
 import { PinId } from "../pin-id.js";
 import { QABlock } from "../qa-block.js";
 import { QAPair } from "../qa-pair.js";
+import { replacePinRunInEditor } from "../../pin-run.js";
 
 const PIN_ID = "splice-pin-1";
 
@@ -28,29 +29,10 @@ function makeEditor(content) {
   return { editor, host, cleanup: () => { editor.destroy(); host.remove(); } };
 }
 
-// Inline copy of spliceNodeAtPinId from TipTapEditor.svelte. Keep in lockstep.
+// EditorCore's spliceNodeAtPinId is this call; the test drives the real
+// thing rather than an inline copy that had to be kept in lockstep.
 function spliceNodeAtPinId(editor, pinId, newNodeJson) {
-  if (!editor || !pinId || !newNodeJson) return false;
-  let firstPos = null;
-  let lastEnd = null;
-  editor.state.doc.descendants((node, pos) => {
-    if (firstPos !== null) return false;
-    if (node.attrs?.pinId === pinId) {
-      firstPos = pos;
-      lastEnd = pos + node.nodeSize;
-      return false;
-    }
-    return true;
-  });
-  if (firstPos === null) return false;
-  try {
-    const newNode = editor.state.schema.nodeFromJSON(newNodeJson);
-    const tr = editor.state.tr.replaceWith(firstPos, lastEnd, newNode);
-    editor.view.dispatch(tr);
-    return true;
-  } catch (err) {
-    return false;
-  }
+  return replacePinRunInEditor(editor, pinId, newNodeJson);
 }
 
 describe("spliceNodeAtPinId preserves checked state of every task item", () => {

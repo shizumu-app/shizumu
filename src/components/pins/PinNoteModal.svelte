@@ -14,7 +14,7 @@
 <script>
   import { holdsPin } from "../../lib/pin-node.js";
   import { onMount, onDestroy } from "svelte";
-  import { fade } from "svelte/transition";
+  import { fade } from "../../lib/motion.js";
   import Chip from "../../lib/ui/Chip.svelte";
   import Button from "../../lib/ui/Button.svelte";
   import { resolvePinDivergence, getPage } from "../../lib/api.js";
@@ -244,12 +244,11 @@
       <span class="prov-time">edited {formatRelativeDate(pin.updated_at)}</span>
       {#if backlinks.length > 0}
         <span class="prov-sep">·</span>
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <span class="prov-backlinks" onclick={() => (openBacklinks = !openBacklinks)}>
+        <!-- A button, so a keyboard opens it too (2026-10-31). -->
+        <button type="button" class="prov-backlinks" aria-expanded={openBacklinks} onclick={() => (openBacklinks = !openBacklinks)}>
           referenced from {backlinks.length}
-          <span class="prov-caret">{openBacklinks ? "▾" : "▸"}</span>
-        </span>
+          <span class="prov-caret" aria-hidden="true">{openBacklinks ? "▾" : "▸"}</span>
+        </button>
       {/if}
     </div>
     {#if openBacklinks && backlinks.length > 0}
@@ -302,15 +301,14 @@
 <style>
   .modal-bg {
     position: fixed; inset: 0; z-index: 200;
-    background: color-mix(in srgb, var(--ink) 25%, transparent);
+    background: var(--scrim-soft);
     display: flex; justify-content: center; align-items: center;
   }
   .modal {
-    background: var(--canvas-bg);
-    border: 1px solid var(--card-border);
+    background: var(--surface-raised);
+    border: 1px solid var(--elev-border);
     border-radius: 1rem;
-    box-shadow: 0 1.5rem 5rem var(--card-shadow-hover),
-                0 0.25rem 1rem var(--card-shadow);
+    box-shadow: var(--elev-2);
     width: min(45rem, 92vw); max-height: min(40rem, 90vh);
     display: flex; flex-direction: column; overflow: hidden;
   }
@@ -342,10 +340,12 @@
   .modal-title-input {
     width: 100%; background: transparent; border: none; outline: none;
     font-family: "Lora", serif; font-style: italic; font-size: 1.0625rem;
-    color: var(--ink); padding: 0; caret-color: var(--warm-accent);
+    /* Room under the descenders for the focus rule (global.css), and the
+       same caret and placeholder as "what matters now". */
+    color: var(--ink); padding: 0 0 0.3125rem; caret-color: var(--accent-text);
   }
   .modal-title-input::placeholder {
-    color: var(--ink); opacity: 0.25; font-style: italic;
+    color: var(--ink-soft); opacity: 1; font-style: italic;
   }
 
   .modal-ai-toggle {
@@ -354,8 +354,7 @@
     border-radius: 0.375rem;
     cursor: pointer;
     font-size: 0.8125rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     width: 1.75rem;
     height: 1.75rem;
     line-height: 1;
@@ -365,28 +364,33 @@
                 background 180ms cubic-bezier(0.2, 0, 0, 1),
                 border-color 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .modal-ai-toggle:hover { opacity: 0.92; }
+  .modal-ai-toggle:hover {
+    color: var(--ink);
+    opacity: 1;
+  }
   .modal-ai-toggle.active {
-    color: var(--warm-accent);
+    color: var(--accent-text);
     border-color: color-mix(in srgb, var(--warm-accent) 30%, transparent);
     background: var(--warm-accent-soft);
-    opacity: 0.92;
+    opacity: 1;
   }
   .modal-x {
     background: none; border: none; cursor: pointer;
-    font-size: 1.125rem; color: var(--ink); opacity: 0.35;
+    font-size: 1.125rem; color: var(--ink-soft);
     flex-shrink: 0;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .modal-x:hover { opacity: 0.75; }
+  .modal-x:hover {
+    color: var(--ink);
+  }
   @media (pointer: coarse) {
     .modal-x {
       font-size: 1.25rem;
       padding: 0.625rem;
       min-width: 2.5rem;
       min-height: 2.5rem;
-      opacity: 0.6;
-    }
+    color: var(--ink-soft);
+  }
   }
 
   .modal-provenance {
@@ -397,42 +401,49 @@
     padding: 0 1.25rem 0.875rem;
     border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
     flex-shrink: 0;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
   .prov-trail {
     font-family: "Lora", serif;
     font-style: italic;
-    color: var(--warm-accent);
-    opacity: 0.92;
+    color: var(--accent-text);
+    opacity: 1;
   }
-  .prov-sep { opacity: 0.35; }
+  .prov-sep {
+    color: var(--ink-soft);
+  }
   .prov-time {
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
     letter-spacing: 0.02em;
-    opacity: 0.92;
+    color: var(--ink);
+    opacity: 1;
   }
-  .prov-orphan { color: var(--warm-accent); opacity: 0.55; }
+  .prov-orphan { color: var(--accent-text); }
 
   .prov-backlinks {
     cursor: pointer;
-    color: var(--warm-accent);
-    opacity: 0.75;
-    font-family: "Inter", sans-serif;
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent-text);
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
     display: inline-flex;
     align-items: baseline;
     gap: 0.25rem;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .prov-backlinks:hover { opacity: 0.92; }
+  .prov-backlinks:hover {
+    color: var(--ink);
+    opacity: 1;
+  }
   .prov-caret {
     font-family: "DM Mono", monospace;
     font-size: 0.5625rem;
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
   .backlinks-inline-list {
     list-style: none;
@@ -450,19 +461,18 @@
     text-align: left;
     font-family: "Lora", serif;
     font-size: 0.8125rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     padding: 0.1875rem 0;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
                 color 180ms cubic-bezier(0.2, 0, 0, 1);
   }
   .backlink-row:hover {
-    opacity: 0.92;
-    color: var(--warm-accent);
+    color: var(--accent-text);
+    opacity: 1;
   }
 
   /* Note modal */
-  .note-modal-body { padding: 1.25rem 1.5rem 1.5rem; flex: 1; overflow-y: auto; }
+  .note-modal-body { padding: 1.25rem 1.5rem 1.5rem; flex: 1; overflow-y: auto; overscroll-behavior: contain; }
   .note-modal-text {
     width: 100%; min-height: 13.75rem; resize: vertical;
     background: transparent; border: none; outline: none;
@@ -496,7 +506,8 @@
   .divergence-label {
     font-size: 0.8rem;
     margin: 0 0 0.4rem;
-    opacity: 0.9;
+    color: var(--ink);
+    opacity: 1;
   }
   .divergence-actions {
     display: flex;

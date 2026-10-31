@@ -159,7 +159,7 @@
     width: 1rem;
     text-align: center;
     cursor: pointer;
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
   .trail-chevron-spacer {
     display: inline-block;

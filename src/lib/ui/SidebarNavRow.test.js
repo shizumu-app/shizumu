@@ -76,3 +76,38 @@ describe("SidebarNavRow", () => {
     expect(row.classList.contains("accent")).toBe(true);
   });
 });
+
+const key = (el, k) => el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+
+describe("SidebarNavRow — a trail with children folds from the keyboard", () => {
+  // Memory's trail list folded a parent by a chevron only a mouse could
+  // press (Vercel's interface guidelines, 2026-10-31). The row is the
+  // control a keyboard reaches, so the row answers the tree's own keys.
+  it("names its state and folds with the arrow keys", () => {
+    const onToggle = vi.fn();
+    const { el } = render(SidebarNavRow, { onClick: () => {}, expanded: true, onToggle });
+    expect(el.getAttribute("aria-expanded")).toBe("true");
+    key(el, "ArrowLeft");
+    expect(onToggle).toHaveBeenCalledOnce();
+    key(el, "ArrowRight");
+    // Already open: ArrowRight has nothing to open.
+    expect(onToggle).toHaveBeenCalledOnce();
+  });
+
+  it("opens a folded row with ArrowRight, and leaves ArrowLeft alone there", () => {
+    const onToggle = vi.fn();
+    const { el } = render(SidebarNavRow, { onClick: () => {}, expanded: false, onToggle });
+    expect(el.getAttribute("aria-expanded")).toBe("false");
+    key(el, "ArrowLeft");
+    expect(onToggle).not.toHaveBeenCalled();
+    key(el, "ArrowRight");
+    expect(onToggle).toHaveBeenCalledOnce();
+  });
+
+  it("says nothing about folding when it has nothing to fold", () => {
+    // A leaf trail is not a collapsed one: aria-expanded on it would tell a
+    // screen reader there is something hidden under it.
+    const { el } = render(SidebarNavRow, { onClick: () => {} });
+    expect(el.hasAttribute("aria-expanded")).toBe(false);
+  });
+});

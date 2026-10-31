@@ -104,18 +104,18 @@
     border: none;
     border-radius: var(--radius-md);
     cursor: pointer;
-    color: var(--ink);
+    color: var(--ink-soft);
     /* 0.55 left the inactive tabs reading as disabled rather than merely
        unselected; the active tab still separates via --warm-accent. */
-    opacity: 0.68;
     transition: opacity var(--motion-fast), background var(--motion-fast);
   }
 
   .action-btn:hover,
   .action-btn:focus-visible {
-    opacity: 0.92;
     background: color-mix(in srgb, var(--ink) 4%, transparent);
     outline: none;
+    color: var(--ink);
+    opacity: 1;
   }
 
   .action-btn:active {
@@ -126,7 +126,7 @@
   /* Toggled-on state: the surface this button opens is currently up. */
   .action-btn.active {
     opacity: 1;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     background: var(--warm-accent-soft);
   }
 

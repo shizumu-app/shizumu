@@ -96,7 +96,7 @@ describe("Row", () => {
     const src = readFileSync("src/shell/ui/Row.svelte", "utf8");
     const action = /\.shell-row\[data-kind="action"\]\s*\{([^}]*)\}/.exec(src);
     expect(action, 'no .shell-row[data-kind="action"] rule in Row.svelte').toBeTruthy();
-    expect(action[1]).toMatch(/color:\s*var\(--warm-accent\)/);
+    expect(action[1]).toMatch(/color:\s*var\(--accent-text\)/);
     const toggle = /\.shell-row\s+:global\(\.toggle\)\s*\{([^}]*)\}/.exec(src);
     expect(toggle, "no .shell-row :global(.toggle) rule in Row.svelte").toBeTruthy();
     expect(toggle[1]).toMatch(/min-height:\s*var\(--tap\)/);

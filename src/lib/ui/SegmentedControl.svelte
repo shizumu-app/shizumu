@@ -60,20 +60,21 @@
     padding: 0.3125rem 0.6875rem;
     min-height: 1.75rem;
     border-radius: calc(var(--radius-md) - 0.125rem);
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.8125rem;
     line-height: 1.3;
-    color: var(--ink);
-    opacity: 0.6;
+    /* Soft ink at full strength, not ink at 60%: an unselected segment
+       was 3.6 to 4.0:1 (scripts/clarity, 2026-10-29). */
+    color: var(--ink-soft);
     cursor: pointer;
     white-space: nowrap;
     transition: background var(--motion-fast), color var(--motion-fast), opacity var(--motion-fast);
   }
-  .seg-btn:hover { opacity: 0.85; }
+  .seg-btn:hover { color: var(--ink); }
   .seg-btn:active { background: color-mix(in srgb, var(--warm-accent) 12%, transparent); }
   .seg-btn.active {
     background: var(--warm-accent-soft);
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 1;
   }
   .seg-btn:focus-visible {

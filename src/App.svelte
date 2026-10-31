@@ -39,6 +39,18 @@
   function applyTone(toneValue) {
     const effective = toneValue === "system" ? resolveSystemTone() : toneValue;
     document.documentElement.setAttribute("data-tone", effective);
+    // The browser and Android status-bar colour follow the canvas, so a
+    // dark page does not sit under a light bar.
+    try {
+      const bg = getComputedStyle(document.documentElement).getPropertyValue("--canvas-bg").trim();
+      let meta = document.querySelector('meta[name="theme-color"]');
+      if (!meta) {
+        meta = document.createElement("meta");
+        meta.name = "theme-color";
+        document.head.appendChild(meta);
+      }
+      if (bg) meta.content = bg;
+    } catch {}
   }
 
   function applyFontFamily(family) {
@@ -940,12 +952,11 @@
   }
 
   .titlebar-title {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-weight: 400;
     font-size: 12px;
     letter-spacing: -0.01em;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     pointer-events: none;
   }
 
@@ -963,23 +974,23 @@
     background: none;
     border: none;
     cursor: pointer;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 13px;
-    color: var(--ink);
-    opacity: 0.4;
+    color: var(--ink-soft);
     padding: 0 14px;
-    transition: opacity 150ms ease, background 150ms ease;
+    transition: color 150ms ease, background 150ms ease;
     -webkit-app-region: no-drag;
   }
 
+  /* Hover goes darker, never paler (it faded to 3.8:1). */
   .tb-btn:hover {
-    opacity: 0.8;
+    color: var(--ink);
     background: color-mix(in srgb, var(--ink) 5%, transparent);
   }
 
   .tb-close:hover {
     opacity: 1;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     background: var(--warm-accent-soft, rgba(196,77,40,0.08));
   }
 

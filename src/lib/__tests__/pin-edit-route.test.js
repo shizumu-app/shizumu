@@ -27,6 +27,10 @@ describe("pinForModal", () => {
   it("is the row itself otherwise", () => {
     expect(pinForModal(docRow, null)).toBe(docRow);
   });
+  it("shows every block of a pin over several, not a doc inside a doc", () => {
+    const run = { type: "doc", content: [node, node] };
+    expect(JSON.parse(pinForModal(textRow, run).content)).toEqual(run);
+  });
 });
 
 describe("pinEditRoute", () => {

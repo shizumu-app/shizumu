@@ -219,8 +219,7 @@
     padding: 3rem 1rem;
     font-family: "Lora", Georgia, serif;
     font-style: italic;
-    color: var(--ink);
-    opacity: 0.45;
+    color: var(--ink-soft);
   }
 
   /* The spine is a single vertical line drawn behind the dots. Days
@@ -260,14 +259,12 @@
   .day-num {
     font-family: "Lora", Georgia, serif;
     font-size: 1.125rem;
-    color: var(--ink);
-    opacity: 0.78;
+    color: var(--ink-soft);
   }
   .day-when {
     font-family: "DM Mono", monospace;
     font-size: 0.5625rem;
-    color: var(--ink);
-    opacity: 0.45;
+    color: var(--ink-soft);
     margin-top: 0.125rem;
     letter-spacing: 0.03em;
   }
@@ -323,8 +320,7 @@
     appearance: none;
     font-family: "DM Mono", monospace;
     font-size: 0.5625rem;
-    color: var(--warm-accent);
-    opacity: 0.85;
+    color: var(--accent-text);
     padding: 0.0625rem 0.4375rem;
     border-radius: 0.5rem;
     background: color-mix(in srgb, var(--warm-accent) 8%, transparent);
@@ -332,6 +328,7 @@
     cursor: pointer;
     letter-spacing: 0.02em;
     transition: background 120ms cubic-bezier(0.2, 0, 0, 1);
+    opacity: 1;
   }
   .pins-chip:hover {
     background: color-mix(in srgb, var(--warm-accent) 18%, transparent);
@@ -345,10 +342,10 @@
     font-family: "Lora", Georgia, serif;
     font-style: italic;
     font-size: 0.8125rem;
-    color: var(--warm-accent);
-    opacity: 0.85;
+    color: var(--accent-text);
     cursor: pointer;
     text-align: left;
+    opacity: 1;
   }
   .trail-name:hover {
     opacity: 1;
@@ -376,18 +373,18 @@
     font-family: "Lora", Georgia, serif;
     font-size: 0.9375rem;
     color: var(--ink);
-    opacity: 0.85;
     cursor: pointer;
     text-align: left;
     width: 100%;
     line-height: 1.4;
+    opacity: 1;
   }
   .page-row:hover {
     opacity: 1;
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
   .page-row.untitled {
     font-style: italic;
-    opacity: 0.5;
+    color: var(--ink-soft);
   }
 </style>

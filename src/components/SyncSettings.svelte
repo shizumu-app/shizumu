@@ -1129,7 +1129,7 @@
         <textarea
           class="phrase-input"
           bind:value={existingPhrase}
-          placeholder="word word word ..."
+          placeholder="word word word …"
           rows="3"
           spellcheck="false"
           autocomplete="off"
@@ -1191,7 +1191,7 @@
         type="text"
         class="text-input"
         bind:value={deviceLabel}
-        placeholder="laptop, phone, ..."
+        placeholder="laptop, phone, …"
         spellcheck="false"
         autocomplete="off"
       />
@@ -1233,7 +1233,7 @@
           class="phrase-input mono"
           value={pastedPairingInfo}
           oninput={(e) => handlePastePairingInfo(e.target.value)}
-          placeholder={"relay: ...\nuser id: ...\nphrase: ..."}
+          placeholder={"relay: …\nuser id: …\nphrase: …"}
           rows="3"
           spellcheck="false"
           autocomplete="off"
@@ -1816,28 +1816,27 @@
     color: var(--ink);
   }
   .relay-opt.active .relay-opt-name {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
   .relay-destination {
     font-family: "DM Mono", monospace;
     font-size: 0.8125rem;
-    color: var(--ink);
-    opacity: 0.7;
+    color: var(--ink-soft);
     margin: 0 0 0.75rem;
     word-break: break-all;
   }
 
   .relay-opt-desc {
     font-size: 0.75rem;
-    opacity: 0.6;
     line-height: 1.45;
+    color: var(--ink-soft);
   }
   .wizard-prompt {
     font-size: 0.85rem;
     color: var(--ink);
-    opacity: 0.85;
     margin: 0;
     line-height: 1.5;
+    opacity: 1;
   }
   .wizard-actions {
     display: flex;
@@ -1893,11 +1892,12 @@
   }
   .relay-url {
     font-size: 0.8rem;
-    opacity: 0.85;
     overflow-wrap: anywhere;
     word-break: break-word;
     text-align: right;
     line-height: 1.4;
+    color: var(--ink);
+    opacity: 1;
   }
   .error-text {
     color: color-mix(in srgb, var(--ink) 60%, #c44 40%);
@@ -1936,14 +1936,14 @@
     color: color-mix(in srgb, var(--ink) 70%, #c44 30%);
   }
   .error-callout-label {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
     font-weight: 500;
     text-transform: lowercase;
     letter-spacing: 0.05em;
     color: color-mix(in srgb, var(--ink) 50%, #c44 50%);
-    opacity: 0.85;
     margin-bottom: 0.25rem;
+    opacity: 1;
   }
   .error-callout-text {
     font-family: "DM Mono", ui-monospace, monospace;
@@ -1964,17 +1964,19 @@
   }
   .op-log-stats summary {
     cursor: pointer;
-    opacity: 0.5;
     user-select: none;
     padding: 0.2rem 0;
     font-size: 0.7rem;
+    color: var(--ink-soft);
   }
   .op-log-stats summary:hover {
-    opacity: 0.85;
+    color: var(--ink);
+    opacity: 1;
   }
   .op-log-stats[open] > summary {
-    opacity: 0.85;
     margin-bottom: 0.4rem;
+    color: var(--ink);
+    opacity: 1;
   }
   .kinds-list {
     font-size: 0.7rem;
@@ -1986,7 +1988,7 @@
     padding-top: 0.5rem;
   }
   .danger-label {
-    opacity: 0.55;
+    color: var(--ink-soft);
     font-size: 0.7rem;
     padding: 0.2rem 0 0.3rem;
   }
@@ -1998,18 +2000,17 @@
   .device-seen {
     font-family: "DM Mono", ui-monospace, monospace;
     font-size: 11px;
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
   .device-seen.stale {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
   /* Matches Row's own `.description` styling (Inter 11px, muted) so the
      sentence under the device list reads like every other row caption. */
   .row-desc {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.45;
+    color: var(--ink-soft);
     line-height: 1.4;
     max-width: 22rem;
     margin: 0.375rem 0 0;
@@ -2032,7 +2033,7 @@
     gap: 0.5rem;
     font-family: "DM Mono", ui-monospace, monospace;
     font-size: 0.75rem;
-    opacity: 0.65;
+    color: var(--ink-soft);
   }
   .pair-steps li::before {
     content: counter(pair-step);
@@ -2092,7 +2093,7 @@
   }
   .pair-details summary {
     cursor: pointer;
-    opacity: 0.75;
+    color: var(--ink-soft);
   }
   .pair-meta {
     display: flex;
@@ -2101,8 +2102,8 @@
     padding: 0.2rem 0;
   }
   .meta-label {
-    opacity: 0.6;
     flex: 0 0 5rem;
+    color: var(--ink-soft);
   }
   .meta-value {
     font-size: 0.85rem;
@@ -2112,13 +2113,13 @@
   }
   .wizard-prompt-small {
     font-size: 0.8rem;
-    opacity: 0.7;
     margin: 0;
+    color: var(--ink-soft);
   }
   .field-label {
     font-size: 0.72rem;
-    opacity: 0.6;
     margin: 0.1rem 0 -0.2rem;
+    color: var(--ink-soft);
   }
   .num-input {
     width: 6rem;
@@ -2140,18 +2141,18 @@
   .confirm-error {
     margin: 0.5rem 0 0;
     font-size: 0.8rem;
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
   .danger-slot {
     display: inline-flex;
     align-items: center;
   }
+  /* Destructive, readable at rest (visual pass, 2026-10-30). */
   .danger-slot :global(.btn) {
-    color: var(--warm-accent);
-    opacity: 0.75;
+    color: var(--danger-text);
   }
   .danger-slot :global(.btn:hover:not(:disabled)) {
-    opacity: 1;
+    background: var(--danger-soft);
   }
   .danger-slot :global(.btn:disabled) {
     opacity: 0.25;
@@ -2165,12 +2166,11 @@
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
     letter-spacing: 0.05em;
-    color: var(--ink);
+    color: var(--ink-soft);
     border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent);
     border-radius: 1rem;
     padding: 0.0625rem 0.5rem;
     margin-left: 0.375rem;
-    opacity: 0.55;
   }
 
   /* ── sync sub-tabs (horizontal pill bar replacing the inner sidebar) ── */
@@ -2191,19 +2191,19 @@
     font-family: "Lora", Georgia, serif;
     font-style: italic;
     font-size: 0.8125rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     cursor: pointer;
     transition: opacity 120ms cubic-bezier(0.2, 0, 0, 1),
                 background 120ms cubic-bezier(0.2, 0, 0, 1),
                 color 120ms cubic-bezier(0.2, 0, 0, 1);
   }
   .sync-tab:hover {
-    opacity: 0.85;
     background: color-mix(in srgb, var(--ink) 4%, transparent);
+    color: var(--ink);
+    opacity: 1;
   }
   .sync-tab.active {
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 1;
     background: var(--warm-accent-soft);
   }
@@ -2290,10 +2290,9 @@
      row above it rather than a new kind of text. Nudged up so it reads as
      part of that row and not as a stray paragraph. */
   .storage-note {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.45;
+    color: var(--ink-soft);
     line-height: 1.4;
     max-width: 22rem;
     margin: -0.375rem 0 0.25rem;
@@ -2345,8 +2344,9 @@
   }
   .redeem-success {
     font-size: 0.82rem;
-    opacity: 0.8;
     line-height: 1.5;
+    color: var(--ink);
+    opacity: 1;
   }
   .redeem-error {
     font-size: 0.82rem;
@@ -2361,15 +2361,15 @@
     padding-top: 0.5rem;
   }
   .group-label {
-    opacity: 0.55;
     font-size: 0.7rem;
     padding: 0.2rem 0 0.3rem;
+    color: var(--ink-soft);
   }
   .web-access-desc {
     font-size: 0.82rem;
-    opacity: 0.72;
     margin: 0.25rem 0 0.5rem;
     line-height: 1.5;
+    color: var(--ink-soft);
   }
   .web-access-form {
     display: flex;
@@ -2391,8 +2391,9 @@
   }
   .web-success {
     font-size: 0.82rem;
-    opacity: 0.8;
     margin-top: 0.4rem;
     line-height: 1.5;
+    color: var(--ink);
+    opacity: 1;
   }
 </style>

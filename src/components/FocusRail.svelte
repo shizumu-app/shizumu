@@ -223,9 +223,8 @@
   .focus-rail {
     display: flex;
     align-items: center;
-    gap: 0.625rem;
+    gap: 0.375rem;
     padding: 0.5rem 0 0.75rem;
-    opacity: 0.55;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
   /* On tablet/phone the rail can overflow horizontally on days with
@@ -251,20 +250,21 @@
       height: 1.75rem;
     }
     .rail-dot {
-      width: 0.875rem;
-      height: 0.875rem;
-      border-width: 2px;
-      opacity: 0.75;
+      width: 10px;
+      height: 10px;
+      border-radius: 5px;
     }
+    .rail-dot.current { width: 24px; }
     .focus-rail { opacity: 1; }
   }
 
   .focus-rail:hover {
-    opacity: 0.92;
+    color: var(--ink);
+    opacity: 1;
   }
 
   .focus-rail.continuous {
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
 
   .rail-dot-wrap {
@@ -276,7 +276,7 @@
 
   /* Invisible 1rem hit target centered on the visible dot. */
   .rail-dot-hit {
-    width: 1rem;
+    min-width: 1rem;
     height: 1rem;
     display: inline-flex;
     align-items: center;
@@ -287,70 +287,41 @@
     cursor: pointer;
   }
 
+  /* Solid dots in whole pixels, like the phone's (PageHeader.svelte).
+     Sized in px, not rem: --ui-scale turned a 0.5625rem ring with a 1.5px
+     border into a fractional, blurred outline next to a bigger filled
+     blob (2026-10-31, owner: "make them crispy"). The page on screen is
+     the same height drawn as an accent pill, so "you are here" reads by
+     shape as well as colour. Open and closed pages are told apart by the
+     tooltip, not by a hairline ring too thin to draw cleanly. The rail
+     shows one day's pages, so a "today" tick under each dot said nothing
+     the date did not, and read as a row of underscores; it is gone. */
   .rail-dot {
-    width: 0.625rem;
-    height: 0.625rem;
-    border-radius: 50%;
-    border: 1.5px solid var(--ink);
-    background: transparent;
-    opacity: 0.55;
-    transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
-                transform 180ms cubic-bezier(0.2, 0, 0, 1),
-                background 180ms cubic-bezier(0.2, 0, 0, 1),
-                border-color 180ms cubic-bezier(0.2, 0, 0, 1),
-                width 180ms cubic-bezier(0.2, 0, 0, 1),
-                height 180ms cubic-bezier(0.2, 0, 0, 1);
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--ink-soft);
+    transition: width 180ms cubic-bezier(0.2, 0, 0, 1),
+                background 180ms cubic-bezier(0.2, 0, 0, 1);
     display: block;
-    position: relative;
-  }
-
-  .rail-dot.closed {
-    background: var(--ink);
-  }
-
-  /* Today anchor — a subtle tick under the dot whose date is today.
-     Independent of .current so the "you are here" and "today" signals compose. */
-  .rail-dot.today::after {
-    content: "";
-    position: absolute;
-    left: 50%;
-    bottom: -0.3125rem;
-    transform: translateX(-50%);
-    width: 0.375rem;
-    height: 1.5px;
-    border-radius: 1px;
-    background: var(--warm-accent);
-    opacity: 0.55;
   }
 
   .rail-dot.current {
-    width: 0.75rem;
-    height: 0.75rem;
-    border-color: var(--warm-accent);
-    background: color-mix(in srgb, var(--warm-accent) 18%, transparent);
-    opacity: 0.92;
-  }
-
-  .rail-dot.current.closed {
+    width: 20px;
     background: var(--warm-accent);
   }
 
-  .rail-dot-hit:hover .rail-dot {
-    opacity: 0.92;
-    transform: scale(1.25);
+  .rail-dot-hit:hover .rail-dot:not(.current) {
+    background: var(--ink);
   }
 
-  .rail-dot-hit:hover .rail-dot.current {
-    transform: scale(1.15);
-  }
 
   .rail-delete {
     background: none;
     border: none;
     cursor: pointer;
     font-size: 0.6875rem;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     padding: 0 0.125rem;
     line-height: 1;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
@@ -360,8 +331,8 @@
 
   .rail-delete:hover,
   .rail-delete.confirming {
-    opacity: 0.92;
-    color: var(--warm-accent);
+    color: var(--accent-text);
+    opacity: 1;
   }
   .rail-delete.confirming {
     background: var(--warm-accent-soft);
@@ -370,7 +341,7 @@
     height: 1.125rem;
     padding: 0;
     font-size: 0.875rem;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 1;
     display: inline-flex;
     align-items: center;
@@ -408,7 +379,6 @@
     font-style: italic;
     font-size: 0.8125rem;
     color: var(--ink);
-    opacity: 0.92;
     background: var(--canvas-bg);
     padding: 0.375rem 0.75rem;
     border-radius: 0.375rem;
@@ -422,14 +392,15 @@
     display: inline-flex;
     align-items: baseline;
     gap: 0.375rem;
+    opacity: 1;
   }
 
   .tip-date {
     font-family: "DM Mono", monospace;
     font-size: 0.625rem;
     font-style: normal;
-    opacity: 0.55;
     letter-spacing: 0.02em;
+    color: var(--ink-soft);
   }
 
   .tip-focus {
@@ -439,10 +410,9 @@
   }
 
   .confirm-hint {
-    color: var(--warm-accent);
-    opacity: 0.75;
+    color: var(--accent-text);
     font-style: normal;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.6875rem;
   }
 
@@ -466,45 +436,34 @@
     color: var(--ink);
     cursor: pointer;
   }
-  /* Quiet for a pointer, visible for the keyboard: a clicked step drew the
-     platform's heavy blue ring, which nothing else in the rail uses. */
-  .rail-step:focus { outline: none; }
-  .rail-step:focus-visible {
-    outline: 1px solid color-mix(in srgb, var(--ink) 40%, transparent);
-    outline-offset: 2px;
-    border-radius: 3px;
-  }
   .rail-step:disabled {
     opacity: 0.3;
     cursor: default;
   }
+  /* A plain + in the interface face, the size of the dots' row; the
+     dashed circle around it was bigger and busier than the dots. */
   .rail-add {
     background: none;
-    border: 1.5px dashed color-mix(in srgb, var(--ink) 35%, transparent);
-    border-radius: 50%;
-    width: 1rem;
-    height: 1rem;
+    border: none;
+    border-radius: 4px;
+    min-width: 1.25rem;
+    height: 1.25rem;
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    font-family: "Inter", sans-serif;
-    font-size: 0.75rem;
+    font-family: var(--font-ui);
+    font-size: 15px;
     line-height: 1;
-    color: var(--ink);
-    opacity: 0.35;
+    color: var(--ink-soft);
     padding: 0;
-    margin-left: 0.125rem;
-    transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
-                border-color 180ms cubic-bezier(0.2, 0, 0, 1),
-                color 180ms cubic-bezier(0.2, 0, 0, 1),
-                border-style 180ms cubic-bezier(0.2, 0, 0, 1);
+    margin-left: 2px;
+    transition: color 180ms cubic-bezier(0.2, 0, 0, 1),
+                background 180ms cubic-bezier(0.2, 0, 0, 1);
   }
 
   .rail-add:hover {
-    opacity: 0.92;
-    border-color: var(--warm-accent);
-    border-style: solid;
-    color: var(--warm-accent);
+    color: var(--accent-text);
+    background: var(--hover-tint);
   }
 </style>

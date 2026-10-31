@@ -68,6 +68,6 @@ describe("Note", () => {
 
     const tone = /\.shell-note\[data-tone="warm"\]\s*\{([^}]*)\}/.exec(src);
     expect(tone, "no warm-tone rule in Note.svelte").toBeTruthy();
-    expect(tone[1]).toMatch(/color:\s*var\(--warm-accent\)/);
+    expect(tone[1]).toMatch(/color:\s*var\(--accent-text\)/);
   });
 });

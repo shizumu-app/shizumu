@@ -112,17 +112,20 @@
 <div class="thread-card zoom-{zoom}">
 {#if isContinuous}
   <Card focused={focused} dimmed={dimmed} variant="boxed">
+    <!-- The whole header opens the trail for a pointer; the title is the
+         button a keyboard reaches (the header holds the days button, and a
+         button cannot hold a button). -->
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="card-grid cont-head" onclick={onclick}>
-      <div class="title-col">
+      <button type="button" class="title-col" onclick={(e) => { e.stopPropagation(); onclick?.(); }}>
         <span class="title-line" class:empty={!lineageName}>
           {lineageName || "untitled"}
         </span>
         {#if showTrailName && trailBreadcrumb}
           <span class="trail-chip" class:nested={lineagePath.length > 1}>{trailBreadcrumb}</span>
         {/if}
-      </div>
+      </button>
       <div class="side-col">
         {#if dayMarkers.length > 0 && zoom !== "condensed"}
           <button class="expand-btn" onclick={toggleExpand} aria-label="toggle day list">
@@ -221,28 +224,36 @@
     flex-direction: column;
     gap: 0.125rem;
   }
+  button.title-col {
+    padding: 0;
+    background: none;
+    border: none;
+    text-align: left;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
   .title-line {
     font-family: "Lora", Georgia, serif;
     font-size: 0.9375rem;
     color: var(--ink);
-    opacity: 0.92;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     transition: color 180ms cubic-bezier(0.2, 0, 0, 1);
+    opacity: 1;
   }
   .title-line.empty {
-    opacity: 0.55;
+    color: var(--ink-soft);
   }
   :global(.card.clickable:hover) .title-line {
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
   .snippet-line {
     font-family: "Lora", Georgia, serif;
     font-size: 0.8125rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -260,27 +271,29 @@
     flex-direction: column;
     align-items: flex-end;
     gap: 0.125rem;
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     flex-shrink: 0;
   }
   .trail-chip {
     font-family: "Lora", Georgia, serif;
     font-style: italic;
-    font-size: 0.625rem;
-    color: var(--warm-accent);
-    opacity: 0.92;
+    font-size: 0.6875rem;
+    color: var(--accent-text);
     padding: 0.0625rem 0.4375rem;
     border-radius: 0.625rem;
-    background: var(--warm-accent-soft);
+    /* A light pill, not a tint: on a card that is itself tinted (the
+       selected page), accent text on an accent fill read at 4.3:1
+       (2026-10-31). */
+    background: var(--surface-raised);
     border: 1px solid color-mix(in srgb, var(--warm-accent) 25%, transparent);
     align-self: flex-start;
     margin-top: 0.1875rem;
+    opacity: 1;
   }
   .backlink-badge {
-    font-family: "Inter", sans-serif;
+    font-family: var(--font-ui);
     font-size: 0.5625rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     letter-spacing: 0.02em;
   }
 
@@ -313,14 +326,17 @@
 
   .expand-btn {
     background: none; border: none; cursor: pointer;
-    font-family: "Inter", sans-serif; font-size: 0.625rem;
-    color: var(--ink); opacity: 0.55;
+    font-family: var(--font-ui); font-size: 0.625rem;
+    color: var(--ink-soft);
     padding: 0.125rem 0.375rem; border-radius: 0.25rem;
     flex-shrink: 0;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1),
                 background 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .expand-btn:hover { opacity: 0.92; background: color-mix(in srgb, var(--ink) 6%, transparent); }
+  .expand-btn:hover { background: color-mix(in srgb, var(--ink) 6%, transparent);
+    color: var(--ink);
+    opacity: 1;
+  }
 
   .marker-list {
     list-style: none; padding: 0.625rem 0 0.375rem;
@@ -338,18 +354,19 @@
 
   .marker-date {
     font-family: "DM Mono", monospace;
-    font-size: 0.625rem; color: var(--ink); opacity: 0.55;
+    font-size: 0.625rem; color: var(--ink-soft);
     min-width: 4.5rem; flex-shrink: 0;
   }
 
   .marker-sep {
     font-family: "DM Mono", monospace;
-    font-size: 0.625rem; opacity: 0.35;
+    font-size: 0.625rem;
+    color: var(--ink-soft);
   }
 
   .marker-focus {
     font-family: "Lora", serif; font-style: italic;
-    font-size: 0.8125rem; color: var(--ink); opacity: 0.75;
+    font-size: 0.8125rem; color: var(--ink-soft);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     flex: 1;
   }

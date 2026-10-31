@@ -13,6 +13,8 @@
     indent?: number,
     tag?: string,
     onClick?: () => void,
+    expanded?: boolean,
+    onToggle?: () => void,
     children?: import("svelte").Snippet,
   }} */
   let {
@@ -22,8 +24,14 @@
     indent = 0,
     tag,
     onClick,
+    // A row with children (memory's trail tree): `expanded` names its
+    // state, and ArrowRight / ArrowLeft open and fold it, the keys a tree
+    // row answers to. Absent, the row is a leaf and says nothing about it.
+    expanded,
+    onToggle,
     children,
   } = $props();
+  const foldable = $derived(typeof expanded === "boolean" && typeof onToggle === "function");
 
   const clickable = $derived(typeof onClick === "function");
   const hasCount = $derived(typeof count === "number");
@@ -38,6 +46,11 @@
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       onClick?.();
+      return;
+    }
+    if (foldable && ((e.key === "ArrowRight" && !expanded) || (e.key === "ArrowLeft" && expanded))) {
+      e.preventDefault();
+      onToggle?.();
     }
   }
 </script>
@@ -50,6 +63,7 @@
     role="button"
     tabindex="0"
     aria-pressed={active}
+    aria-expanded={foldable ? expanded : undefined}
     style:padding-left={indentStyle}
     onclick={handleClick}
     onkeydown={handleKeydown}
@@ -91,10 +105,12 @@
     padding-bottom: calc(0.25rem * var(--sidebar-density, 1));
     padding-left: 0.5rem;
     padding-right: 0.5rem;
-    border-radius: 0.25rem;
-    opacity: 0.55;
+    border-radius: var(--radius-sm, 0.25rem);
     background: transparent;
-    color: var(--ink);
+    /* Quiet by colour, not by fading (the phone's rows; 2026-10-31): at
+       0.55 opacity a section name read washed out on every tone. */
+    color: var(--ink-soft);
+    transition: background-color var(--motion-fast), color var(--motion-fast);
     min-height: 2rem;
     user-select: none;
   }
@@ -104,26 +120,29 @@
   }
 
   .sidebar-nav-row.clickable:hover {
-    opacity: 0.75;
-    background: color-mix(in srgb, var(--ink) 4%, transparent);
+    color: var(--ink);
+    background: var(--hover-tint);
+  }
+  .sidebar-nav-row.clickable:active {
+    background: var(--press-tint);
   }
 
   .sidebar-nav-row.active {
-    opacity: 0.92;
-    background: color-mix(in srgb, var(--ink) 6%, transparent);
+    color: var(--ink);
+    background: var(--press-tint);
   }
 
   .sidebar-nav-row.active.accent {
     background: var(--warm-accent-soft);
-    color: var(--warm-accent);
+    color: var(--accent-text);
   }
 
-  .sidebar-nav-row.clickable:focus-visible {
-    outline: 1px solid var(--warm-accent-soft);
-    outline-offset: 2px;
-  }
 
   .label {
+    /* The row's face, not global.css's `.label` (the interface face),
+       which this span's class name also matches: settings and memory
+       showed their section names in a slanted DM Mono (2026-10-31). */
+    font-family: inherit;
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -135,7 +154,7 @@
     font-family: "DM Mono", ui-monospace, monospace;
     font-style: normal;
     font-size: 0.625rem;
-    opacity: 0.4;
+    color: var(--ink-soft);
     flex-shrink: 0;
   }
 
@@ -144,7 +163,7 @@
     font-style: italic;
     font-size: 0.5625rem;
     letter-spacing: 0.01em;
-    opacity: 0.55;
+    color: var(--ink-soft);
     flex-shrink: 0;
     padding: 0.0625rem 0.4375rem;
     border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
@@ -155,8 +174,7 @@
   }
   .sidebar-nav-row.active.accent .tag {
     border-color: color-mix(in srgb, var(--warm-accent) 35%, transparent);
-    color: var(--warm-accent);
-    opacity: 0.92;
+    color: var(--accent-text);
   }
 
   @media (pointer: coarse) {

@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { fade } from "svelte/transition";
+  import { fade } from "../lib/motion.js";
   import { getBacklinksForPage, getLineages } from "../lib/api.js";
   import { buildMentionLabel } from "../lib/mention-label.js";
   import SectionHeader from "../lib/ui/SectionHeader.svelte";
@@ -94,8 +94,7 @@
     text-align: left;
     font-family: "Lora", serif;
     font-size: 0.8125rem;
-    color: var(--ink);
-    opacity: 0.55;
+    color: var(--ink-soft);
     padding: 0.25rem 0;
     border-radius: 0.1875rem;
     overflow: hidden;
@@ -103,7 +102,10 @@
     white-space: nowrap;
     transition: opacity 180ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .backlink:hover { opacity: 0.92; }
-  .backlink-arrow { color: var(--warm-accent); opacity: 0.55; flex-shrink: 0; }
+  .backlink:hover {
+    color: var(--ink);
+    opacity: 1;
+  }
+  .backlink-arrow { color: var(--accent-text); flex-shrink: 0; }
   .backlink-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 </style>

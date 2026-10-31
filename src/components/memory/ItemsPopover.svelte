@@ -72,9 +72,9 @@
     font-family: "DM Mono", monospace;
     font-size: 0.5rem;
     letter-spacing: 0.05em;
-    opacity: 0.35;
     text-transform: lowercase;
     padding: 0.125rem 0.4375rem 0.375rem;
+    color: var(--ink-soft);
   }
   .list { max-height: 18rem; overflow-y: auto; }
   .row {
@@ -98,8 +98,8 @@
     border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
     padding: 0.0625rem 0.3125rem;
     border-radius: 0.25rem;
-    opacity: 0.55;
     flex-shrink: 0;
+    color: var(--ink-soft);
   }
   .title {
     font-style: italic;
@@ -108,7 +108,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--ink);
-    opacity: 0.85;
+    opacity: 1;
   }
   .see-all {
     appearance: none;
@@ -121,8 +121,7 @@
     border-top: 1px solid color-mix(in srgb, var(--ink) 4%, transparent);
     font-family: "DM Mono", monospace;
     font-size: 0.5625rem;
-    color: var(--warm-accent);
-    opacity: 0.75;
+    color: var(--accent-text);
     cursor: pointer;
   }
   .see-all:hover { opacity: 1; }

@@ -123,6 +123,25 @@
 // fetch, and P2f Task 2 — which fetches them for the toast's count
 // anyway — is where that trade gets made.
 
+// The sentence and the nested-pin rule are shared with the desktop editor,
+// so they live in src/lib/pin-node.js and are re-exported here.
+import { PART_PINNED, holdsAnyPin } from "../lib/pin-node.js";
+export { PART_PINNED, holdsAnyPin };
+
+/**
+ * Why a press would pin nothing, when that is worth saying: a selection
+ * with writing in it that overlaps a block already holding a pin. Null
+ * otherwise, including when pinIntent would pin.
+ * @param {{scope?: "block"|"selection", blocks?: PinBlock[]}} args
+ * @returns {string|null}
+ */
+export function pinRefusal({ scope = "block", blocks = [] } = {}) {
+  if (scope !== "selection") return null;
+  const covered = Array.isArray(blocks) ? blocks.filter(Boolean) : [];
+  if (!covered.some((b) => b.hasContent)) return null;
+  return covered.some((b) => b.pinned) ? PART_PINNED : null;
+}
+
 /** Longest stored title. See the header: `pinDisplayTitle` elides at 60. */
 export const TITLE_MAX = 60;
 
@@ -139,7 +158,7 @@ export const UNTITLED = "untitled";
  * @property {number} pos            document position of the top-level node
  *   (`$from.before(1)` for the caret's block) — what confirmPin stamps.
  * @property {boolean} isBoard       `isBoardType(node.type.name)`. Passed in
- *   rather than derived here so this module imports nothing at all.
+ *   rather than derived here so this module needs no editor schema.
  * @property {boolean} isAttachment  the block is ONLY an attachment —
  *   `soleAttachmentNode(node)` answered non-null. A line MIXING text with an
  *   inline file is false here and pins as what it is: a line.

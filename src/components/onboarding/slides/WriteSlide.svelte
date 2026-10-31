@@ -124,7 +124,7 @@
     font-family: "Inter", sans-serif;
     font-size: 0.5625rem;
     letter-spacing: 0.05em;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 0.75;
     text-transform: lowercase;
   }
@@ -138,7 +138,7 @@
   .editor-title {
     font-family: "Lora", Georgia, serif;
     font-size: 0.875rem;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 0.92;
     margin-bottom: 0.375rem;
     max-width: 100%;
@@ -172,7 +172,7 @@
     font-weight: 500;
     letter-spacing: 0.05em;
     text-transform: lowercase;
-    color: var(--warm-accent);
+    color: var(--accent-text);
     opacity: 0.85;
   }
   .touch-tip-body {
