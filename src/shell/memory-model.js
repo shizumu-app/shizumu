@@ -52,6 +52,7 @@ import { pinSearchText } from "../lib/pin-display.js";
 // The summary names a picked day in the words the timeline's own
 // headings use — see memoryFilterSummary.
 import { dayLabel } from "./page-model.js";
+import { activeFilterPills, memoryCountLine } from "../lib/memory-filter-bar.js";
 
 /** The desktop's three modes, its labels, its order (Memory.svelte's own
  *  SegmentedControl). "trail map" is the desktop's word for the timeline
@@ -529,4 +530,91 @@ export function memoryFilterSummary({
   }
   if (pinned) parts.push("pinned only");
   return parts.join(" · ");
+}
+
+// ── 0.8.2: the filters in force, said where the list is ──────────────
+//
+// Spec 2026-11-01 §2 and §4: a filter that hides something is visible and
+// removable where its results are shown, with a count of what it hides.
+// The desktop's bug was a pins tab showing 1 pin of 4 under a filter
+// nothing on screen named, and a counter reading "8 pages" on the pins
+// tab. The phone had the half of this it could afford — `filters · 2` on
+// the bar, and the summary inside "nothing matches" — but a list that was
+// merely SHORTER said nothing at all. The words are the desktop's module
+// (src/lib/memory-filter-bar.js), so a pill and a count line read the same
+// on both trees; this is the phone's reading of its own filter state.
+//
+// The phone has no `on page` filter, and its resting date range is `all`
+// (DEFAULT_RANGE), so at rest there are no pills — only the count line.
+
+/**
+ * The pills and the count line for the mode on screen.
+ *
+ * @param {object} input
+ * @param {"pages"|"trailmap"|"pins"} input.mode
+ * @param {any[]} [input.pages]
+ * @param {any[]} [input.pins]
+ * @param {string} input.todayStr
+ * @param {{kind: string, date?: string}|null} [input.dateFilter]
+ * @param {string} [input.sort]
+ * @param {boolean} [input.pinned]
+ * @param {Set<string>|string|null} [input.scope]  trailScope()'s answer
+ * @param {string|null} [input.scopeName]  trailScopeLabel()'s answer
+ * @param {Set<string>|null} [input.matchingIds]
+ * @param {string} [input.query]
+ * @returns {{ pills: Array<{id: string, label: string, removeLabel: string, hides: boolean}>, countLine: string, canShowEverything: boolean }}
+ */
+export function memoryFilterBar({
+  mode,
+  pages = [],
+  pins = [],
+  todayStr,
+  dateFilter = null,
+  sort = DEFAULT_SORT,
+  pinned = false,
+  scope = null,
+  scopeName = null,
+  matchingIds = null,
+  query = "",
+}) {
+  const tab = mode === "pins" ? "pins" : mode === "pages" ? "pages" : "trailmap";
+  const pills = activeFilterPills({ tab, trailLabel: scopeName, dateFilter, sort, pinnedOnly: pinned });
+  let shown;
+  let total;
+  if (tab === "pins") {
+    shown = memoryPins({ pins, dateFilter, todayStr, scope, query }).length;
+    // Same trail, same search: only the hiding pills (the date) lifted.
+    total = memoryPins({ pins, dateFilter: null, todayStr, scope, query }).length;
+  } else {
+    shown = memoryPages({ pages, dateFilter, todayStr, pinned, scope, matchingIds }).length;
+    total = memoryPages({ pages, dateFilter: null, todayStr, pinned: false, scope, matchingIds }).length;
+  }
+  return {
+    pills,
+    countLine: memoryCountLine({ tab, shown, total, pills }),
+    canShowEverything: pills.length > 0 || query.trim() !== "",
+  };
+}
+
+/**
+ * What removing one pill changes, as a patch over the host's filter state
+ * (`trail`, `range`, `day`, `sort`, `pinned`). The date pill is one filter
+ * said two ways — a preset or a picked day — so it clears both.
+ *
+ * @param {string} id  a pill's id
+ * @returns {object}
+ */
+export function removeMemoryFilter(id) {
+  if (id === "trail") return { trail: null };
+  if (id === "date") return { range: DEFAULT_RANGE, day: null };
+  if (id === "sort") return { sort: DEFAULT_SORT };
+  if (id === "pinned") return { pinned: false };
+  // An id this surface does not have (the desktop's `onPage`) changes
+  // nothing rather than guessing.
+  return {};
+}
+
+/** `show everything`: every pill off and the search cleared. */
+export function showEverythingPatch() {
+  return { trail: null, range: DEFAULT_RANGE, day: null, sort: DEFAULT_SORT, pinned: false, query: "" };
 }

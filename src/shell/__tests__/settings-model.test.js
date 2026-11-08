@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
+  EXPORT_DETAIL,
+  EXPORT_LAPTOP_NOTE,
+  exportStatusText,
   CHOSEN,
   FONTS,
   SHELL_OFF_NOTE,
@@ -17,14 +20,15 @@ const allRows = (groups) => groups.flatMap((group) => group.rows);
 const valueOf = (groups, id) => allRows(groups).find((row) => row.id === id)?.value ?? null;
 
 describe("settingsGroups", () => {
-  it("names the three groups page, sync, app", () => {
+  it("names the four groups page, data, sync, app", () => {
     // The words a reader sees first, each an eyebrow over an inset group.
     // `page` rather than the desktop's `appearance`: tone and font are the
     // page's look, and `page` is what the shell calls that surface on its
     // first tab. `sync` is the row's own name. `app` is the honest home
-    // for the build and its experiments. Held as strings because the
+    // for the build and its experiments. `data` is the desktop's own word
+    // for the section that holds export. Held as strings because the
     // words ARE the decision — a synonym here is a different screen.
-    expect(settingsGroups().map((group) => group.eyebrow)).toEqual(["page", "sync", "app"]);
+    expect(settingsGroups().map((group) => group.eyebrow)).toEqual(["page", "data", "lock", "sync", "app"]);
   });
 
   it("keeps the rows in the desktop's order across the groups", () => {
@@ -35,7 +39,7 @@ describe("settingsGroups", () => {
     // importance — one set of settings, one organisation. The groups only
     // cut that sequence; they do not reorder it, so `sync` still sits
     // between `font` and `labs`.
-    expect(ids(settingsGroups())).toEqual([["tone", "font"], ["sync"], ["labs", "about"]]);
+    expect(ids(settingsGroups())).toEqual([["tone", "font"], ["data"], ["lock"], ["sync"], ["labs", "about"]]);
     expect(allRows(settingsGroups()).map((row) => row.id)).toEqual(settingsRootIds());
   });
 
@@ -47,7 +51,7 @@ describe("settingsGroups", () => {
     // table, so it would agree with either mistake rather than catch it.
     const seen = allRows(settingsGroups()).map((row) => row.id);
     expect(new Set(seen).size).toBe(seen.length);
-    expect(seen.slice().sort()).toEqual(["about", "font", "labs", "sync", "tone"]);
+    expect(seen.slice().sort()).toEqual(["about", "data", "font", "labs", "lock", "sync", "tone"]);
     for (const group of settingsGroups()) {
       expect(group.rows.length, `"${group.eyebrow}" names an empty group`).toBeGreaterThan(0);
     }
@@ -125,10 +129,12 @@ describe("settingsSection", () => {
     for (const id of settingsRootIds()) {
       const screen = settingsRowScreen(id);
       if (screen !== "section") {
-        // The one non-section row. Named rather than accepted by
-        // wildcard: a row that opened a screen nobody built would
-        // otherwise pass this by declaring any string at all.
-        expect(id, `"${id}" opens "${screen}", which no host pushes`).toBe("sync");
+        // The non-section rows, each named with the screen it opens.
+        // Named rather than accepted by wildcard: a row that opened a
+        // screen nobody built would otherwise pass this by declaring any
+        // string at all. `lock` opens LockSettingsScreen (ShellApp's
+        // lockSettingsView).
+        expect({ sync: "sync", lock: "lock" }[id], `"${id}" opens "${screen}", which no host pushes`).toBe(screen);
         continue;
       }
       const section = settingsSection(id, {});
@@ -161,8 +167,12 @@ describe("settingsSection", () => {
     // contract is "everything here has rows behind it", so the row that
     // does not must be missing from it — and it must still be a root row,
     // or the filter would be hiding a row rather than classifying one.
-    expect(settingsSectionIds()).toEqual(["tone", "font", "labs", "about"]);
+    expect(settingsSectionIds()).toEqual(["tone", "font", "data", "labs", "about"]);
     expect(settingsRootIds()).toContain("sync");
+    // The account's lock opens a screen of its own (LockSettingsScreen),
+    // like sync: it needs passphrase fields a section row cannot hold.
+    expect(settingsRootIds()).toContain("lock");
+    expect(settingsRowScreen("lock")).toBe("lock");
   });
 
   it("lists every tone and marks the one in use", () => {
@@ -274,9 +284,18 @@ describe("the words on screen", () => {
       ...groups.map((group) => group.eyebrow),
       ...allRows(groups).flatMap((row) => [row.label, row.value]),
       ...settingsSectionIds().flatMap((id) => {
-        const section = settingsSection(id, { version: "v0" });
-        return [section.title, section.blurb, ...section.rows.map((row) => row.label)];
+        // Both shapes of the data section: the export action, and the row
+        // with its note where the phone cannot share a zip.
+        return [true, false].flatMap((exportZip) => {
+          const section = settingsSection(id, { version: "v0", exportZip });
+          return [
+            section.title,
+            section.blurb,
+            ...section.rows.flatMap((row) => [row.label, row.detail, row.text].filter((t) => t !== undefined)),
+          ];
+        });
       }),
+      ...["working", "done", "failed"].map((state) => exportStatusText({ state, pageCount: 3 })),
     ];
     for (const text of strings) {
       expect(text, `"${text}" carries the retired word`).not.toMatch(
@@ -285,5 +304,46 @@ describe("the words on screen", () => {
       expect(text, `"${text}" is not lowercase`).toBe(text.toLowerCase());
       expect(text).not.toMatch(/!/);
     }
+  });
+});
+
+describe("the data section", () => {
+  it("offers export as one action where the phone can share a zip", () => {
+    const section = settingsSection("data", { exportZip: true });
+    expect(section.title).toBe("data");
+    expect(section.rows).toEqual([
+      { id: "export", kind: "action", label: "export", detail: EXPORT_DETAIL, busy: false },
+    ]);
+    expect(EXPORT_DETAIL).toBe("every page as markdown files, in one zip");
+  });
+
+  it("keeps the row where it cannot, and says where the export works", () => {
+    // iOS today, and a browser: the row is not a control (a press would do
+    // nothing), and the note under it says where to go instead.
+    const section = settingsSection("data", { exportZip: false });
+    expect(section.rows.map((row) => [row.id, row.kind])).toEqual([["export", "value"], ["export-note", "note"]]);
+    expect(section.rows[1].text).toBe(EXPORT_LAPTOP_NOTE);
+  });
+
+  it("says what the export is doing, and holds the action while it packs", () => {
+    const working = settingsSection("data", { exportZip: true, exportStatus: { state: "working" } });
+    expect(working.rows[0].busy).toBe(true);
+    expect(working.rows[1]).toEqual({ id: "export-status", kind: "note", text: "packing every page…" });
+    const done = settingsSection("data", { exportZip: true, exportStatus: { state: "done", pageCount: 47 } });
+    expect(done.rows[0].busy).toBe(false);
+    expect(done.rows[1].text).toBe("47 pages packed into one zip.");
+    expect(exportStatusText({ state: "done", pageCount: 1 })).toBe("1 page packed into one zip.");
+    expect(exportStatusText({ state: "failed" })).toMatch(/stopped/);
+    // Never pressed: nothing to say, so no note row stands under it.
+    expect(exportStatusText(null)).toBeNull();
+  });
+});
+
+describe("the lock row", () => {
+  it("says whether this device is locked, in the value column", () => {
+    const row = (lock) => settingsGroups({ lock }).flatMap((g) => g.rows).find((r) => r.id === "lock");
+    expect(row(true).value).toBe("on");
+    expect(row(false).value).toBe("off");
+    expect(row(true).label).toBe("lock");
   });
 });

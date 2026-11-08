@@ -521,3 +521,120 @@ describe("round-trip — composite page", () => {
     expect(md2).toBe(md1);
   });
 });
+
+// ── format 2: id, state and pin survive a file ───────────────────────────
+
+const p2 = (t, attrs) => ({ type: "paragraph", ...(attrs ? { attrs } : {}), content: [{ type: "text", text: t }] });
+const decisionNode = (attrs) => ({
+  type: "decisionBlock", attrs, content: [p2("rent or buy"), p2("rent"), p2("we move in two years")],
+});
+
+describe("round-trip — format 2 block lines", () => {
+  it("brings a block's stored id back onto the same block", () => {
+    const doc = { type: "doc", content: [
+      p2("intro"),
+      { type: "codeBlock", attrs: { language: "sh", blockId: "c0de00000001" }, content: [{ type: "text", text: "ls\n" }] },
+    ] };
+    const { md1, md2, parsed } = roundTrip(doc);
+    expect(md2).toBe(md1);
+    expect(parsed.doc.content[1].attrs.blockId).toBe("c0de00000001");
+  });
+
+  it("brings an old page's derived ids back as stored ones, the same ids", () => {
+    // Nothing stored: the file carries the ids the page shows, and an import
+    // of it stores exactly those.
+    const doc = { type: "doc", content: [p2("intro"), decisionNode({})] };
+    const { md1, md2, parsed } = roundTrip(doc);
+    expect(md2).toBe(md1);
+    const line = md1.match(/<!-- shizumu block id=(\S+) kind=decision/);
+    expect(parsed.doc.content[1].attrs.blockId).toBe(line[1]);
+  });
+
+  it("brings a decision's state and its date back", () => {
+    const doc = { type: "doc", content: [
+      decisionNode({ blockId: "dec000000001", blockState: "superseded", blockStateAt: "2026-10-30" }),
+    ] };
+    const { md1, md2, parsed } = roundTrip(doc);
+    expect(md2).toBe(md1);
+    expect(parsed.doc.content[0].attrs).toMatchObject({
+      blockId: "dec000000001", blockState: "superseded", blockStateAt: "2026-10-30",
+    });
+  });
+
+  it("does not store a q&a's open, which the words already say", () => {
+    const doc = { type: "doc", content: [{ type: "qaBlock", content: [
+      { type: "qaPair", content: [p2("who signs"), { type: "paragraph" }] },
+    ] }] };
+    const { md1, md2, parsed } = roundTrip(doc);
+    expect(md1).toMatch(/kind=qa state=open/);
+    expect(md2).toBe(md1);
+    // `open` is computed from the empty answer on every render; storing it
+    // would let the chip and the answer disagree (block-state.js header).
+    expect(parsed.doc.content[0].attrs.blockState).toBeUndefined();
+  });
+
+  it("brings a pin back onto its block, nested in a list too", () => {
+    const doc = { type: "doc", content: [
+      { type: "blockquote", attrs: { pinId: "PIN1", blockId: "quote0000001" }, content: [p2("pinned")] },
+      { type: "list", content: [
+        { type: "listItem", attrs: { marker: "bullet" }, content: [p2("deep", { pinId: "PIN2", blockId: "deep00000001" })] },
+      ] },
+    ] };
+    const pins = [
+      { id: "PIN1", object_type: "notes", position: 0, content: "" },
+      { id: "PIN2", object_type: "notes", position: 1, content: "" },
+    ];
+    const { md1, md2, parsed } = roundTrip(doc, pins);
+    expect(md2).toBe(md1);
+    expect(parsed.doc.content[0].attrs).toMatchObject({ pinId: "PIN1", blockId: "quote0000001" });
+    expect(parsed.doc.content[1].content[0].content[0].attrs).toMatchObject({ pinId: "PIN2", blockId: "deep00000001" });
+  });
+});
+
+describe("round-trip — a format 1 file still imports", () => {
+  // As 0.8.1 wrote it: no `format:` key, the pin as its own anchor line,
+  // no ids, a decision with no state.
+  const FORMAT_1 = [
+    "---",
+    "shizumu: 1",
+    "page_id: OLD1",
+    "date: 2026-10-01",
+    "page_number: 1",
+    "---",
+    "",
+    "<!-- shizumu:pin:PIN1 -->",
+    "> pinned",
+    "",
+    "### Considered",
+    "rent or buy",
+    "",
+    "### Chose",
+    "rent",
+    "",
+    "### Because",
+    "we move in two years",
+    "",
+  ].join("\n");
+
+  it("reads the pin anchor and the decision", () => {
+    const { frontmatter, doc } = parsePage(FORMAT_1);
+    expect(frontmatter.page_id).toBe("OLD1");
+    expect(frontmatter.format).toBeUndefined();
+    expect(doc.content[0]).toMatchObject({ type: "blockquote", attrs: { pinId: "PIN1" } });
+    expect(doc.content[1].type).toBe("decisionBlock");
+    // No line, no stored state: the editor's default (standing) applies.
+    expect(doc.content[1].attrs.blockState).toBeUndefined();
+    expect(doc.content[0].attrs.blockId).toBeUndefined();
+  });
+
+  it("writes it back out as format 2 with the pin on its block line", () => {
+    const { doc } = parsePage(FORMAT_1);
+    const md = serializePage({
+      page: makePage(doc, { id: "OLD1" }),
+      pins: [{ id: "PIN1", object_type: "notes", position: 0, content: "" }],
+    });
+    expect(md).toContain("format: 2");
+    expect(md).toMatch(/<!-- shizumu block id=d\S+ pin=PIN1 -->\n> pinned/);
+    expect(md).toMatch(/<!-- shizumu block id=d\S+ kind=decision state=standing -->\n### Considered/);
+  });
+});

@@ -282,7 +282,10 @@ fn apply_attachment_payload(
 /// it for the same reason: it's this device's own bookkeeping (the seq a
 /// snapshot was taken at), not a fact about the account, so it is excluded
 /// from `sync::snapshot::capture` the same way it's excluded from ops.
-pub const LOCAL_ONLY_SETTINGS: &[&str] = &["sync_revoked", "snapshot_last_seq"];
+/// `encryption_enabled` joined in 0.8.2: the lock is a fact about one
+/// device's file. Sent to a phone whose file was plain, it put the phone
+/// behind a lock screen no passphrase could open (reported 2026-11-06).
+pub const LOCAL_ONLY_SETTINGS: &[&str] = &["sync_revoked", "snapshot_last_seq", "encryption_enabled"];
 
 /// Call-site sugar for setting mutations. No-ops for keys in
 /// `LOCAL_ONLY_SETTINGS` — those never leave this device (see its doc
@@ -430,6 +433,22 @@ mod emit_tests {
             .query_row("SELECT COUNT(*) FROM op_log", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "sync_revoked must never produce an op_log row");
+    }
+
+    /// The lock flag describes this device's file. Sent to a peer whose
+    /// file is plain, it put that peer behind a lock no passphrase opens.
+    #[test]
+    fn emit_setting_never_sends_the_lock_flag() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        let engine: OpLog = std::sync::Arc::new(OpLogEngine::load(&conn).unwrap());
+
+        emit_setting(&engine, &conn, "encryption_enabled", Some("true"));
+
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM op_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
     }
 
     /// A normal setting key is unaffected by the local-only skip list —

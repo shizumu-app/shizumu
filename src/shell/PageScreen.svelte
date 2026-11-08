@@ -571,6 +571,7 @@
   instead of answered with a timer no test could prove.
 -->
 <script>
+  import { isBoardType } from "../lib/extensions/block-title.js";
   import EditorCore from "../components/editor/EditorCore.svelte";
   import Screen from "./ui/Screen.svelte";
   import PageHeader from "./ui/PageHeader.svelte";
@@ -767,9 +768,10 @@
   let focusBlock = $state(null);
 
   /** The block a DOM element sits in, as the snapshot would name it:
-   *  `{type, pos}` with pos the position immediately BEFORE the top-level
-   *  node, which is what `gutterHandle` hands to `nodeDOM` and what every
-   *  block action resolves from. */
+   *  `{type, pos, isBoard}` with pos the position immediately BEFORE the
+   *  top-level node, which is what `gutterHandle` hands to `nodeDOM` and what
+   *  every block action resolves from. isBoard because the sheet offers
+   *  `delete` on it: an empty board named from its title field lost the row. */
   function blockFromElement(el) {
     const view = blockEditor?.view;
     if (!view || view.isDestroyed || !el) return null;
@@ -781,7 +783,7 @@
       if (resolved.depth === 0) return null;
       const pos = resolved.before(1);
       const node = view.state.doc.nodeAt(pos);
-      return node ? { type: node.type.name, pos } : null;
+      return node ? { type: node.type.name, pos, isBoard: isBoardType(node.type.name) } : null;
     } catch {
       // posAtDOM throws for an element the view no longer owns — a NodeView
       // mid-teardown. No handle is the right answer there; a guessed

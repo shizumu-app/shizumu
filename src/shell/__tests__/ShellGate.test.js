@@ -15,6 +15,7 @@ vi.mock("../../lib/api.js", () => ({
 }));
 
 const ShellGate = (await import("../ShellGate.svelte")).default;
+const { WRONG_PASSPHRASE } = await import("../../lib/lock-copy.js");
 const { ONBOARDING_SLIDES } = await import("../gate-model.js");
 
 beforeEach(() => {
@@ -257,7 +258,11 @@ describe("ShellGate — lock", () => {
     // by the words alone: rendered in the note's plain ink, "wrong
     // passphrase" under an empty field reads as a label for it.
     const note = target.querySelector('.shell-note[data-tone="warm"]');
-    expect(note?.textContent.trim()).toBe("wrong passphrase");
+    // The account's one lock (account_lock.rs): a phone closed while the
+    // passphrase changed elsewhere opens with the one before it until it
+    // syncs, and the refusal says so.
+    expect(note?.textContent.trim()).toBe(WRONG_PASSPHRASE);
+    expect(WRONG_PASSPHRASE).toMatch(/^wrong passphrase\. .*the one before it/);
     expect(target.querySelector("input").value).toBe("");
   });
 

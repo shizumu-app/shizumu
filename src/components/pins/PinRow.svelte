@@ -1,9 +1,8 @@
 <!--
-  PinRow — single pin row in the SharedObjectsPanel list.
-  Layout: [kind chip] [title in warm-accent + content snippet] [actions].
-  The chip names the block type at a glance (text / tasks / numbered /
-  list / outline / q&a / table / board), the title reads in italic
-  warm-accent so it pops over the muted snippet line.
+  PinRow — one pin, in the desktop pins panel and in memory's pins tab
+  (spec 2026-11-01 §1-2, ruling 6). Layout: kind in a fixed column, then
+  the title (the open control), the source line, the carry-forward line,
+  a two-line snippet, and the worded actions from pin-row-actions.js.
 
   Title and snippet both flow through pin-display helpers so a pin whose
   title got stored as raw JSON (legacy bug) never leaks JSON to the UI.
@@ -11,12 +10,11 @@
   through from the parent.
 -->
 <script>
-  import Card from "../../lib/ui/Card.svelte";
-  import PinRowActions from "./PinRowActions.svelte";
   import { pinKind, pinFamily, pinDisplayTitle, pinSnippet, isFilePin, isImagePin, attachmentMetaOf, imageMetaOf } from "../../lib/pin-display.js";
   import { pinFileLocality, blobLocality, fileRowDetail } from "../../lib/attachment-locality.js";
   import { attachmentOpen } from "../../lib/api.js";
   import { blobImageSrc } from "../../lib/render/blob-image-hydrate.js";
+  import { pinRowActions } from "../../lib/pin-row-actions.js";
 
   function formatBytes(n) {
     if (!n || n < 0) return "0 B";
@@ -28,19 +26,15 @@
   /** @type {{
     pin: any,
     eff: any,
-    isBoard: boolean,
-    lineagePath?: Array<{ id: string, name: string }>,
+    isBoard?: boolean,
     localBlobs?: Map<string, boolean> | null,
 
-    focused?: boolean,
     samePage?: boolean,
 
     sortMode?: string,
     draggingId?: string | null,
     dragOverId?: string | null,
 
-    scopeActions?: Array<{ kind: string, label: string, target: string|null }>,
-    scopeMenuOpen?: boolean,
     showActions?: boolean,
 
     onClick?: () => void,
@@ -48,31 +42,30 @@
     onCarryForward?: () => void,
     onInject?: () => void,
     onDelete?: () => void,
-    onScopeChange?: (scope: any) => void,
-    onScopeMenuToggle?: () => void,
     onScopeAction?: (action: any) => void,
 
     onDragStart?: (e: DragEvent) => void,
     onDragOver?: (e: DragEvent) => void,
     onDragLeave?: (e: DragEvent) => void,
     onDrop?: (e: DragEvent) => void,
+
+    sourceLine?: string | null,
+    lineages?: any[],
+    canPutOnPage?: boolean,
+    onMove?: (target: string|null) => void,
   }} */
   let {
     pin,
     eff,
-    isBoard,
-    lineagePath = [],
+    isBoard = false,
     localBlobs = null,
 
-    focused = false,
     samePage = false,
 
     sortMode = "position",
     draggingId = null,
     dragOverId = null,
 
-    scopeActions = [],
-    scopeMenuOpen = false,
     showActions = true,
 
     onClick,
@@ -80,14 +73,17 @@
     onCarryForward,
     onInject,
     onDelete,
-    onScopeChange,
-    onScopeMenuToggle,
     onScopeAction,
 
     onDragStart,
     onDragOver,
     onDragLeave,
     onDrop,
+
+    sourceLine = null,
+    lineages = [],
+    canPutOnPage = true,
+    onMove,
   } = $props();
 
   let rawKind = $derived(pinKind(eff));
@@ -130,16 +126,10 @@
   let snippet = $derived(
     isFile ? fileRowDetail(formatBytes(fileMeta?.size_bytes || 0), fileLocality)
     : isImage ? fileRowDetail(formatBytes(imageMeta?.size_bytes || 0), imageLocality)
-    : pinSnippet(eff),
+    // The row clamps to two lines in CSS, so it asks for enough text to
+    // fill them.
+    : pinSnippet(eff, { maxLen: 220 }),
   );
-  let hasRealTitle = $derived(!!(eff?.title && eff.title.trim() && displayTitle === eff.title.trim()));
-  // Full chain so all-trails view reads the hierarchy ("a › b › c").
-  // Specific-trail callers pass a 1-element path so the chip degrades
-  // to just the leaf name without changes here.
-  let trailBreadcrumb = $derived.by(() => {
-    if (!lineagePath || lineagePath.length === 0) return null;
-    return lineagePath.map((l) => l.name).join(" › ");
-  });
 
   // Inline rename — preserves the original focus/select/Esc/blur dance.
   let isRenaming = $state(false);
@@ -170,11 +160,6 @@
     else if (e.key === "Escape") { e.preventDefault(); cancelRename(); }
   }
 
-  function handleTitleClick(e) {
-    e.stopPropagation();
-    startRename();
-  }
-
   // File pins open the bundled blob on row click rather than the artifact
   // modal — opening the modal for a file pin would just show the bare
   // attachment node, which the modal can't render usefully.
@@ -188,91 +173,303 @@
     }
     onClick?.();
   }
+
+  // ── panel layout: worded actions, ⋯ menu, unpin asks first ────────────
+  let actions = $derived(pinRowActions(pin, { lineages, title: displayTitle, canPutOnPage, canRename: !!onRename }));
+  let menuOpen = $state(false);
+  let confirming = $state(/** @type {any} */ (null));
+  let moreBtn = $state(/** @type {HTMLButtonElement|null} */ (null));
+  let menuEl = $state(/** @type {HTMLElement|null} */ (null));
+  let titleBtn = $state(/** @type {HTMLButtonElement|null} */ (null));
+  let titleId = $derived(`pin-title-${pin.id}`);
+
+  function openMenu() {
+    menuOpen = !menuOpen;
+    confirming = null;
+    if (menuOpen) requestAnimationFrame(() => menuEl?.querySelector("button")?.focus());
+  }
+  function closeMenu({ refocus = true } = {}) {
+    menuOpen = false;
+    confirming = null;
+    if (refocus) moreBtn?.focus();
+  }
+  function runPrimary(a) {
+    if (a.id === "open") handleRowClick();
+    else if (a.id === "putOnPage") onInject?.();
+  }
+  function runMore(a) {
+    if (a.confirm) { confirming = a; requestAnimationFrame(() => menuEl?.querySelector(".confirm-no")?.focus()); return; }
+    closeMenu({ refocus: a.id !== "rename" });
+    if (a.id === "carry") onCarryForward?.();
+    else if (a.id === "rename") startRename();
+    else if (a.id === "move") onMove ? onMove(a.target) : onScopeAction?.({ target: a.target, label: a.label });
+  }
+  function confirmUnpin() {
+    closeMenu({ refocus: false });
+    onDelete?.();
+  }
+  function menuKeydown(e) {
+    if (e.key === "Escape") {
+      // Spent here: the panel's own Escape (back to the editor) must not
+      // also run for the press that only closed this menu.
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu();
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const items = [...(menuEl?.querySelectorAll("button") || [])];
+      const i = items.indexOf(/** @type {any} */ (document.activeElement));
+      const next = e.key === "ArrowDown" ? (i + 1) % items.length : (i - 1 + items.length) % items.length;
+      items[next]?.focus();
+    }
+  }
+  $effect(() => {
+    if (!menuOpen) return;
+    const onDown = (e) => {
+      if (menuEl?.contains(e.target) || moreBtn?.contains(e.target)) return;
+      closeMenu({ refocus: false });
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  });
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  class="pin-row-wrap"
-  class:is-board={isBoard}
-  class:is-note={!isBoard}
+<article
+  class="pin-row-wrap panel-row"
   class:closed={pin.status === "closed"}
   class:orphaned={pin.status === "orphaned"}
   class:dragging={draggingId === pin.id}
   class:drag-over={dragOverId === pin.id}
+  class:menu-open={menuOpen}
   data-pin-id={pin.id}
-  draggable={sortMode === "position" && !isRenaming}
+  aria-labelledby={titleId}
+  draggable={sortMode === "position" && !isRenaming && !menuOpen}
   ondragstart={onDragStart}
   ondragover={onDragOver}
   ondragleave={onDragLeave}
   ondrop={onDrop}
 >
-  <Card focused={focused} onClick={handleRowClick} variant="boxed">
-    <div class="row-grid">
-      <span class="kind-chip" data-family={family ?? "none"}>{isFile ? "📎 file" : kindLabel}</span>
+  <span class="p-kind" data-family={family ?? "none"}>{isFile ? "file" : kindLabel}</span>
+  <div class="p-body">
+    <div class="p-head">
       {#if isImage}
-        <div class="row-thumb" class:away={imageLocality === "away"}>
-          {#if imageSrc}
-            <img src={imageSrc} alt={imageMeta?.filename || "pinned image"} />
+        <div class="row-thumb small" class:away={imageLocality === "away"}>
+          {#if imageSrc}<img src={imageSrc} alt="" />{/if}
+        </div>
+      {/if}
+      {#if isRenaming}
+        <input
+          id={`pin-rename-${pin.id}`}
+          class="row-title-input selectable"
+          aria-label="pin title"
+          bind:value={renameValue}
+          onkeydown={handleRenameKeydown}
+          onblur={commitRename}
+          spellcheck="false"
+        />
+      {:else}
+        <!-- The title is the open control: the row itself is not a button
+             (a button holding buttons has no usable name). -->
+        <button
+          bind:this={titleBtn}
+          id={titleId}
+          type="button"
+          class="row-title p-title"
+          class:row-title-empty={!displayTitle}
+          onclick={handleRowClick}
+        >{displayTitle || "untitled"}</button>
+      {/if}
+    </div>
+    {#if sourceLine}
+      <span class="p-from">{sourceLine}</span>
+    {/if}
+    {#if pin.auto_insert}
+      <span class="p-carry"><span aria-hidden="true">↻</span> carries forward to new pages</span>
+    {/if}
+    {#if snippet && snippet !== displayTitle}
+      <span class="p-snippet">{snippet}</span>
+    {/if}
+    {#if showActions}
+      <div class="p-acts">
+        {#each actions.primary as a (a.id)}
+          <button type="button" class="p-act" aria-label={a.ariaLabel} onclick={() => runPrimary(a)}>{a.label}</button>
+        {/each}
+        <button
+          bind:this={moreBtn}
+          type="button"
+          class="p-act p-more"
+          aria-label={`more for ${displayTitle || "this pin"}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onclick={openMenu}
+        >⋯</button>
+      </div>
+      {#if menuOpen}
+        <!-- svelte-ignore a11y_interactive_supports_focus -->
+        <div class="p-menu" role="menu" tabindex="-1" aria-label={`actions for ${displayTitle || "this pin"}`} bind:this={menuEl} onkeydown={menuKeydown}>
+          {#if confirming}
+            <p class="p-confirm">{confirming.confirm.prompt}</p>
+            <div class="p-confirm-row">
+              <button type="button" role="menuitem" class="p-act confirm-no" onclick={() => closeMenu()}>{confirming.confirm.no}</button>
+              <button type="button" role="menuitem" class="p-act confirm-yes" onclick={confirmUnpin}>{confirming.confirm.yes}</button>
+            </div>
+          {:else}
+            {#each actions.more as a, i (a.id + i)}
+              {#if i > 0 && a.group !== actions.more[i - 1].group}<hr class="p-sep" />{/if}
+              <button type="button" role="menuitem" class="p-item" class:danger={a.id === "unpin"} onclick={() => runMore(a)}>{a.label}</button>
+            {/each}
           {/if}
         </div>
       {/if}
-      <div class="row-text">
-        {#if isRenaming}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <input
-            id={`pin-rename-${pin.id}`}
-            class="row-title-input selectable"
-            bind:value={renameValue}
-            onkeydown={handleRenameKeydown}
-            onblur={commitRename}
-            onclick={(e) => e.stopPropagation()}
-            spellcheck="false"
-          />
-        {:else if displayTitle}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <span
-            class="row-title"
-            class:row-title-accent={hasRealTitle}
-            onclick={handleTitleClick}
-          >{displayTitle}</span>
-        {:else}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <span class="row-title row-title-empty" onclick={handleTitleClick}>untitled</span>
-        {/if}
-
-        {#if snippet && snippet !== displayTitle}
-          <span class="row-snippet">{snippet}</span>
-        {/if}
-        {#if trailBreadcrumb}
-          <span class="row-trail" class:nested={lineagePath.length > 1}>{trailBreadcrumb}</span>
-        {/if}
-      </div>
-      {#if showActions}
-        <div class="row-actions-col">
-          <PinRowActions
-            pin={pin}
-            autoInsert={pin.auto_insert}
-            scopeActions={scopeActions}
-            scopeMenuOpen={scopeMenuOpen}
-            onRename={() => startRename()}
-            onCarryForward={onCarryForward}
-            onInject={onInject}
-            onDelete={onDelete}
-            onScopeChange={onScopeChange}
-            onScopeMenuToggle={onScopeMenuToggle}
-            onScopeAction={onScopeAction}
-          />
-        </div>
-      {/if}
-    </div>
-  </Card>
-</div>
+    {/if}
+  </div>
+</article>
 
 <style>
+  /* ── the row (spec 2026-11-01 §1) ────────────────────────────────────
+     Kind in a fixed column so titles share one left edge whatever the
+     label's width; the card is the page's own tone a step off the panel. */
+  .panel-row {
+    display: grid;
+    grid-template-columns: 3.5rem minmax(0, 1fr);
+    column-gap: 0.625rem;
+    padding: 0.625rem 0.75rem;
+    margin-bottom: 0.5rem;
+    border-radius: 0.625rem;
+    background: var(--surface);
+    border: 1px solid var(--card-border);
+  }
+  .p-kind {
+    font-family: "DM Mono", monospace;
+    font-size: 0.6875rem;
+    color: var(--ink-soft);
+    padding-top: 0.1875rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .p-body {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    position: relative;
+  }
+  .p-head { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+  .row-thumb.small { width: 1.75rem; height: 1.75rem; }
+  .p-title {
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    text-align: left;
+    cursor: pointer;
+    font-family: "Lora", serif;
+    font-style: italic;
+    font-size: 0.9375rem;
+    line-height: 1.35;
+    color: var(--accent-text);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border-radius: 0.25rem;
+  }
+  .p-title:hover { text-decoration: underline; text-underline-offset: 0.2em; text-decoration-thickness: 1px; }
+  .p-from, .p-carry {
+    font-family: "DM Mono", monospace;
+    font-size: 0.6875rem;
+    line-height: 1.4;
+  }
+  .p-from { color: var(--ink-soft); }
+  .p-carry { color: var(--accent-text); }
+  .p-snippet {
+    font-family: "Lora", serif;
+    font-size: 0.84375rem;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow-wrap: anywhere;
+  }
+  .p-acts {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-top: 0.375rem;
+  }
+  .p-act {
+    font-family: "DM Mono", monospace;
+    font-size: 0.75rem;
+    line-height: 1.2;
+    border: 1px solid var(--card-border);
+    background: var(--canvas-bg);
+    color: var(--ink-soft);
+    border-radius: 0.375rem;
+    padding: 0.1875rem 0.5rem;
+    cursor: pointer;
+    transition: color var(--motion-fast, 140ms), border-color var(--motion-fast, 140ms);
+  }
+  .p-act:hover { color: var(--ink); border-color: color-mix(in srgb, var(--ink) 22%, transparent); }
+  .p-more {
+    margin-left: auto;
+    border-color: transparent;
+    background: none;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0.125rem 0.375rem;
+  }
+  .p-more[aria-expanded="true"] { color: var(--ink); background: var(--hover-tint); }
+  .p-menu {
+    position: absolute;
+    right: 0;
+    top: 100%;
+    z-index: 5;
+    margin-top: 0.25rem;
+    min-width: 12.5rem;
+    max-width: 18rem;
+    padding: 0.25rem;
+    background: var(--surface-raised);
+    border: 1px solid var(--elev-border);
+    border-radius: 0.5rem;
+    box-shadow: var(--elev-2);
+    display: flex;
+    flex-direction: column;
+  }
+  .p-item {
+    background: none;
+    border: none;
+    text-align: left;
+    cursor: pointer;
+    padding: 0.375rem 0.5rem;
+    border-radius: 0.3125rem;
+    font-family: "DM Mono", monospace;
+    font-size: 0.75rem;
+    color: var(--ink);
+  }
+  .p-item:hover, .p-item:focus-visible { background: var(--hover-tint); }
+  .p-item.danger { color: var(--accent-text); }
+  .p-sep { border: none; border-top: 1px solid var(--elev-border); margin: 0.25rem 0.25rem; }
+  .p-confirm {
+    margin: 0.25rem 0.5rem 0.5rem;
+    font-family: "Lora", serif;
+    font-size: 0.8125rem;
+    line-height: 1.4;
+    color: var(--ink);
+  }
+  .p-confirm-row { display: flex; justify-content: flex-end; gap: 0.375rem; padding: 0 0.25rem 0.25rem; }
+  .confirm-yes { color: var(--accent-text); border-color: color-mix(in srgb, var(--warm-accent) 35%, transparent); }
+  .panel-row.dragging { opacity: 0.35; }
+  .panel-row.drag-over { background: var(--warm-accent-soft); }
+  .panel-row.closed, .panel-row.orphaned { color: var(--ink-soft); }
+  .panel-row.menu-open { position: relative; z-index: 4; }
+
   .pin-row-wrap {
     position: relative;
     transition: background 180ms cubic-bezier(0.2, 0, 0, 1),
@@ -286,16 +483,6 @@
   }
   .pin-row-wrap.dragging { opacity: 0.35; }
   .pin-row-wrap.drag-over { background: var(--warm-accent-soft); }
-
-  .row-grid {
-    display: grid;
-    /* chip · [thumb] · text · actions. The thumb column is only emitted
-       for an image pin, and `auto` collapses to nothing on every other
-       row, so no row pays for a column it doesn't fill. */
-    grid-template-columns: auto auto 1fr auto;
-    column-gap: 0.625rem;
-    align-items: start;
-  }
 
   /* Pinned-image thumbnail. Fixed box so a column of image pins keeps one
      left edge regardless of aspect ratio; `contain` rather than `cover` so
@@ -323,67 +510,7 @@
     border-style: dashed;
     opacity: 0.5;
   }
-  .row-text {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.125rem;
-    padding-top: 0.0625rem;
-  }
-  .row-actions-col {
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    padding-top: 0.0625rem;
-  }
 
-  .kind-chip {
-    font-family: "DM Mono", monospace;
-    font-size: 0.625rem;
-    letter-spacing: 0.02em;
-    color: var(--ink-soft);
-    padding: 0.125rem 0.375rem;
-    border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
-    border-radius: 0.25rem;
-    line-height: 1.2;
-    white-space: nowrap;
-    align-self: start;
-    margin-top: 0.0625rem;
-  }
-  .kind-chip[data-family="lists"],
-  .kind-chip[data-family="structure"] {
-    color: var(--accent-text);
-    border-color: color-mix(in srgb, var(--warm-accent) 22%, transparent);
-  }
-  .kind-chip[data-family="charts"] {
-    color: var(--accent-text);
-    border-color: color-mix(in srgb, var(--warm-accent) 30%, transparent);
-  }
-  .kind-chip[data-family="code"] {
-    color: var(--ink-soft);
-    border-color: color-mix(in srgb, var(--ink) 18%, transparent);
-  }
-  .kind-chip[data-family="files"] {
-    color: var(--accent-text);
-    border-color: color-mix(in srgb, var(--warm-accent) 25%, transparent);
-    opacity: 1;
-  }
-  /* family="text" and family="none" use the default styles above. */
-
-  .row-title {
-    font-family: "Lora", serif;
-    font-style: italic;
-    font-size: 0.9375rem;
-    color: var(--ink);
-    cursor: text;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-  }
-  .row-title-accent {
-    color: var(--accent-text);
-  }
   .row-title-empty {
     color: var(--accent-text);
     font-style: italic;
@@ -405,31 +532,4 @@
     border-radius: 0;
   }
 
-  .row-snippet {
-    font-family: "Lora", serif;
-    font-size: 0.8125rem;
-    line-height: 1.4;
-    color: var(--ink-soft);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .row-trail {
-    align-self: flex-start;
-    margin-top: 0.1875rem;
-    font-family: "Lora", serif;
-    font-style: italic;
-    font-size: 0.625rem;
-    color: var(--accent-text);
-    padding: 0.0625rem 0.4375rem;
-    border-radius: 0.625rem;
-    background: var(--warm-accent-soft);
-    border: 1px solid color-mix(in srgb, var(--warm-accent) 25%, transparent);
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    opacity: 1;
-  }
 </style>

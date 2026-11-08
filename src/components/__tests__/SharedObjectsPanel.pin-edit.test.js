@@ -64,10 +64,19 @@ function pinRow(node) {
   };
 }
 
+// Rename lives behind the row's ⋯ since 0.8.2 (pin-row-actions.js).
+async function startRename(target) {
+  await until(() => target.querySelector(".p-more"), "the pin row");
+  target.querySelector(".p-more").click();
+  await until(() => [...target.querySelectorAll(".p-item")].find((b) => b.textContent === "rename"), "the rename item");
+  [...target.querySelectorAll(".p-item")].find((b) => b.textContent === "rename").click();
+}
+
 // Click the row, type at the end of whichever editor the panel opened, close.
 async function editPin(target, word) {
-  await until(() => target.querySelector(".kind-chip"), "the pin row");
-  target.querySelector(".kind-chip").click();
+  // The row's title is its open control (0.8.2: the row is not a button).
+  await until(() => target.querySelector(".p-title"), "the pin row");
+  target.querySelector(".p-title").click();
   await until(() => document.querySelector(".note-modal-text") || document.querySelector(".modal-editor .ProseMirror")?.editor, "a pin editor");
   const note = document.querySelector(".note-modal-text");
   if (note) {
@@ -199,8 +208,7 @@ describe("an edit to a pin reaches the node that is the pin", () => {
     const { target } = render(SharedObjectsPanel, {
       pageId: "q", editorDoc: null, onClose: () => {}, onSamePagePinSave: vi.fn(() => false),
     });
-    await until(() => target.querySelector(".row-title"), "the pin row");
-    target.querySelector(".row-title").click();
+    await startRename(target);
     await until(() => document.getElementById("pin-rename-p1"), "the rename input");
     const input = document.getElementById("pin-rename-p1");
     input.value = "shorebirds";

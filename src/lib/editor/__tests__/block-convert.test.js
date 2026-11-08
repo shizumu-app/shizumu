@@ -488,14 +488,23 @@ describe("convertBlockNode — attrs handling", () => {
     expect(converted.attrs.blockTitle).toBe("my title");
   });
 
-  it("drops pinId on the converted node — the pin pointed at the old shape", () => {
+  it("a list turned into another kind of list keeps its pin: same words, same items, same order", () => {
+    // A task list is the same passage with boxes. Dropping the pin here left it
+    // a frozen copy that a tick never reached (journey insight I36).
+    const original = list("bullet", ["a", "b"], { pinId: "pin-123" });
+    expect(convertBlockNode(original, "task").attrs.pinId).toBe("pin-123");
+    const tasks = list("task", ["a"], { pinId: "pin-123" });
+    expect(convertBlockNode(tasks, "ordered").attrs.pinId).toBe("pin-123");
+  });
+
+  it("a block rebuilt into another shape drops pinId: the pin pointed at the old shape", () => {
     const original = list("bullet", ["a"], { pinId: "pin-123" });
-    const converted = convertBlockNode(original, "blockquote");
-    expect(converted.attrs.pinId).toBeNull();
+    expect(convertBlockNode(original, "blockquote").attrs.pinId).toBeNull();
+    expect(convertBlockNode(original, "codeBlock").attrs.pinId).toBeNull();
   });
 
   it("keeps a pinId that sits on a paragraph INSIDE the block (F6)", () => {
-    // The board's own pinId is dropped (above) — it described the old shape.
+    // The board's own pinId is dropped here (above) — it described the old shape.
     // A pin on a paragraph nested inside it is a different pointer: that
     // paragraph survives the conversion with its text intact, so the pin's
     // cached content still matches and the pointer stays honest. The

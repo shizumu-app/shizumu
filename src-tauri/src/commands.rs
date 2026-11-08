@@ -369,6 +369,7 @@ pub fn clone_page_for_new_day(
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
         .map(|mut v| {
             strip_pin_ids_in_place(&mut v);
+            strip_block_ids_in_place(&mut v);
             v.to_string()
         });
 
@@ -431,6 +432,21 @@ fn strip_pin_ids_in_place(node: &mut serde_json::Value) {
     if let Some(content) = node.get_mut("content").and_then(|c| c.as_array_mut()) {
         for child in content {
             strip_pin_ids_in_place(child);
+        }
+    }
+}
+
+/// A cloned page's blocks are new blocks: they must not carry the source
+/// page's `blockId`s (src/lib/block-id.js), or one id would name a block on
+/// each page. Without one, the editor gives each block the id derived from
+/// the NEW page's id when it is opened, and the next save keeps it.
+fn strip_block_ids_in_place(node: &mut serde_json::Value) {
+    if let Some(attrs) = node.get_mut("attrs").and_then(|a| a.as_object_mut()) {
+        attrs.remove("blockId");
+    }
+    if let Some(content) = node.get_mut("content").and_then(|c| c.as_array_mut()) {
+        for child in content {
+            strip_block_ids_in_place(child);
         }
     }
 }
@@ -864,6 +880,41 @@ pub fn get_trail_page_counts_inner(
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+/// Pin count per trail, for the whole database: the pins each trail itself
+/// owns (`shared_objects.lineage_id` equals the trail), the same rule
+/// carry-forward uses. A parent's count does not include its children's
+/// pins, and the NULL group is the pins kept everywhere (global pins).
+///
+/// Memory's trails sidebar shows `pages · pins` on every row. It cannot
+/// tally pins itself: with one trail selected it loads only that trail's
+/// subtree, so every other row would read 0. One read-only SELECT, no
+/// writes (spec 2026-11-01, ruling 1).
+#[tauri::command]
+pub fn get_trail_pin_counts(db: State<'_, Db>) -> Result<Vec<(Option<String>, i64)>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    get_trail_pin_counts_inner(&conn)
+}
+
+pub fn get_trail_pin_counts_inner(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<(Option<String>, i64)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT lineage_id, COUNT(*)
+             FROM shared_objects
+             GROUP BY lineage_id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?))
+        })
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -4190,70 +4241,121 @@ pub fn get_shukonin_sessions_for_date(
 
 #[tauri::command]
 pub fn check_encryption_status(db: State<'_, Db>) -> Result<bool, String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
-    // If we can read the db, check if encryption setting is stored
-    let result: Option<String> = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key = 'encryption_enabled'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
+    encryption_status_inner(db.inner())
+}
 
-    Ok(result.map(|v| v == "true").unwrap_or(false))
+/// Whether the writer's file is encrypted, asked of the file itself.
+///
+/// Until 0.8.2 this read the `encryption_enabled` settings row, and settings
+/// sync by key: a laptop that turned the lock on sent the row to a phone
+/// whose file was plain, the phone showed the lock screen, and no passphrase
+/// could open it (reported 2026-11-06). The row no longer travels
+/// (`op_log::LOCAL_ONLY_SETTINGS`), and this answer no longer depends on it,
+/// so a phone that already received the row opens again on its own.
+pub fn encryption_status_inner(db: &Db) -> Result<bool, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let mut path = main_db_path(&conn)?;
+    drop(conn);
+    if path.is_empty() {
+        // Locked, or the launch could not open the file: the connection is
+        // in memory and the real file is the one unlock will reopen.
+        path = LOCKED_DB_PATH.lock().map_err(|e| e.to_string())?.clone().unwrap_or_default();
+    }
+    if path.is_empty() {
+        return Ok(false);
+    }
+    Ok(crate::crypto::check_db_encrypted(std::path::Path::new(&path)))
 }
 
 #[tauri::command]
 pub fn setup_encryption(
     db: State<'_, Db>,
+    engine: State<'_, op_log::OpLog>,
     passphrase: String,
 ) -> Result<(), String> {
+    setup_encryption_inner(db.inner(), Some(engine.inner()), &passphrase)?;
+    // Store the key for the next launch: the owner-only key file, with a copy
+    // in the system keyring on desktop outside Flatpak (crypto::store_key).
+    crate::crypto::store_key(&passphrase)
+        .map_err(|e| format!("encryption succeeded but failed to store key in keyring: {e}"))
+}
+
+/// The file half of turning the lock on, and the account's half: every
+/// paired device follows the `account_lock` row this writes
+/// (account_lock.rs). No key is stored here, so tests never reach the
+/// keyring; the command does that.
+pub fn setup_encryption_inner(db: &Db, engine: Option<&op_log::OpLog>, passphrase: &str) -> Result<(), String> {
+    if passphrase.chars().count() < MIN_PASSPHRASE_CHARS {
+        return Err(format!("the passphrase needs at least {MIN_PASSPHRASE_CHARS} characters"));
+    }
     // Get the db path, then release the file by swapping in a temp connection
     let mut conn = db.lock().map_err(|e| e.to_string())?;
-    let db_path: String = conn
-        .query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2))
-        .map_err(|e| e.to_string())?;
+    let db_path = main_db_path(&conn)?;
+    if db_path.is_empty() {
+        return Err("unlock the app first".into());
+    }
     let path = std::path::PathBuf::from(&db_path);
+    if crate::crypto::check_db_encrypted(&path) {
+        return Err("the lock is already on".into());
+    }
+    *conn = rusqlite::Connection::open_in_memory().map_err(|e| e.to_string())?;
 
-    // Replace with in-memory connection to release the file lock
-    *conn = rusqlite::Connection::open_in_memory()
-        .map_err(|e| e.to_string())?;
-    drop(conn);
-
-    // Migrate the database file to encrypted
-    crate::crypto::migrate_to_encrypted(&path, &passphrase)?;
-
-    // Always store the key in the system keyring — required for unlock on restart.
-    // The keyring is protected by the OS login (libsecret/kwallet/Keychain/Credential Manager).
-    crate::crypto::store_key(&passphrase)
-        .map_err(|e| format!("encryption succeeded but failed to store key in keyring: {e}"))?;
-
-    // Reopen with encryption
-    let new_conn = crate::crypto::open_encrypted(&path, &passphrase)
-        .map_err(|e| format!("failed to reopen encrypted db: {e}"))?;
-    new_conn
-        .execute_batch("PRAGMA journal_mode=WAL;")
-        .map_err(|e| e.to_string())?;
-
-    // Mark encryption as enabled
-    new_conn
-        .execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('encryption_enabled', 'true')",
-            [],
-        )
-        .map_err(|e| e.to_string())?;
-
-    // Replace the connection in the mutex
-    let mut conn = db.lock().map_err(|e| e.to_string())?;
+    // Migrate the database file to encrypted; on failure the plain file is
+    // reopened, so the app is never left on the in-memory stand-in.
+    let migrated = crate::crypto::migrate_to_encrypted(&path, passphrase);
+    let new_conn = match &migrated {
+        Ok(()) => crate::crypto::open_encrypted(&path, passphrase),
+        Err(_) => crate::crypto::open_unencrypted(&path),
+    }
+    .map_err(|e| format!("failed to reopen the db: {e}"))?;
+    new_conn.execute_batch("PRAGMA journal_mode=WAL;").map_err(|e| e.to_string())?;
     *conn = new_conn;
+    migrated?;
 
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('encryption_enabled', 'true')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    crate::account_lock::write_row(&conn, engine, &crate::account_lock::LockRow::on(passphrase))?;
+    crate::account_lock::remember_opened_with(Some(passphrase));
     Ok(())
 }
 
 #[tauri::command]
-pub fn unlock(db: State<'_, Db>, passphrase: String) -> Result<bool, String> {
-    unlock_inner(db.inner(), &passphrase)
+pub fn unlock(
+    db: State<'_, Db>,
+    engine: State<'_, op_log::OpLog>,
+    worker_slot: State<'_, SyncWorkerSlot>,
+    passphrase: String,
+) -> Result<bool, String> {
+    // Read before unlock_inner, which clears it: was this file opened at
+    // launch, or is this unlock the first to open it?
+    let launch_failed = startup_failure_now().is_some();
+    if !unlock_inner(db.inner(), &passphrase)? {
+        return Ok(false);
+    }
+    let running = worker_slot.lock().map(|s| s.is_some()).unwrap_or(true);
+    let follow = crate::account_lock::unlock_follow_up(launch_failed, running);
+    if follow.store_key {
+        if let Err(e) = crate::crypto::store_key(&passphrase) {
+            log::warn!("unlock: could not save the key that opened the file: {e}");
+        }
+    }
+    if follow.spawn_worker {
+        match crate::sync::worker::spawn_if_configured(
+            db.inner().clone(),
+            engine.inner().clone(),
+            crate::sync::worker::DEFAULT_TICK,
+            crate::sync::worker::WorkerCallbacks::for_app(),
+        ) {
+            Ok(handle) => {
+                if let Ok(mut slot) = worker_slot.lock() { *slot = handle; }
+            }
+            Err(e) => log::warn!("unlock: sync worker spawn failed: {e}"),
+        }
+    }
+    Ok(true)
 }
 
 /// The file `lock` closed, for `unlock` to reopen: a locked connection is
@@ -4288,6 +4390,9 @@ pub fn unlock_inner(db: &Db, passphrase: &str) -> Result<bool, String> {
             crate::db::run_migrations(&new_conn)?;
             let mut conn = db.lock().map_err(|e| e.to_string())?;
             *conn = new_conn;
+            // The account's lock follows from here even when this device's
+            // key file was lost (account_lock::reconcile).
+            crate::account_lock::remember_opened_with(Some(passphrase));
             *LOCKED_DB_PATH.lock().map_err(|e| e.to_string())? = None;
             *STARTUP_FAILURE.lock().map_err(|e| e.to_string())? = None;
             Ok(true)
@@ -4363,8 +4468,9 @@ const MIN_PASSPHRASE_CHARS: usize = 8;
 /// Give the lock a new passphrase. Until 0.8 there was no way to: the
 /// settings row only said "on".
 #[tauri::command]
-pub fn change_passphrase(db: State<'_, Db>, current: String, next: String) -> Result<(), String> {
+pub fn change_passphrase(db: State<'_, Db>, engine: State<'_, op_log::OpLog>, current: String, next: String) -> Result<(), String> {
     change_passphrase_inner(db.inner(), &current, &next)?;
+    account_lock_follows(db.inner(), engine.inner(), &crate::account_lock::LockRow::on(&next))?;
     // The launch opens the file with the stored key, so it has to follow.
     // If it cannot, the file is still re-keyed and the lock screen asks for
     // the new passphrase at the next launch, which is why this says so.
@@ -4375,9 +4481,23 @@ pub fn change_passphrase(db: State<'_, Db>, current: String, next: String) -> Re
 /// Take the lock off: the database becomes a plain file again and the
 /// stored key is deleted.
 #[tauri::command]
-pub fn remove_encryption(db: State<'_, Db>, current: String) -> Result<(), String> {
+pub fn remove_encryption(db: State<'_, Db>, engine: State<'_, op_log::OpLog>, current: String) -> Result<(), String> {
     remove_encryption_inner(db.inner(), &current)?;
+    account_lock_follows(db.inner(), engine.inner(), &crate::account_lock::LockRow::off())?;
     crate::crypto::delete_key()
+}
+
+/// Tell the account what this device just did to its lock, so every paired
+/// device follows (account_lock.rs). Turning it off also blanks the
+/// passphrase from this device's earlier lock ops: the file is plain now.
+pub fn account_lock_follows(db: &Db, engine: &op_log::OpLog, row: &crate::account_lock::LockRow) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::account_lock::write_row(&conn, Some(engine), row)?;
+    crate::account_lock::remember_opened_with(row.passphrase.as_deref());
+    if !row.on {
+        crate::account_lock::scrub_old_passphrases(&conn)?;
+    }
+    Ok(())
 }
 
 pub fn change_passphrase_inner(db: &Db, current: &str, next: &str) -> Result<(), String> {
@@ -5321,11 +5441,12 @@ pub fn sync_generate_phrase() -> Result<String, String> {
 /// so the user must reveal it from the original device. Reading the secret
 /// store requires the app to be unlocked, which it already is in settings.
 #[tauri::command]
-pub fn sync_reveal_phrase() -> Result<Option<String>, String> {
-    match crate::sync::secret_store::load().map_err(|e| e.to_string())? {
-        Some(keys) => Ok(keys.phrase.clone()),
-        None => Ok(None),
-    }
+pub fn sync_reveal_phrase(db: State<'_, Db>) -> Result<Option<String>, String> {
+    // The secret store, else the `sync_keys` row: desktop keeps the phrase
+    // in the row, and reading only the store made the laptop that set sync
+    // up say it had no phrase.
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::sync::keys::load_stored_phrase(&conn)
 }
 
 /// First-time setup (or recovery): derive UserKeys from the phrase,
@@ -7037,7 +7158,7 @@ pub async fn pair_new_complete(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{insert_lineage, insert_page, set_page_lineage, test_db, test_db_at};
+    use crate::test_helpers::{insert_lineage, insert_lineage_with_parent, insert_page, set_page_lineage, test_db, test_db_at};
 
     /// Spins up an op_log engine over `db`. The three golden-path tests
     /// below drive the real command bodies, which emit op_log rows inline,
@@ -7232,6 +7353,37 @@ mod tests {
         assert_eq!(map.get(&a), Some(&150), "must count all 150, not a window");
         assert_eq!(map.get(&b), Some(&2));
         assert_eq!(map.len(), 2, "untrailed pages must not appear");
+    }
+
+    /// Memory's trails sidebar shows each trail's own pins (ruling 1 of the
+    /// 0.8.2 refresh): a parent does not absorb its child's pins, and global
+    /// pins come back under the NULL key rather than vanishing.
+    #[test]
+    fn trail_pin_counts_are_the_pins_each_trail_owns() {
+        let db = test_db();
+        let engine = engine_for(&db);
+        let (parent, child, page) = {
+            let conn = db.lock().unwrap();
+            let parent = insert_lineage(&conn, "shizumu", "discrete");
+            let child = insert_lineage_with_parent(&conn, "v0.8", "discrete", &parent);
+            let page = insert_page(&conn, "2026-01-01", 1);
+            (parent, child, page)
+        };
+        let pin = |lineage: Option<&String>| {
+            create_pin_inner(&db, &engine, lineage.cloned(), page.clone(), "text".into(), "x".into(), None)
+                .unwrap();
+        };
+        pin(Some(&child));
+        pin(Some(&child));
+        pin(Some(&parent));
+        pin(None);
+
+        let conn = db.lock().unwrap();
+        let map: std::collections::HashMap<Option<String>, i64> =
+            get_trail_pin_counts_inner(&conn).unwrap().into_iter().collect();
+        assert_eq!(map.get(&Some(child.clone())), Some(&2));
+        assert_eq!(map.get(&Some(parent.clone())), Some(&1), "a parent counts only its own pins");
+        assert_eq!(map.get(&None), Some(&1), "global pins are counted under null");
     }
 
     /// INV-DATA-5 — a pin created from one page on a trail is visible from a
@@ -7931,6 +8083,37 @@ mod tests {
         );
     }
 
+    /// A page cloned for a new day gets no block ids from its source: each
+    /// would then name a block on two pages. The pin-ref and other attrs
+    /// stay; only `blockId` goes, at every depth.
+    #[test]
+    fn strip_block_ids_removes_every_block_id_and_nothing_else() {
+        let mut doc: serde_json::Value = serde_json::from_str(
+            r#"{
+                "type": "doc",
+                "content": [
+                    { "type": "paragraph", "attrs": { "blockId": "aaaaaaaaaaaa" }, "content": [
+                        { "type": "text", "text": "see " },
+                        { "type": "pinRef", "attrs": { "pinId": "PIN_REF_KEEP" } }
+                    ]},
+                    { "type": "list", "attrs": { "blockId": "bbbbbbbbbbbb", "blockTitle": "t" }, "content": [
+                        { "type": "listItem", "attrs": { "marker": "task" }, "content": [
+                            { "type": "paragraph", "attrs": { "blockId": "cccccccccccc" } }
+                        ]}
+                    ]}
+                ]
+            }"#,
+        ).unwrap();
+
+        super::strip_block_ids_in_place(&mut doc);
+
+        let text = doc.to_string();
+        assert!(!text.contains("blockId"), "doc was: {text}");
+        assert_eq!(doc["content"][0]["content"][1]["attrs"]["pinId"], "PIN_REF_KEEP");
+        assert_eq!(doc["content"][1]["attrs"]["blockTitle"], "t");
+        assert_eq!(doc["content"][1]["content"][0]["attrs"]["marker"], "task");
+    }
+
     /// 13.4 silent-engine check: writing a page's content through the
     /// save path must emit exactly one op_log row tagged page_blob,
     /// with the page_id in doc_id and the content_json in the
@@ -8424,6 +8607,39 @@ mod tests {
         // already keeps: the writing stays open.
         lock_inner(&db).unwrap();
         assert_eq!(read_kept(&db), "kept");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    // ─── the lock follows the file, not a synced row ────────────────────
+    //
+    // 2026-11-06: a laptop turned the lock on and synced a phone. The phone
+    // received encryption_enabled=true, showed the lock screen at its next
+    // launch, and refused the laptop's passphrase, rightly: its own file had
+    // never been encrypted. Phones that already hold the row must open.
+
+    #[test]
+    fn a_plain_file_is_not_locked_whatever_the_settings_row_says() {
+        let _turn = LOCK_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let path = temp_db_path();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO settings VALUES ('encryption_enabled', 'true');",
+        )
+        .unwrap();
+        let db: Db = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        assert!(!encryption_status_inner(&db).unwrap(), "no passphrase can open a file that has none");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn an_encrypted_file_is_locked_even_without_the_row() {
+        let _turn = LOCK_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let path = temp_db_path();
+        let conn = crate::crypto::open_encrypted(&path, "the right one").unwrap();
+        conn.execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);").unwrap();
+        let db: Db = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        assert!(encryption_status_inner(&db).unwrap());
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
-import { mayReplaceWithPulled, isEchoOfPull, pullReload } from "../pull-reload.js";
+import { mayReplaceWithPulled, isEchoOfPull, pullReload, comparablePair, stableStringify } from "../pull-reload.js";
+import { fillDerivedBlockIds } from "../../block-id.js";
 
 const A = JSON.stringify({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "a" }] }] });
 const B = JSON.stringify({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "a, and more" }] }] });
@@ -62,12 +63,12 @@ describe("EditorCore asks isEchoOfPull on every save of a copy it loaded", () =>
   it("the page-switch flush skips an untouched page", () => {
     const at = src.indexOf("Flush save for old page BEFORE loading new content");
     expect(at).toBeGreaterThan(-1);
-    const flush = src.slice(at, src.indexOf("editor.commands.setContent(content);", at));
+    const flush = src.slice(at, src.indexOf("setContentAsLoad(editor, content);", at));
     expect(flush).toMatch(/isEchoOfPull\(\{ json, pulled: pulledJson \}\)/);
   });
 
   it("a page load records the loaded copy instead of clearing it", () => {
-    const at = src.indexOf("editor.commands.setContent(content);");
+    const at = src.indexOf("setContentAsLoad(editor, content);");
     const after = src.slice(at, at + 400);
     expect(after).toMatch(/pulledJson = JSON\.stringify\(editor\.getJSON\(\)\)/);
     expect(after).not.toMatch(/pulledJson = null;/);
@@ -105,5 +106,46 @@ describe("both hosts follow a deferred pull with a save and a second read", () =
   it("the desktop page and the phone shell save and read again on deferred", () => {
     expect(read("src/components/Page.svelte")).toMatch(/=== "deferred"[\s\S]{0,200}flushPendingSave/);
     expect(read("src/shell/ShellApp.svelte")).toMatch(/=== "deferred"[\s\S]{0,200}flushPendingSave/);
+  });
+});
+
+describe("comparablePair — a pull compared like with like", () => {
+  const stored = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "a" }] }] };
+  // What the editor holds after loading that pre-0.8.2 copy: the derived id,
+  // written where the schema puts it (not last).
+  const inEditor = { type: "doc", content: [{ type: "paragraph", attrs: { blockId: fillDerivedBlockIds(stored, "p1").content[0].attrs.blockId }, content: [{ type: "text", text: "a" }] }] };
+
+  it("finds an untouched old page the same as the editor's copy of it", () => {
+    // Raw, these differ (no ids vs derived ids), and every pull re-applied
+    // the page, resetting content and caret until it was edited once.
+    const pair = comparablePair({ current: inEditor, incoming: stored, pageId: "p1", fillIds: fillDerivedBlockIds });
+    expect(pullReload({ pendingSave: false, ...pair })).toBe("same");
+  });
+
+  it("still sees a change of words", () => {
+    const changed = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "b" }] }] };
+    const pair = comparablePair({ current: inEditor, incoming: changed, pageId: "p1", fillIds: fillDerivedBlockIds });
+    expect(pullReload({ pendingSave: false, ...pair })).toBe("apply");
+  });
+
+  it("still sees a change of id alone", () => {
+    // Ids are compared, not ignored: an editor holding a stale id would save
+    // it back over the one the other device settled on.
+    const other = { type: "doc", content: [{ type: "paragraph", attrs: { blockId: "abcdefghijkl" }, content: [{ type: "text", text: "a" }] }] };
+    const pair = comparablePair({ current: inEditor, incoming: other, pageId: "p1", fillIds: fillDerivedBlockIds });
+    expect(pullReload({ pendingSave: false, ...pair })).toBe("apply");
+  });
+
+  it("uses the schema's normalisation, and falls back to the copy as it is when that throws", () => {
+    const withDefault = { type: "doc", content: [{ type: "paragraph", attrs: { ...inEditor.content[0].attrs, pinId: null }, content: inEditor.content[0].content }] };
+    const addDefault = (json) => ({ ...json, content: json.content.map((n) => ({ ...n, attrs: { pinId: null, ...n.attrs } })) });
+    const pair = comparablePair({ current: withDefault, incoming: stored, pageId: "p1", fillIds: fillDerivedBlockIds, normalise: addDefault });
+    expect(pair.current).toBe(pair.incoming);
+    const thrown = comparablePair({ current: withDefault, incoming: stored, pageId: "p1", fillIds: fillDerivedBlockIds, normalise: () => { throw new Error("unknown node"); } });
+    expect(thrown.current).not.toBe(thrown.incoming);
+  });
+
+  it("stableStringify ignores key order and nothing else", () => {
+    expect(stableStringify({ b: 1, a: { d: [2, { y: 1, x: 0 }], c: 3 } })).toBe('{"a":{"c":3,"d":[2,{"x":0,"y":1}]},"b":1}');
   });
 });

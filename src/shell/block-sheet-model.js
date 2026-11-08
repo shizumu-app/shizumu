@@ -97,6 +97,7 @@ const MOVE_IDS = ["move-up", "move-down"];
  *   three phases as an absent row here: feeding the typed answer to this
  *   gate offers the row only on boards that already have a title, and never
  *   on the untitled board it exists to title.
+ * @param {boolean} [args.canUnpin]  the block carries a live pin's stamp.
  * @param {string[]} [args.convertTargets]  `convertTargetsFor(...)`. Empty
  *   means not convertible; this file only reads its length, so it never
  *   needs to know what a target is.
@@ -105,6 +106,7 @@ const MOVE_IDS = ["move-up", "move-down"];
 export function blockSheetRows({
   activeBlock = null,
   canPin = false,
+  canUnpin = false,
   hasTitleSlot = false,
   convertTargets = [],
 } = {}) {
@@ -127,6 +129,10 @@ export function blockSheetRows({
     cut === -1
       ? [...shared, ...MOVE_IDS]
       : [...shared.slice(0, cut), ...MOVE_IDS, ...shared.slice(cut)];
+
+  // A kept block offers the way back where `pin` would have been, first in the
+  // sheet: a block that is kept has to be let go from somewhere it can be seen.
+  if (canUnpin) ids.unshift("unpin");
 
   return ids.map((id) => ({ id, label: BLOCK_ACTION_LABELS[id] }));
 }

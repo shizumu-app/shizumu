@@ -326,6 +326,17 @@ pub fn load_user_keys(conn: &Connection) -> Result<Option<UserKeys>, String> {
     Ok(None)
 }
 
+/// The recovery phrase this device holds, if any. Same resolution as
+/// `load_user_keys`: the secret store when it holds the bundle (phones), else
+/// the `sync_keys` row, which is where desktop keeps it (the desktop
+/// secret_store backend answers None in 0.8.2). A paired device has neither.
+pub fn load_stored_phrase(conn: &Connection) -> Result<Option<String>, String> {
+    if let Some(stored) = super::secret_store::load().map_err(|e| e.to_string())? {
+        return Ok(stored.phrase.clone());
+    }
+    legacy_phrase_string(conn)
+}
+
 /// Whether the account secrets currently live UNPROTECTED at rest — i.e.
 /// as plaintext rows in `sync_keys` rather than in the OS keyring. This is
 /// the keyring-unavailable fallback path (common on KDE/Fedora per the
@@ -1032,5 +1043,41 @@ mod tests {
             keys.device_sign_pub_bytes(),
             "sign identity preserved across backfill"
         );
+    }
+
+    /// Desktop keeps the sync identity in `sync_keys` (the desktop
+    /// secret_store backend answers None, on purpose, in 0.8.2). The phrase
+    /// is read the way every other user secret is: the secret store first,
+    /// then the row. Reading only the secret store made the laptop that set
+    /// sync up say it had no recovery phrase, and never derive the recovery
+    /// key, so it never published it for rotations to wrap to.
+    #[test]
+    fn the_phrase_in_sync_keys_is_found_when_the_secret_store_is_empty() {
+        let _g = guard_secret_store();
+        let db = crate::test_helpers::test_db();
+        let conn = db.lock().unwrap();
+        let m = generate_seed_phrase();
+        write_user_keys_to_db(&conn, &user_keys_from_phrase(&m), Some(&m.to_string())).unwrap();
+        assert!(super::super::secret_store::load().unwrap().is_none(), "the desktop case: nothing in the store");
+
+        assert_eq!(load_stored_phrase(&conn).unwrap().as_deref(), Some(m.to_string().as_str()));
+        let expected = super::super::epoch::recovery_kex_pub_from_seed(&m.to_seed(""));
+        assert_eq!(super::super::epoch::recovery_kex_pub_from_stored_phrase(&conn).unwrap(), Some(expected));
+    }
+
+    /// A paired device holds the derived keys and never the phrase: still
+    /// None, from either source.
+    #[test]
+    fn a_device_without_the_phrase_still_has_none() {
+        let _g = guard_secret_store();
+        let db = crate::test_helpers::test_db();
+        let conn = db.lock().unwrap();
+        // Nothing stored at all (sync never set up): no phrase to reveal.
+        assert_eq!(load_stored_phrase(&conn).unwrap(), None);
+        let m = generate_seed_phrase();
+        write_user_keys_to_db(&conn, &user_keys_from_phrase(&m), None).unwrap();
+        // Paired: the derived keys are there, the phrase never was.
+        assert_eq!(load_stored_phrase(&conn).unwrap(), None);
+        assert!(super::super::epoch::recovery_kex_from_stored_phrase(&conn).unwrap().is_none());
     }
 }

@@ -243,7 +243,11 @@ pub fn tick(
     // without the phrase has nothing to publish and marks itself done.
     if !RECOVERY_KEY_PUBLISHED.load(std::sync::atomic::Ordering::Relaxed) {
         if let (Some(base), Some(uid)) = (cfg.relay_url.clone(), cfg.user_id.clone()) {
-            match crate::sync::epoch::recovery_kex_pub_from_stored_phrase() {
+            let derived = match db.lock() {
+                Ok(conn) => crate::sync::epoch::recovery_kex_pub_from_stored_phrase(&conn),
+                Err(e) => Err(format!("db mutex poisoned: {e}")),
+            };
+            match derived {
                 Ok(Some(pub_bytes)) => {
                     use base64::Engine;
                     let b64 = base64::engine::general_purpose::STANDARD.encode(pub_bytes);
@@ -473,6 +477,25 @@ pub fn tick(
             }
             wire_error_message = Some(msg);
         }
+    }
+
+    // One lock for the account (account_lock.rs): follow the account's lock
+    // with this device's own file, now that the pull may have brought a
+    // change. Counted as received work when it changed the file, so
+    // `sync-pulled` fires and the app re-reads whether it is locked.
+    match crate::account_lock::reconcile(db, Some(engine), &crate::account_lock::AppKeys) {
+        Ok(crate::account_lock::LockAction::Nothing) => {}
+        Ok(done) => {
+            let what = match done {
+                crate::account_lock::LockAction::Encrypt(_) => "locked this device's file",
+                crate::account_lock::LockAction::Rekey { .. } => "re-keyed this device's file",
+                crate::account_lock::LockAction::Decrypt { .. } => "unlocked this device's file",
+                _ => "shared this device's lock with the account",
+            };
+            log::info!("account lock: {what}");
+            ops_received += 1;
+        }
+        Err(e) => log::warn!("account lock: could not follow the account's lock: {e}"),
     }
 
     // Object fetch: attachments a peer referenced — a reference op the

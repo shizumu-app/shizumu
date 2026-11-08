@@ -11,24 +11,66 @@
 //
 // Format contract: see docs/superpowers/specs/2026-05-19-trail-folder-export-design.md.
 // In short: YAML frontmatter carries page/trail/pin metadata; body markdown is
-// renderable in any tool; block-level pin anchors are `<!-- shizumu:pin:<id> -->`
-// HTML comments immediately preceding the anchored block.
+// renderable in any tool.
+//
+// FORMAT 2 (0.8.2): a block that means more than its words gets one HTML
+// comment line right before it, which every markdown renderer hides:
+//
+//   <!-- shizumu block id=<blockId> kind=<kind> state=<state> at=<date> pin=<pinId> -->
+//
+// "Means more" is: it carries a pin, a stored state (a decision), or a
+// non-prose kind (decision, qa, recipe, table, chart, code). Keys are left
+// out when empty. Plain paragraphs, headings, lists and quotes without a pin
+// get no line, so a raw export still reads as prose. `at` is the date the
+// state last changed (blockStateAt), kept so a round trip does not lose it.
+// A qa block with an unanswered question says `state=open`; that state is
+// computed from the words, never stored, so parse.js does not read it back.
+// Format 1 wrote a pin as `<!-- shizumu:pin:<id> -->` on a line of its own;
+// parse.js still reads that.
+//
+// Ids: a page saved before 0.8.2 has none stored. The serializer gives every
+// block the id the editor shows for it (the editor's load migrations, then
+// fillDerivedBlockIds), so the id in the file is the id on screen.
+// docs/superpowers/specs/2026-11-01-block-ids-and-meaning-design.md,
+// "Export carries meaning".
 
 import { assembleMermaid } from "../extensions/chart.js";
+import { migrateListSchema } from "../extensions/migrate-list-schema.js";
+import { migrateRecipeSchema } from "../extensions/migrate-recipe-schema.js";
+import { migrateQASchema } from "../extensions/migrate-qa-schema.js";
+import { fillDerivedBlockIds } from "../block-id.js";
+import { carriesState, stateOf, isOpenQuestion } from "../block-state.js";
 
+// The `shizumu:` key names the export LAYOUT (trail folders, _trail.md,
+// README), which is unchanged; `format:` names the page file's body format.
 const FORMAT_VERSION = 1;
+export const PAGE_FORMAT = 2;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public entry points
 // ──────────────────────────────────────────────────────────────────────────
 
-export function serializePage({ page, lineage = null, lineagePath = null, pins = [] }) {
-  const doc = parseContentJson(page.content_json);
+/**
+ * One page as a markdown file.
+ *
+ * `blockLines`:
+ * - `true` (a page file): every block line, ids and pins included.
+ * - `"clipboard"` (the editor's markdown clipboard): a line only on a block
+ *   that carries a state, and only its kind, state and date. A copied
+ *   selection is not a page: another app should get the writing, and a
+ *   paste is a new block, so it gets no id and binds no pin. The state is
+ *   meaning, though, and without it a cut superseded decision came back
+ *   standing.
+ * - `false`: no lines, no ids (a pin's own content in frontmatter).
+ */
+export function serializePage({ page, lineage = null, lineagePath = null, pins = [], blockLines = true }) {
+  const doc = pageDocAsLoaded(parseContentJson(page.content_json), blockLines === true ? page.id : null);
   const knownPinIds = new Set(pins.map((p) => p.id));
-  const body = docToMarkdown(doc, { knownPinIds });
+  const body = docToMarkdown(doc, { knownPinIds, blockLines });
 
   const fm = {
     shizumu: FORMAT_VERSION,
+    format: PAGE_FORMAT,
     page_id: page.id,
     lineage_id: lineage?.id || null,
     lineage_path: lineagePath || null,
@@ -96,13 +138,13 @@ function pinContentToMarkdown(raw) {
   if (!raw) return "";
   // Pins are stored as a JSON-stringified TipTap doc OR a bare node OR
   // plain text. Accept all three; never let raw JSON leak into the file.
-  if (typeof raw === "object") return docToMarkdown(raw, { knownPinIds: new Set() }).trimEnd();
+  if (typeof raw === "object") return docToMarkdown(raw, { knownPinIds: new Set(), blockLines: false }).trimEnd();
   if (typeof raw !== "string") return "";
   const t = raw.trim();
   if (t.length >= 2 && (t[0] === "{" || t[0] === "[")) {
     try {
       const parsed = JSON.parse(t);
-      return docToMarkdown(parsed, { knownPinIds: new Set() }).trimEnd();
+      return docToMarkdown(parsed, { knownPinIds: new Set(), blockLines: false }).trimEnd();
     } catch {
       // fall through — treat as plain text
     }
@@ -125,6 +167,16 @@ function parseContentJson(content_json) {
   } catch {
     return { type: "doc", content: [] };
   }
+}
+
+/**
+ * The doc as the editor holds it after a load: its load migrations, then
+ * the derived id for any block saved without one. Without a page id the ids
+ * are left alone (a clipboard selection is not a page).
+ */
+export function pageDocAsLoaded(doc, pageId) {
+  const migrated = migrateQASchema(migrateRecipeSchema(migrateListSchema(doc)));
+  return pageId ? fillDerivedBlockIds(migrated, pageId) : migrated;
 }
 
 function docToMarkdown(doc, ctx) {
@@ -174,15 +226,82 @@ function serializeBlock(node, ctx) {
 
 function blockPreamble(node, ctx) {
   const parts = [];
-  const pinId = node.attrs?.pinId;
-  if (pinId && ctx.knownPinIds.has(pinId)) {
-    parts.push(`<!-- shizumu:pin:${pinId} -->`);
+  if (ctx.blockLines && !ctx.inCell) {
+    const line = ctx.blockLines === "clipboard" ? clipboardBlockLine(node) : blockLine(node, ctx.knownPinIds);
+    if (line) parts.push(line);
   }
   const title = node.attrs?.blockTitle;
   if (title && String(title).trim()) {
     parts.push(`**${escapeMarkdown(String(title).trim())}**`);
   }
   return parts.length === 0 ? "" : parts.join("\n") + "\n";
+}
+
+/** The kind a block line names, for the types that are not prose. */
+export const BLOCK_LINE_KINDS = Object.freeze({
+  decisionBlock: "decision",
+  qaBlock: "qa",
+  recipeBlock: "recipe",
+  table: "table",
+  chart: "chart",
+  codeBlock: "code",
+  // An attachment is an inline node in today's schema, so it never stands
+  // as a block of its own; the entry is here so a block-level one would
+  // be named the day it exists.
+  attachment: "attachment",
+});
+
+// A value goes into the line only when it cannot break the line: no space,
+// no `-->`. Ids are base-36 and pin ids are uuids, so this only ever drops
+// a value something else wrote by hand.
+const SAFE_VALUE = /^[A-Za-z0-9_.:-]+$/;
+
+/**
+ * The `<!-- shizumu block … -->` line for a block, or null when the block is
+ * plain prose with no pin. Pure; exported for tests.
+ * @param {any} node  a JSON block
+ * @param {Set<string>} [knownPinIds]  pins this page is the source of; any
+ *   other pinId on a block is a stale mark and is not written
+ * @returns {string|null}
+ */
+export function blockLine(node, knownPinIds = new Set()) {
+  if (!node || !node.type) return null;
+  const type = node.type;
+  const kind = BLOCK_LINE_KINDS[type] || null;
+  const pinId = node.attrs?.pinId;
+  const pin = pinId && knownPinIds.has(pinId) ? pinId : null;
+  let state = null;
+  let at = null;
+  if (carriesState(type)) {
+    state = stateOf(type, node.attrs?.blockState);
+    at = node.attrs?.blockStateAt || null;
+  } else if (type === "qaBlock" && (node.content || []).some((pair) => isOpenQuestion(pair))) {
+    state = "open";
+  }
+  if (!kind && !pin && !state) return null;
+  const keys = [
+    ["id", node.attrs?.blockId],
+    ["kind", kind],
+    ["state", state],
+    ["at", at],
+    ["pin", pin],
+  ];
+  const parts = keys
+    .filter(([, v]) => typeof v === "string" && SAFE_VALUE.test(v))
+    .map(([k, v]) => `${k}=${v}`);
+  return `<!-- shizumu block${parts.length ? " " + parts.join(" ") : ""} -->`;
+}
+
+/**
+ * The clipboard's block line: kind, state and date, on a block that carries
+ * a state, and nothing else (see serializePage's `blockLines`). Pure.
+ * @param {any} node
+ * @returns {string|null}
+ */
+export function clipboardBlockLine(node) {
+  if (!node || !carriesState(node.type)) return null;
+  const line = blockLine({ ...node, attrs: { ...(node.attrs || {}), blockId: null, pinId: null } });
+  return line;
 }
 
 function renderParagraph(node, ctx) {
@@ -256,7 +375,8 @@ function renderTable(node, ctx) {
   const matrix = rows.map((row) =>
     (row.content || []).map((cell) => {
       const isHeader = cell?.type === "tableHeader";
-      const text = (cell?.content || []).map((c) => serializeBlock(c, ctx)).join(" ").trim();
+      // No block lines inside a cell: a table row is one line of text.
+      const text = (cell?.content || []).map((c) => serializeBlock(c, { ...ctx, inCell: true })).join(" ").trim();
       return { text, isHeader };
     }),
   );

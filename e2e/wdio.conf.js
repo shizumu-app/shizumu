@@ -37,9 +37,12 @@ const APP_BINARY =
 // redirect has to be per-platform too: $XDG_DATA_HOME on Linux, %APPDATA% /
 // %LOCALAPPDATA% on Windows. Either way each `npm test` is a clean slate.
 const E2E_DATA_HOME = mkdtempSync(path.join(tmpdir(), "shizumu-e2e-"));
+// FLATPAK_ID keeps the test profile out of the system keyring on every
+// platform (crypto.rs, use_keyring): turning the lock on in a test would
+// otherwise write a keyring entry on the machine running it.
 const SANDBOX_ENV = IS_WINDOWS
-  ? { APPDATA: E2E_DATA_HOME, LOCALAPPDATA: E2E_DATA_HOME }
-  : { XDG_DATA_HOME: E2E_DATA_HOME };
+  ? { APPDATA: E2E_DATA_HOME, LOCALAPPDATA: E2E_DATA_HOME, FLATPAK_ID: "app.shizumu.Shizumu.Test" }
+  : { XDG_DATA_HOME: E2E_DATA_HOME, FLATPAK_ID: "app.shizumu.Shizumu.Test" };
 
 // tauri-driver finds the platform webdriver on PATH by default. Override with
 // TAURI_NATIVE_DRIVER=/abs/path when it isn't there (common on Windows, where

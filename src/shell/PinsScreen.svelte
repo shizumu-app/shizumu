@@ -10,10 +10,20 @@
   for, not a placeholder standing in for it.
 
   Task 1 built the list and the way back; Task 2 added the filter segment
-  and gave every row somewhere to go. What is still absent is the desktop's
-  scope menu (share up / make global / restore to the birth trail), which
-  needs the lineage tree and lands as a second sheet §2 does not describe —
-  named here so the gap reads as a boundary rather than as an oversight.
+  and gave every row somewhere to go.
+
+  0.8.2 (spec 2026-11-01 §4, rulings 5 and 6) REPLACED THE SEGMENT with
+  the desktop panel's search and chip row — this trail / all trails,
+  carries forward, on this page, kind — decided in pin-filter.js over the
+  desktop's own module, so a chip counts the same thing on both. Each row
+  now says what it does in words under the pin: `open`, `put on page`,
+  `more` (carry forward, the moves, unpin with a question first; the
+  host's sheet, pin-more-sheet.js). The empty states are the desktop's:
+  an untrailed page is told to choose a trail, a trail with nothing on it
+  is told how to pin, and only a list a filter emptied says "nothing
+  matches", with `clear filters`. The old comment below about there being
+  no third empty state was true of the segment; with a search there is
+  one.
 
   IT TAKES ITS ROWS, it does not fetch them. The host fetches on the push,
   which is also the answer to the staleness P2f Task 2 found in
@@ -59,16 +69,15 @@
   sheet away because a tester tapped a row, got a menu, and asked how to
   see the pin.
 
-  THE ROWS SIT IN ONE `RowGroup` AND THE FILTER IS `Segment` (visual pass,
-  Task 9). The group is where the line between rows lives now — Row draws
-  none of its own — and its surface is what bounds the list; the status
-  wrapper around each row is a direct child of the group, which rules
-  between whatever it is handed, so the dimming costs the group nothing.
-  The segment used to be the bare leaf, `src/lib/ui/SegmentedControl`,
-  with the leaf's own coarse-pointer floor four pixels under --tap — the
-  same shortfall memory's mode segment shipped with. Segment closes it
-  from outside the leaf and spreads the scopes across the band; this
-  file changed one import.
+  THE ROWS SIT IN `RowGroup`s, one per section (`on this trail · 3`, `from
+  parent trails · 1`, or a trail path per group under `all trails`), the
+  section's line as the group's eyebrow. The group is where the line
+  between rows lives — Row draws none of its own — and the status wrapper
+  around each row (the row, then its worded actions) is a direct child of
+  the group, which rules between whatever it is handed, so the dimming and
+  the actions cost the group nothing. The chips and the row actions are
+  ToolbarButton, the shell's pressable that carries the 44px floor; the
+  segment this screen used to have is gone with the axis it filtered on.
 
   NOT the region the content band carries on the page root. A pushed
   screen's list is not the canvas: a swipe up at its bottom must not
@@ -81,38 +90,101 @@
   import NavBar from "./ui/NavBar.svelte";
   import Row from "./ui/Row.svelte";
   import RowGroup from "./ui/RowGroup.svelte";
-  import Segment from "./ui/Segment.svelte";
+  import Field from "./ui/Field.svelte";
+  import ToolbarButton from "./ui/ToolbarButton.svelte";
   import Empty from "../lib/ui/Empty.svelte";
   import { pinRowLabel } from "./pin-label.js";
-  import { ALL, filterPins, pinFilterOptions, pinFilterValue } from "./pin-filter.js";
+  import { pinRowActions } from "../lib/pin-row-actions.js";
+  import {
+    clearPanelFilters,
+    defaultPanelFilter,
+    pinsScreenModel,
+    setKind,
+    tapChip,
+  } from "./pin-filter.js";
 
   /** @type {{
     pins?: any[],
+    allPins?: any[] | null,
+    allCount?: number | null,
     loading?: boolean,
     lineageId?: string | null,
+    pageId?: string | null,
+    lineages?: any[],
+    canPutOnPage?: boolean,
     onBack?: (() => void) | null,
     onPin?: ((pin: any) => void) | null,
+    onPutOnPage?: ((pin: any) => void) | null,
+    onMore?: ((pin: any) => void) | null,
+    onChooseTrail?: (() => void) | null,
+    onNeedAllPins?: (() => void) | null,
   }} */
   let {
     pins = [],
+    allPins = null,
+    allCount = null,
     loading = false,
     lineageId = null,
+    pageId = null,
+    lineages = [],
+    canPutOnPage = false,
     onBack = null,
     onPin = null,
+    onPutOnPage = null,
+    onMore = null,
+    onChooseTrail = null,
+    onNeedAllPins = null,
   } = $props();
 
-  let filter = $state(ALL);
+  // View state, here for the reason the segment's was: nothing outside
+  // this screen reads it, and a re-pushed pins screen is a new instance,
+  // so it resets on every push for free.
+  let filter = $state(defaultPanelFilter());
+  let kindOpen = $state(false);
 
-  const options = $derived(pinFilterOptions(pins, lineageId));
-  // What the control is really showing: unpinning the last row of a scope
-  // takes that scope's option away, and a selection naming an option that
-  // is gone would leave an empty list under a segment with nothing lit.
-  const value = $derived(pinFilterValue(options, filter));
-  const rows = $derived(filterPins(pins, lineageId, value));
+  const model = $derived(
+    pinsScreenModel({
+      trailPins: pins,
+      allPins,
+      allCount,
+      loading,
+      lineageId,
+      pageId,
+      lineages,
+      filter,
+      kindOpen,
+    }),
+  );
 
-  // Title first, snippet as the fallback, the kind as the last resort —
-  // pin-label.js, which is where it moved when memory's pins mode needed
-  // the same answer. Its header carries the reasoning this comment used to.
+  // `all trails` is read when it is first asked for, not on every push —
+  // the host fans out over every trail to answer it (see openPins there).
+  $effect(() => {
+    if (model.needsAllPins) onNeedAllPins?.();
+  });
+
+  function pressChip(id) {
+    const next = tapChip({ filter, kindOpen }, id);
+    filter = next.filter;
+    kindOpen = next.kindOpen;
+  }
+
+  function pressKind(kind) {
+    filter = setKind(filter, kind);
+  }
+
+  function actionsFor(pin) {
+    return pinRowActions(pin, {
+      lineages,
+      title: pinRowLabel(pin),
+      canPutOnPage: canPutOnPage && !!onPutOnPage,
+      canRename: false,
+    }).primary;
+  }
+
+  function runAction(id, pin) {
+    if (id === "open") onPin?.(pin);
+    else if (id === "putOnPage") onPutOnPage?.(pin);
+  }
 </script>
 
 <Screen>
@@ -120,59 +192,179 @@
     <NavBar title="pins" {onBack} />
   {/snippet}
 
-  {#if pins.length > 0}
-    {#if options.length > 0}
-      <div class="pins-filter">
-        <Segment
-          {options}
-          {value}
-          onChange={(next) => (filter = next)}
-          ariaLabel="which pins"
-        />
-      </div>
-    {/if}
-    <RowGroup>
-      {#each rows as pin (pin.id)}
-        <div class="pins-row" data-pin-status={pin.status ?? "open"}>
-          <Row label={pinRowLabel(pin)} onSelect={onPin ? () => onPin(pin) : null} />
-        </div>
-      {/each}
-    </RowGroup>
-  {:else if loading}
-    <!-- Two empty states, not one. "Nothing kept here" and "not read yet"
-         are different facts, and showing the first while the fetch is in
-         flight tells a writer with fifty pins that they have none.
+  <div class="pins-find">
+    <Field
+      label="search pins"
+      placeholder={model.placeholder}
+      value={filter.query}
+      onInput={(next) => (filter = { ...filter, query: next })}
+    />
+  </div>
 
-         There is no THIRD state for "the filter matched nothing", and that
-         is a property of pinFilterOptions rather than an omission: every
-         option it offers names a scope some row carries, so a filtered
-         list is never empty. -->
+  <!-- One row of chips; it scrolls sideways when it is wider than the
+       phone, the toolbar strip's own shape. Each chip is a ToolbarButton,
+       the shell's pressable with the 44px floor, and says its count. -->
+  <div class="pins-chips" role="toolbar" aria-label="filter pins">
+    {#each model.chips as chip (chip.id)}
+      <span class="pins-chip" data-chip={chip.id} data-active={chip.active ? "true" : null}>
+        <ToolbarButton
+          label={chip.ariaLabel}
+          active={chip.active}
+          activateOn="click"
+          onPress={() => pressChip(chip.id)}
+        >
+          {chip.label}{#if chip.count != null}{" "}<span class="pins-chip-count">{chip.count}</span>{/if}
+        </ToolbarButton>
+      </span>
+    {/each}
+  </div>
+  {#if model.kinds.length > 0}
+    <div class="pins-chips pins-kinds" role="toolbar" aria-label="pin kind">
+      {#each model.kinds as kind (kind.id)}
+        <span class="pins-chip" data-kind={kind.id} data-active={kind.active ? "true" : null}>
+          <ToolbarButton
+            label={kind.ariaLabel}
+            active={kind.active}
+            activateOn="click"
+            onPress={() => pressKind(kind.id)}
+          >
+            {kind.label}{" "}<span class="pins-chip-count">{kind.count}</span>
+          </ToolbarButton>
+        </span>
+      {/each}
+    </div>
+  {/if}
+
+  {#if model.reading}
+    <!-- "Nothing kept here" and "not read yet" are different facts, and
+         showing the first while the fetch is in flight tells a writer with
+         fifty pins that they have none. -->
     <Empty>
       {#snippet title()}reading the pins{/snippet}
     </Empty>
-  {:else}
-    <Empty>
-      {#snippet title()}nothing pinned on this trail{/snippet}
-      {#snippet body()}pin what matters and it comes back here.{/snippet}
+  {:else if model.empty}
+    <Empty hasActiveFilters={!!model.empty.action}>
+      {#snippet title()}{model.empty.title}{/snippet}
+      {#snippet body()}{model.empty.body}{/snippet}
+      {#snippet actions()}
+        {#if model.empty.action === "clearFilters"}
+          <span class="pins-empty-action">
+            <ToolbarButton label="clear filters" activateOn="click" onPress={() => (filter = clearPanelFilters(filter))} />
+          </span>
+        {:else if model.empty.action === "chooseTrail" && onChooseTrail}
+          <span class="pins-empty-action">
+            <ToolbarButton label="choose a trail" activateOn="click" onPress={onChooseTrail} />
+          </span>
+        {/if}
+      {/snippet}
     </Empty>
+  {:else}
+    {#each model.sections as section (section.key)}
+      <RowGroup eyebrow={section.label}>
+        {#each section.pins as item (item.pin.id)}
+          <div class="pins-row" data-pin-status={item.pin.status ?? "open"}>
+            <Row
+              label={pinRowLabel(item.pin)}
+              detail={item.detail ?? ""}
+              onSelect={onPin ? () => onPin(item.pin) : null}
+            />
+            <div class="pins-row-actions">
+              {#each actionsFor(item.pin) as action (action.id)}
+                <ToolbarButton
+                  label={action.ariaLabel ?? action.label}
+                  activateOn="click"
+                  onPress={() => runAction(action.id, item.pin)}
+                >{action.label}</ToolbarButton>
+              {/each}
+              {#if onMore}
+                <ToolbarButton
+                  label={`more for ${pinRowLabel(item.pin)}`}
+                  activateOn="click"
+                  onPress={() => onMore(item.pin)}
+                >more</ToolbarButton>
+              {/if}
+            </div>
+          </div>
+        {/each}
+      </RowGroup>
+    {/each}
   {/if}
 </Screen>
 
 <style>
-  /* The segment scrolls with the list rather than riding the nav bar. §2
-     gives a bar-riding, collapse-on-scroll control to MEMORY's search
-     field and describes the pins segment as content — and a second fixed
-     band above a list is the shape that eats the top of the first row on
-     a short phone. Segment spreads the scopes across the band itself. */
-  .pins-filter {
-    padding: var(--space-3) var(--space-4);
+  /* The search and the chips scroll with the list rather than riding the
+     nav bar. §2 gives a bar-riding control to MEMORY's search field only,
+     and a second fixed band above a list is the shape that eats the top
+     of the first row on a short phone. */
+  .pins-find {
+    padding: var(--space-3) var(--space-4) 0;
+  }
+
+  .pins-chips {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: var(--space-2);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    padding: var(--space-2) var(--space-4);
+  }
+
+  .pins-kinds {
+    padding-top: 0;
+  }
+
+  /* A chip is the shell's pressable drawn as a pill: hairline outline,
+     accent tint when on — the Chip primitive's two tones. */
+  .pins-chip {
+    flex: 0 0 auto;
+  }
+
+  .pins-chip :global(.shell-toolbar-button) {
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-lg);
+    color: var(--ink-soft);
+    font-size: var(--text-xs);
+    padding: 0 var(--space-3);
+    white-space: nowrap;
+  }
+
+  .pins-chip[data-active="true"] :global(.shell-toolbar-button) {
+    color: var(--accent-text);
+    background: var(--warm-accent-soft);
+    border-color: transparent;
+  }
+
+  .pins-chip-count {
+    opacity: 0.8;
+  }
+
+  /* The row's worded actions sit under it, left-aligned with the title,
+     quieter than the title. */
+  .pins-row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    /* Up under the title: the row's own bottom padding and the buttons'
+       44px floor would otherwise leave the actions floating a line away
+       from the pin they act on. */
+    margin-top: calc(-1 * var(--space-3));
+    padding: 0 var(--space-2) var(--space-1);
+  }
+
+  .pins-empty-action :global(.shell-toolbar-button) {
+    color: var(--accent-text);
+  }
+
+  .pins-row-actions :global(.shell-toolbar-button) {
+    color: var(--accent-text);
+    font-size: var(--text-xs);
   }
 
   /* The status mark is the wrapper's, not the Row's. Row is the shell's
      most reused primitive and a pin's status is this screen's fact about
      its own rows; a `muted` prop there would put a pins concept into every
-     settings list, and would owe a gallery swatch and a VR baseline this
-     task cannot record. Quiet by colour, as the desktop's PinRow is: the
+     settings list. Quiet by colour, as the desktop's PinRow is: the
      label takes --ink-soft at full strength. The 0.35 and 0.55 opacities
      put a closed pin's title at 2.4 to 3.4:1 in every tone
      (scripts/clarity/visual-phone.mjs, 2026-10-31). */

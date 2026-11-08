@@ -78,3 +78,49 @@ export function pullReload({ pendingSave, current, incoming }) {
 export function isEchoOfPull({ json, pulled }) {
   return pulled !== null && pulled !== undefined && json === pulled;
 }
+
+// AND WHAT DOES "THE SAME" MEAN, NOW THAT BLOCKS CARRY IDS? A page stored
+// before 0.8.2 has no blockId; the editor that opened it gave every block a
+// derived id as part of the load (src/lib/block-id.js). Compared raw, the
+// stored copy and the editor's always differed, so every pull re-applied an
+// untouched old page: content reset, caret moved, until it was edited once.
+//
+// So the stored copy is compared as a load would leave it: given the same
+// derived ids the editor gave it (fillDerivedBlockIds keeps any id already
+// stored), run through the editor's schema (which adds the default attrs a
+// copy written elsewhere leaves out), and serialised with keys in a fixed
+// order, because the editor writes attrs in schema order and the fill
+// appends blockId last. The ids are not
+// simply ignored: a pull that changed only an id (another device's edit
+// settled a duplicate) is a real change, and an editor holding the old id
+// would save it back over the new one.
+
+/** JSON.stringify with every object's keys sorted, so key order never counts. */
+export function stableStringify(value) {
+  return JSON.stringify(value, (_key, v) => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return v;
+    const out = {};
+    for (const k of Object.keys(v).sort()) out[k] = v[k];
+    return out;
+  });
+}
+
+/**
+ * The two serialised documents pullReload compares, like with like.
+ * @param {object} args
+ * @param {object} args.current - the editor's document (editor.getJSON())
+ * @param {object} args.incoming - the stored document, parsed
+ * @param {string|null|undefined} args.pageId - the open page, whose derived ids the editor holds
+ * @param {(json: object, pageId: string) => object} args.fillIds - fillDerivedBlockIds
+ * @param {(json: object) => object} [args.normalise] - json through the editor's
+ *   schema (schema.nodeFromJSON(json).toJSON()); a copy the schema cannot
+ *   read is compared as it is, and then differs, which applies it as before
+ * @returns {{ current: string, incoming: string }}
+ */
+export function comparablePair({ current, incoming, pageId, fillIds, normalise }) {
+  let filled = pageId ? fillIds(incoming, pageId) : incoming;
+  if (normalise) {
+    try { filled = normalise(filled); } catch { /* compared as it is */ }
+  }
+  return { current: stableStringify(current), incoming: stableStringify(filled) };
+}

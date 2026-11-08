@@ -1,4 +1,5 @@
 import { Node, mergeAttributes } from "@tiptap/core";
+import { stateOf } from "../block-state.js";
 import {
   locateSlotContext,
   isLastTextblockOfSlot,
@@ -20,9 +21,12 @@ const STRUCTURAL_SLOT_INDEX = 0;
  *   2. paragraph  · chose      · what was picked
  *   3. paragraph  · because    · why
  *
- * Slot labels and placeholders are CSS-only (prose.css). The node itself
- * carries no extra attrs — blockTitle and pinId arrive via the global
- * attributes registered in block-title.js / pin-id.js.
+ * Slot labels and placeholders are CSS-only (prose.css). The node's own
+ * attrs are its state (src/lib/block-state.js): `blockState`, standing
+ * until the writer marks it superseded, and `blockStateAt`, the local date
+ * of the last change. blockTitle, pinId and blockId arrive via the global
+ * attributes registered in block-title.js / pin-id.js / block-id.js. The
+ * chip and the toggle live in extensions/block-state.js.
  *
  * Cursor flow (mechanics live in slot-block.js, shared with recipeBlock):
  *   - Enter on an empty paragraph in the chose slot advances to because.
@@ -43,6 +47,21 @@ export const DecisionBlock = Node.create({
   group: "block",
   content: "block paragraph paragraph",
   defining: true,
+
+  addAttributes() {
+    return {
+      blockState: {
+        default: "standing",
+        parseHTML: (el) => stateOf(TYPE_NAME, el.getAttribute("data-block-state")),
+        renderHTML: (attrs) => ({ "data-block-state": stateOf(TYPE_NAME, attrs.blockState) }),
+      },
+      blockStateAt: {
+        default: null,
+        parseHTML: (el) => el.getAttribute("data-block-state-at") || null,
+        renderHTML: (attrs) => (attrs.blockStateAt ? { "data-block-state-at": attrs.blockStateAt } : {}),
+      },
+    };
+  },
 
   parseHTML() {
     return [{ tag: 'div[data-type="decision-block"]' }];

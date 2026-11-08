@@ -31,10 +31,17 @@
 //     worse than an absent one. `close_to_tray` is the same section's
 //     other row and the desktop already hides it on mobile — no phone has
 //     a system tray.
-//   data — export ends in a native directory picker and backup in a save
-//     dialog; neither has been run on a device (`npx tauri dev`, the
-//     oldest debt in this tree). A picker that returns nothing leaves the
-//     row lying about what it did.
+//   data — PRESENT since 0.8.2, with one action: export. The desktop's
+//     export ends in a native folder picker and its backup in a save
+//     dialog, and neither returns a path on a phone (Android's save dialog
+//     answers with a `content://` URI). So the phone's export is the same
+//     files packed into one zip by Rust and handed to the system share
+//     sheet (`runExportZip`, src/lib/export/run.js), where the writer picks
+//     Files, a drive or another app. Backup is still absent: it needs the
+//     same path and a restore story the phone does not have. Where the
+//     platform cannot share a zip (iOS today, a browser), the row stays and
+//     a note says the export works from the laptop (`exportZip` in
+//     platform.js says which).
 //   encryption — "set up" mounts `SetupEncryption.svelte`, a desktop
 //     component the shell's import rules do not allow, and the shell has
 //     no password surface. §2 gives lock its own chromeless state, which
@@ -127,6 +134,28 @@ export const CHOSEN = "in use";
  *  that work" but "why does the app look the same". So it says WHEN, in
  *  the same breath as what: the flag is read once at boot, so the next
  *  open is when the layout changes. */
+/** The export row's second line: what the zip holds. */
+export const EXPORT_DETAIL = "every page as markdown files, in one zip";
+
+/** Where this phone cannot share a zip (exportZip false in platform.js). */
+export const EXPORT_LAPTOP_NOTE = "export works from the laptop for now.";
+
+/**
+ * The sentence under the export row once it has been pressed, or null.
+ * @param {{state: "working"|"done"|"failed", pageCount?: number}|null} status
+ * @returns {string|null}
+ */
+export function exportStatusText(status) {
+  if (!status) return null;
+  if (status.state === "working") return "packing every page…";
+  if (status.state === "done") {
+    const n = status.pageCount ?? 0;
+    return `${n} ${n === 1 ? "page" : "pages"} packed into one zip.`;
+  }
+  if (status.state === "failed") return "the export stopped before the zip was ready. try again.";
+  return null;
+}
+
 export const SHELL_OFF_NOTE =
   "off when you reopen shizumu — the previous layout comes back.";
 
@@ -154,6 +183,13 @@ export const SHELL_OFF_NOTE =
  *  The groups follow that order too; only the names are new. */
 const ROOT_GROUPS = Object.freeze([
   Object.freeze({ eyebrow: "page", ids: Object.freeze(["tone", "font"]) }),
+  // data sits after page and before sync: the desktop's order (appearance,
+  // writing, data, encryption, sync, …). One row, one section behind it.
+  Object.freeze({ eyebrow: "data", ids: Object.freeze(["data"]) }),
+  // lock sits between data and sync: the desktop's encryption row, in its
+  // place (… data, encryption, sync …). The account's one lock
+  // (src-tauri/src/account_lock.rs), set, changed or turned off here.
+  Object.freeze({ eyebrow: "lock", ids: Object.freeze(["lock"]) }),
   Object.freeze({ eyebrow: "sync", ids: Object.freeze(["sync"]) }),
   Object.freeze({ eyebrow: "app", ids: Object.freeze(["labs", "about"]) }),
 ]);
@@ -166,7 +202,7 @@ const ROOT_GROUPS = Object.freeze([
  *  so that "which screen does this row open" is answered in the file that
  *  decides which rows exist at all — the host reads it and pushes, and
  *  cannot grow a second opinion about a row it did not list. */
-const SCREEN_ROWS = Object.freeze({ sync: "sync" });
+const SCREEN_ROWS = Object.freeze({ sync: "sync", lock: "lock" });
 
 /**
  * Which screen a root row opens: a stack of its own by name, or the
@@ -191,6 +227,10 @@ const SECTIONS = Object.freeze({
   font: Object.freeze({
     label: "font",
     blurb: "typeface for body text.",
+  }),
+  data: Object.freeze({
+    label: "data",
+    blurb: "your writing, as files you keep.",
   }),
   labs: Object.freeze({
     label: "labs",
@@ -232,7 +272,7 @@ function optionLabel(options, value) {
  *   before one has been read
  * @returns {Array<{eyebrow: string, rows: Array<{id: string, label: string, value: string, screen: string}>}>}
  */
-export function settingsGroups({ tone = "", font = "", sync = null } = {}) {
+export function settingsGroups({ tone = "", font = "", sync = null, lock = false } = {}) {
   // The value column carries what the setting is SET TO, so the root
   // answers the common question without a push. Three rows have one:
   // the two option sets, and sync, whose one-word state is the question
@@ -244,6 +284,8 @@ export function settingsGroups({ tone = "", font = "", sync = null } = {}) {
     tone: optionLabel(TONES, tone),
     font: optionLabel(FONTS, font),
     sync: syncStateLabel(sync),
+    // Whether this device's file is locked, the question the row answers.
+    lock: lock ? "on" : "off",
   };
   return ROOT_GROUPS.map((group) => ({
     eyebrow: group.eyebrow,
@@ -278,7 +320,10 @@ export function settingsGroups({ tone = "", font = "", sync = null } = {}) {
  */
 export function settingsSection(
   id,
-  { tone = "", font = "", yjsEnabled = false, shellEnabled = true, offerShellSwitch = true, version = "" } = {},
+  {
+    tone = "", font = "", yjsEnabled = false, shellEnabled = true, offerShellSwitch = true, version = "",
+    exportZip = false, exportStatus = null,
+  } = {},
 ) {
   const section = SECTIONS[id];
   if (!section) return null;
@@ -286,13 +331,40 @@ export function settingsSection(
     id,
     title: section.label,
     blurb: section.blurb,
-    rows: sectionRows(id, { tone, font, yjsEnabled, shellEnabled, offerShellSwitch, version }),
+    rows: sectionRows(id, { tone, font, yjsEnabled, shellEnabled, offerShellSwitch, version, exportZip, exportStatus }),
   };
 }
 
-function sectionRows(id, { tone, font, yjsEnabled, shellEnabled, offerShellSwitch, version }) {
+/**
+ * The data section: one export row. An action where the platform can share
+ * a zip, a plain row with a note where it cannot, so the reader sees the
+ * export exists and where to do it rather than finding nothing.
+ */
+function dataRows({ exportZip, exportStatus }) {
+  if (!exportZip) {
+    return [
+      { id: "export", kind: "value", label: "export", detail: EXPORT_DETAIL, value: "" },
+      { id: "export-note", kind: "note", text: EXPORT_LAPTOP_NOTE },
+    ];
+  }
+  const status = exportStatusText(exportStatus);
+  return [
+    {
+      id: "export",
+      kind: "action",
+      label: "export",
+      detail: EXPORT_DETAIL,
+      // A second press while the zip is packing would pack it twice.
+      busy: exportStatus?.state === "working",
+    },
+    ...(status ? [{ id: "export-status", kind: "note", text: status }] : []),
+  ];
+}
+
+function sectionRows(id, { tone, font, yjsEnabled, shellEnabled, offerShellSwitch, version, exportZip, exportStatus }) {
   if (id === "tone") return choiceRows(TONES, tone);
   if (id === "font") return choiceRows(FONTS, font);
+  if (id === "data") return dataRows({ exportZip, exportStatus });
   if (id === "labs") {
     return [
       {

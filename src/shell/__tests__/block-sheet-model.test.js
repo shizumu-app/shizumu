@@ -159,3 +159,14 @@ describe("blockSheetRows — every row carries copy", () => {
     }
   });
 });
+
+describe("a kept block's way back", () => {
+  it("offers unpin first, where pin would have been", () => {
+    const rows = blockSheetRows({ activeBlock: { isBoard: false, isEmpty: false }, canPin: true, canUnpin: true });
+    expect(rows[0]).toEqual({ id: "unpin", label: "unpin" });
+  });
+  it("a block with no live pin has no such row", () => {
+    const rows = blockSheetRows({ activeBlock: { isBoard: false, isEmpty: false }, canPin: true });
+    expect(rows.map((r) => r.id)).not.toContain("unpin");
+  });
+});

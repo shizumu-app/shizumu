@@ -103,6 +103,12 @@
   onMount(() => {
     const onManage = (e) => {
       const action = e?.detail?.action;
+      // "open": the pins panel's empty state on an untrailed page offers
+      // the trail button, and this is that button's way to the picker.
+      if (action === "open") {
+        if (!readonly) isOpen = true;
+        return;
+      }
       if (readonly || !lineageId) return;
       const lineage = lineages.find((l) => l.id === lineageId);
       if (!lineage) return;

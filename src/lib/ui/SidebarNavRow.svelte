@@ -16,6 +16,8 @@
     expanded?: boolean,
     onToggle?: () => void,
     children?: import("svelte").Snippet,
+    trailing?: import("svelte").Snippet,
+    ariaLabel?: string,
   }} */
   let {
     active = false,
@@ -30,6 +32,9 @@
     expanded,
     onToggle,
     children,
+    // Right-hand content richer than one `count` (memory's `pages · pins`).
+    trailing,
+    ariaLabel,
   } = $props();
   const foldable = $derived(typeof expanded === "boolean" && typeof onToggle === "function");
 
@@ -64,6 +69,7 @@
     tabindex="0"
     aria-pressed={active}
     aria-expanded={foldable ? expanded : undefined}
+    aria-label={ariaLabel}
     style:padding-left={indentStyle}
     onclick={handleClick}
     onkeydown={handleKeydown}
@@ -72,7 +78,9 @@
     {#if tag}
       <span class="tag">{tag}</span>
     {/if}
-    {#if hasCount}
+    {#if trailing}
+      {@render trailing()}
+    {:else if hasCount}
       <span class="count">· {count}</span>
     {/if}
   </div>
@@ -87,7 +95,9 @@
     {#if tag}
       <span class="tag">{tag}</span>
     {/if}
-    {#if hasCount}
+    {#if trailing}
+      {@render trailing()}
+    {:else if hasCount}
       <span class="count">· {count}</span>
     {/if}
   </div>

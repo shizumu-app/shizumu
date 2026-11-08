@@ -458,7 +458,6 @@ export const STATES = {
   // "delete" is always offered, "title" is offered on table/chart (the
   // regression photograph for that fix), "convert to…" is offered on the
   // convertible board types (Task 5) and absent on table/chart.
-  BLOCK_ACTIONS_SHEET_TOUCH: "block-actions-sheet",
   // Same open, then tap "convert to…": asserts the sheet swaps to a
   // "← back" row plus at least one target row (Task 5's submenu).
   //
@@ -1136,7 +1135,6 @@ export const SCENES = {
     // see that state's own comment above.
     states: [
       STATES.BLOCK_TITLE_TOUCH, STATES.PIN_FLOW_TOUCH_BOARD,
-      STATES.BLOCK_ACTIONS_SHEET_TOUCH,
     ],
   },
   // Exists for DELETE_FLOW_TOUCH: a short titled board, so the toolbar's
@@ -1147,43 +1145,45 @@ export const SCENES = {
     states: [STATES.DELETE_FLOW_TOUCH],
   },
   // Task 6 — board types that had zero VR presence before this pass. Each
-  // gets the touch action-sheet state. page-board-content (above) and
+  // is photographed at rest. Their touch action-sheet state went with the
+  // board's chip (block-type-chip.js targets nothing since the block shell);
+  // on a phone the same sheet is shell-page's block-sheet and block-sheet-board. page-board-content (above) and
   // page-qa-content (below) would also carry the convert submenu, but
   // that state is parked — see BLOCK_CONVERT_SHEET_TOUCH's own comment.
   "page-table-content": {
     space: "page", fixture: FIXTURES.pageWithTableContent, onboarding: false,
-    states: [STATES.BLOCK_ACTIONS_SHEET_TOUCH],
+    states: [],
   },
   // The regression photograph for Task 1's bug: tapping an EMPTY table's
   // chip used to open no sheet at all.
   "page-empty-table": {
     space: "page", fixture: FIXTURES.pageWithEmptyTable, onboarding: false,
-    states: [STATES.BLOCK_ACTIONS_SHEET_TOUCH],
+    states: [],
   },
   // page-blank's CHART_BUILDER states cover only the modal, never the
   // rendered block — this is the first VR coverage of an actual chart node.
   "page-chart-content": {
     space: "page", fixture: FIXTURES.pageWithChartContent, onboarding: false,
-    states: [STATES.BLOCK_ACTIONS_SHEET_TOUCH],
+    states: [],
   },
   // Same regression photograph as page-empty-table, for chart.
   "page-empty-chart": {
     space: "page", fixture: FIXTURES.pageWithEmptyChart, onboarding: false,
-    states: [STATES.BLOCK_ACTIONS_SHEET_TOUCH],
+    states: [],
   },
   "page-recipe-content": {
     space: "page", fixture: FIXTURES.pageWithRecipeContent, onboarding: false,
-    states: [STATES.BLOCK_ACTIONS_SHEET_TOUCH],
+    states: [],
   },
   "page-qa-content": {
     space: "page", fixture: FIXTURES.pageWithQaContent, onboarding: false,
     // BLOCK_CONVERT_SHEET_TOUCH deliberately NOT applied here — parked,
     // see that state's own comment above.
-    states: [STATES.BLOCK_ACTIONS_SHEET_TOUCH],
+    states: [],
   },
   "page-decision-content": {
     space: "page", fixture: FIXTURES.pageWithDecisionContent, onboarding: false,
-    states: [STATES.BLOCK_ACTIONS_SHEET_TOUCH],
+    states: [],
   },
   // An attachment renders no `.block-type-chip` (block-shell.js never wraps
   // one), so it has no block-actions SHEET — but it does have the gutter

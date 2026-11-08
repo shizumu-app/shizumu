@@ -51,7 +51,7 @@ describe("trailSheetRows", () => {
   it("shows the trail this page is on and does not offer it again", () => {
     const rows = trailSheetRows({ lineages: [trail()], currentLineageId: "L1" });
     const row = byId(rows, "L1");
-    expect(row.value).toBe("this page");
+    expect(row.detail).toBe("this page");
     expect(row.selectable).toBe(false);
   });
 
@@ -64,7 +64,7 @@ describe("trailSheetRows", () => {
     const rows = trailSheetRows({
       lineages: [trail({ id: "c", name: "the book", mode: "continuous" })],
     });
-    expect(byId(rows, "c").value).toBe("living doc");
+    expect(byId(rows, "c").detail).toBe("living doc");
     expect(byId(rows, "c").selectable).toBe(false);
   });
 
@@ -96,19 +96,22 @@ describe("trailSheetRows", () => {
     // name is shown exactly as it was typed.
     const rows = trailSheetRows({
       lineages: [trail({ id: "a", name: "the book" }), trail({ id: "b", name: "book trail" })],
-      typedName: "reading",
+      // Typed text narrows the list now (0.8.2), so it is a word both
+      // names carry and neither is: both rows stay, and the create row too.
+      typedName: "book",
     });
     expect(labels(rows)).toContain("the book");
     expect(labels(rows)).toContain("book trail");
-    expect(byId(rows, "create").label).toBe("start the trail “reading”");
+    expect(byId(rows, "create").label).toBe("start the trail “book”");
   });
 
-  it("names a trail by itself and says where it lives in the second column", () => {
+  it("names a trail by itself and says where it lives on the line under it", () => {
     // IT USED TO BE ONE STRING — "product › export api" — cut at 36
     // characters from the end, so a trail three deep lost its own name,
     // which is the only part being chosen between. A flat sheet still
     // cannot indent (Row has one shape), but it has a second column, and
-    // the path belongs there.
+    // the path belongs there. (0.8.2: the second column holds the counts
+    // now, and the path is the row's detail line.)
     const rows = trailSheetRows({
       lineages: [
         trail({ id: "p", name: "product", parent_id: null }),
@@ -116,10 +119,10 @@ describe("trailSheetRows", () => {
       ],
     });
     expect(labels(rows)).toEqual(["product", "export api"]);
-    expect(byId(rows, "c").value).toBe("product");
-    // A root's second column is empty, which is what makes depth legible
-    // without moving anybody's tap target.
-    expect(byId(rows, "p").value).toBe("");
+    expect(byId(rows, "c").detail).toBe("product");
+    // A root's detail is empty, which is what makes depth legible without
+    // moving anybody's tap target.
+    expect(byId(rows, "p").detail).toBe("");
   });
 
   it("does not repeat the trail's own name in its path", () => {
@@ -131,7 +134,7 @@ describe("trailSheetRows", () => {
       ],
     });
     expect(byId(rows, "g").label).toBe("v2");
-    expect(byId(rows, "g").value).toBe("product › export api");
+    expect(byId(rows, "g").detail).toBe("product › export api");
   });
 
   it("puts a parent before its children", () => {
@@ -358,5 +361,56 @@ describe("trailSheetRows — a living doc, startable and reachable", () => {
     });
     expect(rows.every((r) => r.kind !== "merge")).toBe(true);
     expect(byId(rows, "c").kind).toBe("open-doc");
+  });
+});
+
+describe("trailSheetRows — find a trail and the counts (0.8.2)", () => {
+  const tree = [
+    trail({ id: "s", name: "shizumu", parent_id: null }),
+    trail({ id: "v", name: "v0.8", parent_id: "s" }),
+    trail({ id: "r", name: "the relay", parent_id: "s" }),
+    trail({ id: "j", name: "job search", parent_id: null }),
+  ];
+  const trailIds = (rows) => rows.filter((r) => r.kind === "trail").map((r) => r.lineageId);
+
+  it("narrows the trails to what the field matches, keeping each match's ancestors", () => {
+    // THE GAP: the field was a name only, so a writer with thirty trails
+    // scrolled for the one they meant. A nested match keeps its parent so
+    // it is never shown without the path to it.
+    const rows = trailSheetRows({ lineages: tree, typedName: "relay" });
+    expect(trailIds(rows)).toEqual(["s", "r"]);
+    // And the field still names: nothing is called "relay" yet.
+    expect(byId(rows, "create").label).toBe("start the trail “relay”");
+  });
+
+  it("lists every trail while the field is empty", () => {
+    expect(trailIds(trailSheetRows({ lineages: tree }))).toEqual(["j", "s", "r", "v"]);
+  });
+
+  it("does not narrow the list of places a new trail can go", () => {
+    // In the nesting step the typed text is the NEW trail's name; filtering
+    // the parents by it would hide every place it could go.
+    const rows = trailSheetRows({ lineages: tree, typedName: "chapter", nesting: true });
+    expect(rows.filter((r) => r.kind === "nest-target")).toHaveLength(4);
+  });
+
+  it("puts each trail's own pages and pins in the value column", () => {
+    const rows = trailSheetRows({
+      lineages: tree,
+      currentLineageId: "v",
+      pageCounts: new Map([["s", 6], ["v", 1]]),
+      pinCounts: new Map([["s", 4], ["v", 1], [null, 3]]),
+    });
+    expect(byId(rows, "s").value).toBe("6 pages · 4 pins");
+    expect(byId(rows, "v").value).toBe("1 page · 1 pin");
+    // A trail the counts do not name owns none — the query omits zeroes.
+    expect(byId(rows, "j").value).toBe("0 pages · 0 pins");
+    expect(byId(rows, "v").detail).toBe("this page · shizumu");
+  });
+
+  it("carries no count when none were read", () => {
+    // Not a vacuous empty: a "0 pages" guessed before the query answered
+    // would tell a writer their trail is empty.
+    expect(byId(trailSheetRows({ lineages: tree }), "s").value).toBe("");
   });
 });

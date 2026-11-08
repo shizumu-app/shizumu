@@ -77,7 +77,26 @@
 // A name is shown exactly as it was typed, cut only when it will not fit.
 
 import { lineagePath } from "../lib/trail-utils.js";
-import { orderedTrails } from "./trail-index.js";
+import { orderedTrails, trailCountValue, trailCounts, trailsMatching } from "./trail-index.js";
+
+// ── 0.8.2: the field finds as well as names (spec 2026-11-01 §4) ──────
+//
+// The field used to be a NAME only: what was typed was the new trail's
+// name and never a filter, so a writer with thirty trails scrolled for the
+// one they meant. The spec gives this sheet `find a trail…`, and the field
+// is the one place to type in it, so typing now does both: the trails list
+// narrows to the names that match (and their ancestors, the desktop
+// sidebar's rule), and the create row still offers a name no trail has.
+// Those are not two answers that can disagree — a name that matches a
+// trail exactly is `taken`, so the create row is withheld and the match is
+// the row left in the list, which is what return then chooses
+// (trailSheetSubmit). The nesting step does NOT filter: there the typed
+// text is the new trail's name, and the list is every place it could go.
+//
+// Each trail row's VALUE is now its counts — `4 pages · 2 pins`, the pages
+// and pins the trail itself owns — and what the value used to say (`this
+// page`, `living doc`, where the trail lives) moved to the row's DETAIL
+// line under its name. Without counts handed in the value is empty.
 
 /** Characters of a trail name a row shows before it is cut. `Row`'s label
  *  has no ellipsis of its own, and a long name would push the value off a
@@ -121,6 +140,8 @@ export function trailSheetRows({
   nesting = false,
   pageEmpty = false,
   canonicalByLineage = {},
+  pageCounts = null,
+  pinCounts = null,
 } = {}) {
   const rows = Array.isArray(lineages) ? lineages.filter((l) => l && l.id) : [];
   const name = clean(typedName);
@@ -158,7 +179,8 @@ export function trailSheetRows({
         id: lineage.id,
         kind: "nest-target",
         label: cut(clean(lineage.name)),
-        value: cut(parentPath(lineage, rows)),
+        value: "",
+        detail: cut(parentPath(lineage, rows)),
         lineageId: lineage.id,
         name,
         parentId: lineage.id,
@@ -258,7 +280,11 @@ export function trailSheetRows({
     }
   }
 
-  for (const lineage of orderedTrails(rows)) {
+  // The typed text narrows the list (header, 0.8.2). The trails it keeps
+  // come back in tree order with their ancestors, by id, so the rows below
+  // are built from the original lineage objects.
+  const kept = new Set(trailsMatching(rows, name).map((l) => l.id));
+  for (const lineage of orderedTrails(rows).filter((l) => kept.has(l.id))) {
     const continuous = lineage.mode === "continuous";
     const current = lineage.id === currentLineageId;
     // ── a continuous trail with a document is a PLACE, not a target ────
@@ -287,7 +313,10 @@ export function trailSheetRows({
       // The state words outrank the path when both could be said: "this
       // page" and "living doc" are what the row can DO, and where a trail
       // lives is context for a row still being chosen between.
-      value: current ? THIS_PAGE : continuous ? LIVING_DOC : cut(parentPath(lineage, rows)),
+      value: trailCountValue(trailCounts(lineage.id, { pageCounts, pinCounts })),
+      detail: [current ? THIS_PAGE : continuous ? LIVING_DOC : "", cut(parentPath(lineage, rows))]
+        .filter(Boolean)
+        .join(" · "),
       lineageId: lineage.id,
       ...(openable ? { pageId: canonical } : {}),
       selectable: openable || (!current && !continuous),

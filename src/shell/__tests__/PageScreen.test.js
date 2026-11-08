@@ -1029,6 +1029,31 @@ describe("PageScreen — the gutter handle", () => {
     expect(handles(target)[0].style.top).toBe("150.8px");
   });
 
+  it("hands the sheet a board named from its title field as a board", async () => {
+    // block-sheet-model offers `delete` on `canPin || isBoard`. The focused
+    // field's block used to be {type, pos} alone, so an empty board being
+    // named had nothing to say it was one, and its sheet offered no delete.
+    const onBlockHandle = vi.fn();
+    const { target } = render(PageScreen, {
+      dateLabel: "today",
+      page: pageRow({ content_json: JSON.stringify({ type: "doc", content: [
+        { type: "paragraph", content: [{ type: "text", text: "a line" }] },
+        { type: "blockquote", content: [{ type: "paragraph" }] },
+      ] }) }),
+      onBlockHandle,
+    });
+    await settle();
+    stubBoxes(target, { canvasTop: 100, blockTops: [140, 260] });
+    caretTo(target, 1);
+    const board = target.querySelectorAll(".ProseMirror > *")[1];
+    const title = document.createElement("input");
+    board.appendChild(title);
+    title.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    flushSync();
+    tapHandle(target);
+    expect(onBlockHandle.mock.calls.at(-1)[0].isBoard).toBe(true);
+  });
+
   it("gives the handle back to the caret when the title lets go", async () => {
     // The other half: a focus that leaves for nothing in particular puts
     // the selection back in charge. Without this the handle would sit on

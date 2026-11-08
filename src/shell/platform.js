@@ -27,6 +27,15 @@
 // root would have to re-derive "does popstate mean back here" from `os`
 // itself, which is exactly the OS-check this module exists to be the one
 // place for (spec §5).
+//
+// `exportZip` says whether settings can export every page as one zip and
+// hand it to the system share sheet. Android can: the Rust side stages the
+// zip and fires the share intent MainActivity already carries for
+// attachments and backups (trail_export.rs, export_trail_zip_share). iOS
+// cannot yet: the app has no share-sheet or document-picker code there, and
+// adding it means a plugin or native Swift nobody can test without an
+// iPhone. A browser has no files to pack. Where it is false, settings say
+// the export works from the laptop.
 
 const WEB = {
   back: "shell",
@@ -35,6 +44,7 @@ const WEB = {
   popstateBack: true,
   haptics: false,
   statusBar: false,
+  exportZip: false,
 };
 
 const ANDROID = {
@@ -44,6 +54,7 @@ const ANDROID = {
   popstateBack: true,
   haptics: true,
   statusBar: true,
+  exportZip: true,
 };
 
 const IOS = {
@@ -53,6 +64,7 @@ const IOS = {
   popstateBack: false,
   haptics: true,
   statusBar: true,
+  exportZip: false,
 };
 
 /**
@@ -63,7 +75,8 @@ const IOS = {
  *   cannot yet.
  * @param {boolean} [env.isWeb]  true in a browser: PWA, VR harness, dev server
  * @returns {Readonly<{back: "system"|"shell", backAtRoot: "background"|"none",
- *   edgeBackArmed: boolean, popstateBack: boolean, haptics: boolean, statusBar: boolean}>}
+ *   edgeBackArmed: boolean, popstateBack: boolean, haptics: boolean, statusBar: boolean,
+ *   exportZip: boolean}>}
  */
 export function platformProfile({ os = null, isWeb = false } = {}) {
   if (isWeb) return Object.freeze({ ...WEB });

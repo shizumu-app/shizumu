@@ -198,7 +198,7 @@ test.describe("homepage sections", () => {
     await page.goto("/");
     const film = page.locator("#phone video");
     await expect(film).toHaveAttribute("preload", "none");
-    await expect(film).toHaveAttribute("poster", "/assets/video/v1-beta-mobile-vertical-poster.png");
+    await expect(film).toHaveAttribute("poster", "/assets/video/v080-mobile-poster.png");
     await expect(page.locator('#phone a[data-platform="phone-android"]')).toHaveAttribute("href", "/#dl-android");
     await expect(page.locator('#phone a[data-platform="phone-iphone"]')).toHaveAttribute("href", "https://testflight.apple.com/join/QYvGcXBp");
     // the other sections point at it
@@ -451,21 +451,25 @@ test.describe("download tabs on windows", () => {
 test.describe("download tabs on android", () => {
   test.use({ viewport: { width: 412, height: 915 }, userAgent: ANDROID_UA });
 
-  test("the android tab opens on the two steps into the play test, and the apk beside them", async ({ page }) => {
+  test("the android tab opens on the apk, with the two steps into the play test under it", async ({ page }) => {
     await page.goto("/");
     await expect(selected(page)).toHaveText("android");
-    const steps = shown(page).locator(".home-dl-buttons a");
-    await expect(steps).toHaveCount(2);
-    await expect(steps.nth(0)).toHaveAttribute("href", "https://groups.google.com/g/shizumu-testers");
-    await expect(steps.nth(0)).toContainText("1 · join the testers group");
-    await expect(steps.nth(1)).toHaveAttribute("href", "https://play.google.com/apps/testing/app.shizumu.Shizumu");
-    await expect(steps.nth(1)).toContainText("2 · become a tester on play");
+    const ways = shown(page).locator(".home-dl-buttons a");
+    await expect(ways).toHaveCount(3);
+    // the apk comes first and is the one main button: it is one tap, the test is four
+    await expect(ways.nth(0)).toHaveAttribute("data-platform", "android-apk");
+    await expect(ways.nth(0)).toHaveAttribute("href", /\/downloads\/shizumu-[0-9.]+\.apk$/);
+    await expect(shown(page).locator(".ui-btn-primary")).toHaveCount(1);
+    await expect(shown(page).locator(".ui-btn-primary")).toHaveAttribute("data-platform", "android-apk");
+    await expect(shown(page)).toContainText("it does not update itself");
+    await expect(shown(page).locator(".home-dl-sub")).toContainText("or join the test on play");
+    await expect(ways.nth(1)).toHaveAttribute("href", "https://groups.google.com/g/shizumu-testers");
+    await expect(ways.nth(1)).toContainText("1 · join the testers group");
+    await expect(ways.nth(2)).toHaveAttribute("href", "https://play.google.com/apps/testing/app.shizumu.Shizumu");
+    await expect(ways.nth(2)).toContainText("2 · become a tester on play");
     await expect(shown(page)).toContainText("google account on your phone");
     // the group replaced the email signup: no form is left in this tab
     await expect(shown(page).locator("form")).toHaveCount(0);
-    const apk = shown(page).locator('a[data-platform="android-apk"]');
-    await expect(apk).toHaveAttribute("href", /\/downloads\/shizumu-[0-9.]+\.apk$/);
-    await expect(shown(page)).toContainText("it does not update itself");
   });
 
   test("each form's label names its own field", async ({ page }) => {
@@ -484,8 +488,11 @@ test.describe("download tabs on android", () => {
     expect(overflow).toBeLessThanOrEqual(0);
   });
 
-  test("the android page has the same two steps and the apk", async ({ page }) => {
+  test("the android page has the apk first, then the same two steps", async ({ page }) => {
     await page.goto("/journal-app-for-android");
+    await expect(page.locator('a[data-platform="android-apk"].ui-btn-primary')).toHaveCount(1);
+    const order = await page.locator('a[data-platform^="android-"]').evaluateAll((els) => els.map((e) => e.dataset.platform));
+    expect(order).toEqual(["android-apk", "android-group", "android-optin"]);
     const steps = page.locator("#android-beta a");
     await expect(steps).toHaveCount(2);
     await expect(steps.nth(0)).toHaveAttribute("href", "https://groups.google.com/g/shizumu-testers");

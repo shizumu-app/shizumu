@@ -59,6 +59,67 @@
 // `descendantLineageIds` carries for the same reason.
 
 import { descendantLineageIds } from "../lib/memory-filters.js";
+import { filterTrailTree } from "../lib/memory-trails.js";
+import { lineagePath } from "../lib/trail-utils.js";
+
+// ── 0.8.2: COUNTS AND A SEARCH, after all (spec 2026-11-01 §4) ────────
+//
+// The header above refuses a count tallied from memory's capped list, and
+// that refusal stands: the counts here are not tallied. They come from two
+// read-only aggregates over the whole database — `getTrailPageCounts` and
+// `getTrailPinCounts` (ruling 1: the pages and pins each trail ITSELF owns,
+// not its subtree's, the rule carry-forward uses) — handed in as Maps. With
+// no Maps handed in, a row carries no count, exactly as before.
+//
+// The one figure that cannot come from a query is the untrailed pages:
+// `get_trail_page_counts` leaves them out. It is counted from memory's list
+// while that list is under its cap (`untrailedPageCount`), and is unknown —
+// the row says only its pins — once it is not.
+//
+// `find a trail…` keeps a match AND its ancestors (`filterTrailTree`, the
+// desktop sidebar's rule), so a nested match is never shown without the
+// path that leads to it. `all trails` and `untrailed` stay while searching:
+// they are the way back out of a scope, not trails a name could match.
+
+/** `4 pages · 2 pins`, or `2 pins` when the pages are unknown, or "" when
+ *  no counts were read at all. */
+export function trailCountValue(counts) {
+  if (!counts) return "";
+  const { pages = null, pins = 0 } = counts;
+  const pinText = `${pins} ${pins === 1 ? "pin" : "pins"}`;
+  if (pages == null) return pinText;
+  return `${pages} ${pages === 1 ? "page" : "pages"} · ${pinText}`;
+}
+
+/** One trail's own counts, or null when no counts were read. */
+export function trailCounts(id, { pageCounts = null, pinCounts = null } = {}) {
+  if (!pageCounts && !pinCounts) return null;
+  return {
+    pages: pageCounts ? (pageCounts.get(id) ?? 0) : null,
+    pins: pinCounts ? (pinCounts.get(id) ?? 0) : 0,
+  };
+}
+
+/** The trails a `find a trail…` query keeps, in tree order: every match
+ *  and every ancestor of one. All of them for an empty query. */
+export function trailsMatching(lineages = [], query = "") {
+  const rows = orderedTrails(lineages).map((l) => ({ ...l, name: nameOf(l) }));
+  return filterTrailTree(rows, query);
+}
+
+/** Did a non-empty query match no trail at all? The sheet says so, rather
+ *  than showing only its two scope rows as if they were the answer. */
+export function noTrailMatches(lineages = [], query = "") {
+  return String(query ?? "").trim() !== "" && trailsMatching(lineages, query).length === 0;
+}
+
+/** Where a trail lives — its ancestors joined, "" for a root. */
+export function trailParentPath(lineage, lineages = []) {
+  return lineagePath(lineage.id, lineages)
+    .filter((l) => l.id !== lineage.id)
+    .map((l) => nameOf(l))
+    .join(" › ");
+}
 
 /** The scope string `applyScopeFilter` and `descendantLineageIds` both
  *  test for. See the header — three copies of one literal, and this is
@@ -134,25 +195,69 @@ export function orderedTrails(lineages = []) {
   return out;
 }
 
-export function trailIndexRows({ lineages = [], selectedId = null } = {}) {
+export function trailIndexRows({
+  lineages = [],
+  selectedId = null,
+  query = "",
+  pageCounts = null,
+  pinCounts = null,
+  untrailedPages = null,
+} = {}) {
+  const counted = !!(pageCounts || pinCounts);
+  const sum = (map) => {
+    let n = 0;
+    for (const v of map?.values?.() ?? []) n += Number(v) || 0;
+    return n;
+  };
+  const allCounts = counted
+    ? {
+        // Every page needs the untrailed figure too; unknown makes it unknown.
+        pages: pageCounts && untrailedPages != null ? sum(pageCounts) + untrailedPages : null,
+        pins: sum(pinCounts),
+      }
+    : null;
+  const untrailedCounts = counted
+    ? { pages: untrailedPages, pins: pinCounts?.get(null) ?? 0 }
+    : null;
+
   const out = [
-    { id: null, label: "all trails", depth: 0, mode: null, selected: selectedId == null },
+    {
+      id: null,
+      label: "all trails",
+      depth: 0,
+      mode: null,
+      selected: selectedId == null,
+      detail: selectedId == null ? "showing" : "",
+      value: trailCountValue(allCounts),
+    },
     {
       id: UNTRAILED,
       label: "untrailed",
       depth: 0,
       mode: null,
       selected: selectedId === UNTRAILED,
+      detail: selectedId === UNTRAILED ? "showing" : "",
+      value: trailCountValue(untrailedCounts),
     },
   ];
 
-  for (const l of orderedTrails(lineages)) {
+  const rows = Array.isArray(lineages) ? lineages : [];
+  for (const l of trailsMatching(rows, query)) {
+    const mode = typeof l.mode === "string" && l.mode ? l.mode : null;
+    const selected = selectedId === l.id;
     out.push({
       id: l.id,
       label: nameOf(l),
       depth: l.depth,
-      mode: typeof l.mode === "string" && l.mode ? l.mode : null,
-      selected: selectedId === l.id,
+      mode,
+      selected,
+      // Only a continuous trail is marked — discrete is the default and
+      // says nothing (the desktop sidebar's rule, spec §2). `one doc` is
+      // what the trail IS, in the writer's words.
+      detail: [selected ? "showing" : "", trailParentPath(l, rows), mode === "continuous" ? "one doc" : ""]
+        .filter(Boolean)
+        .join(" · "),
+      value: trailCountValue(trailCounts(l.id, { pageCounts, pinCounts })),
     });
   }
 

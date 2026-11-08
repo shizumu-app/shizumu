@@ -38,13 +38,15 @@ describe("SettingsScreen", () => {
     expect(rowLabels(mountSettings().target)).toEqual([
       "tone",
       "font",
+      "data",
+      "lock",
       "sync",
       "labs",
       "about",
     ]);
   });
 
-  it("puts the rows in three named groups and draws no separator", () => {
+  it("puts the rows in five named groups and draws no separator", () => {
     // Five rows in three `RowGroup`s, each under its eyebrow. The words
     // are the model's (settings-model.test.js holds them); what this
     // holds is that the screen renders every group the model returns,
@@ -58,10 +60,12 @@ describe("SettingsScreen", () => {
     const groups = [...target.querySelectorAll(".shell-row-group")];
     expect(groups.map((g) => g.querySelector(".shell-eyebrow")?.textContent.trim())).toEqual([
       "page",
+      "data",
+      "lock",
       "sync",
       "app",
     ]);
-    expect(groups.map((g) => g.querySelectorAll(".shell-row").length)).toEqual([2, 1, 2]);
+    expect(groups.map((g) => g.querySelectorAll(".shell-row").length)).toEqual([2, 1, 1, 1, 2]);
     expect(target.querySelectorAll('[role="separator"]').length).toBe(0);
   });
 
@@ -87,6 +91,6 @@ describe("SettingsScreen", () => {
     // screens with no host, which is where this shape is reached.
     const { target } = mountSettings({ onOpen: null });
     expect(target.querySelectorAll("button").length).toBe(0);
-    expect(rowLabels(target).length).toBe(5);
+    expect(rowLabels(target).length).toBe(7);
   });
 });

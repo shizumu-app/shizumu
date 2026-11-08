@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   ACTION_NAME_MAX,
   UNTRAILED,
+  noTrailMatches,
   trailActionLabel,
+  trailCountValue,
   trailIndexRows,
   trailScope,
   trailScopeLabel,
@@ -164,5 +166,64 @@ describe("trailScope — the argument applyScopeFilter is handed", () => {
     // nothing — which is what this drives end to end rather than trusting.
     const scope = trailScope({ lineages: LINEAGES, selectedId: UNTRAILED });
     expect(applyScopeFilter(rows, scope).map((r) => r.id)).toEqual(["d"]);
+  });
+});
+
+describe("trailIndexRows — find a trail and the counts (0.8.2)", () => {
+  const counts = {
+    pageCounts: new Map([["L1", 6], ["L3", 2]]),
+    pinCounts: new Map([["L1", 4], [null, 3]]),
+  };
+
+  it("keeps a match and its ancestors, and the two scope rows, while searching", () => {
+    // THE GAP: the sheet had no search; a long tree meant scrolling it.
+    // A nested match keeps its parent, so it is never shown without the
+    // path to it, and `all trails` / `untrailed` stay because they are the
+    // way back out of a scope, not names a query could match.
+    const rows = trailIndexRows({ lineages: LINEAGES, query: "chapter" });
+    expect(labels(rows)).toEqual(["all trails", "untrailed", "the book", "chapter three"]);
+  });
+
+  it("says when a search matches no trail", () => {
+    expect(noTrailMatches(LINEAGES, "zebra")).toBe(true);
+    expect(noTrailMatches(LINEAGES, "")).toBe(false);
+    expect(noTrailMatches(LINEAGES, "BOOK")).toBe(false);
+  });
+
+  it("puts each trail's own pages and pins in the value column", () => {
+    const rows = trailIndexRows({ lineages: LINEAGES, untrailedPages: 5, ...counts });
+    const value = (label) => rows.find((r) => r.label === label).value;
+    expect(value("the book")).toBe("6 pages · 4 pins");
+    expect(value("chapter three")).toBe("2 pages · 0 pins");
+    // The pins on no trail are the null key; the untrailed pages come from
+    // memory's list, which the queries cannot answer.
+    expect(value("untrailed")).toBe("5 pages · 3 pins");
+    expect(value("all trails")).toBe("13 pages · 7 pins");
+  });
+
+  it("says only the pins when the untrailed pages are unknown", () => {
+    // memory's list is capped at a hundred: past it, the untrailed figure
+    // (and so the whole) is unknown, and a guessed number would be wrong.
+    const rows = trailIndexRows({ lineages: LINEAGES, untrailedPages: null, ...counts });
+    expect(rows[1].value).toBe("3 pins");
+    expect(rows[0].value).toBe("7 pins");
+  });
+
+  it("marks only a continuous trail, and says showing and the path under the name", () => {
+    // The `discrete` / `continuous` word on every row is gone (spec §2):
+    // discrete is the default and says nothing.
+    const rows = trailIndexRows({ lineages: LINEAGES, selectedId: "L3" });
+    const detail = (label) => rows.find((r) => r.label === label).detail;
+    expect(detail("the book")).toBe("one doc");
+    expect(detail("a job search")).toBe("");
+    expect(detail("chapter three")).toBe("showing · the book");
+    expect(rows[0].detail).toBe("");
+  });
+
+  it("carries no count when none were read", () => {
+    // Not a vacuous empty: the header's refusal of a tallied count stands,
+    // so without the two queries' answers a row says nothing.
+    expect(trailIndexRows({ lineages: LINEAGES }).every((r) => r.value === "")).toBe(true);
+    expect(trailCountValue(null)).toBe("");
   });
 });

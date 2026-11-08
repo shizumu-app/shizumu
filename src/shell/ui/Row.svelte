@@ -35,6 +35,13 @@
   anything; cancelling pointerdown suppresses the focus change and the
   compatibility mouse events, not the scroll and not the click. Off by
   default: a row in settings has no editor to keep.
+
+  `detail` is an optional second line under the label, in the interface
+  face: where a trail lives and what state it is in (`this page`, `one
+  doc`), or where a pin came from. It exists so the value column can carry
+  a count (0.8.2: `pages · pins` on the trail sheets) without that count
+  pushing the path and the state words out of the row. Absent, the row's
+  markup is exactly what it was.
 -->
 <script>
   import Toggle from "../../lib/ui/Toggle.svelte";
@@ -50,6 +57,7 @@
     destructive?: boolean,
     kind?: "push"|"action"|"choice"|"destructive"|"toggle"|"value"|null,
     keepFocus?: boolean,
+    detail?: string,
   }} */
   let {
     label,
@@ -61,6 +69,7 @@
     destructive = false,
     kind = null,
     keepFocus = false,
+    detail = "",
   } = $props();
 
   function holdFocus(event) {
@@ -70,6 +79,17 @@
   const shape = $derived(rowKind({ onSelect, toggle, destructive, kind }));
   const tone = $derived(rowTone(shape));
 </script>
+
+{#snippet text()}
+  {#if detail}
+    <span class="shell-row-text">
+      <span class="shell-row-label">{label}</span>
+      <span class="shell-row-detail">{detail}</span>
+    </span>
+  {:else}
+    <span class="shell-row-label">{label}</span>
+  {/if}
+{/snippet}
 
 {#if onSelect}
   <button
@@ -82,13 +102,13 @@
     onpointerdown={holdFocus}
     onclick={onSelect}
   >
-    <span class="shell-row-label">{label}</span>
+    {@render text()}
     {#if value}<span class="shell-row-value">{value}</span>{/if}
     {#if rowChevron(shape)}<span class="shell-row-chevron" aria-hidden="true">›</span>{/if}
   </button>
 {:else}
   <div class="shell-row" data-kind={shape} data-tone={tone}>
-    <span class="shell-row-label">{label}</span>
+    {@render text()}
     {#if toggle}
       <Toggle {checked} {label} onChange={onToggle ?? undefined} />
     {:else if value}
@@ -167,6 +187,25 @@
     flex: 0 1 auto;
     min-width: 0;
     max-width: 50%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The label and its detail line stack in the label's column, and the
+     column takes the label's flex rule so the value keeps its half. */
+  .shell-row-text {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .shell-row-detail {
+    color: var(--ink-soft);
+    font-family: var(--font-ui);
+    font-size: var(--text-xs);
+    line-height: var(--leading-sm);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

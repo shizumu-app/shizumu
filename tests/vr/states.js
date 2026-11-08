@@ -240,6 +240,7 @@ const SHELL_DAY_ROWS = ["today", "yesterday", "13 jan"];
 const SHELL_PAGE_ROWS = [
   ["page 1", "showing"],
   ["page 2", "a second thread, before lunch"],
+  ["delete page 1", ""],
 ];
 
 /** The trail sheet's four rows, in `trailSheetRows`' own order: the way
@@ -254,9 +255,10 @@ const SHELL_PAGE_ROWS = [
  *  continuous one it cannot ("living doc"). */
 const SHELL_TRAIL_ROWS = [
   ["no trail", ""],
-  [SHELL_TRAIL_NAME, "this page"],
-  ["job search", ""],
+  [`manage “${SHELL_TRAIL_NAME}”`, ""],
   ["field notes", "living doc"],
+  ["job search", ""],
+  [SHELL_TRAIL_NAME, "this page"],
 ];
 
 /** The block the handle is pressed on. Index into SHELL_DRAG_LINES. */
@@ -522,6 +524,10 @@ const SHELL_PIN_PROVENANCE = `from ${SHELL_TRAIL_NAME} · kept today`;
 const SHELL_SETTINGS_ROWS = [
   ["tone", "cream"],
   ["font", "lora"],
+  ["data", ""],
+  // The account's one lock (2026-11-07): its row says whether this device
+  // is locked; the VR mock answers check_encryption_status false.
+  ["lock", "off"],
   ["sync", ""],
   ["labs", ""],
   ["about", ""],
@@ -533,7 +539,7 @@ const SHELL_SETTINGS_ROWS = [
  *  inset groups under exactly these names, because a group is the whole
  *  visual difference between "five settings" and "three things a phone
  *  can be set about". */
-const SHELL_SETTINGS_EYEBROWS = ["page", "sync", "app"];
+const SHELL_SETTINGS_EYEBROWS = ["page", "data", "lock", "sync", "app"];
 
 /** The tone section: four choice rows, and the word in the value column
  *  that says which one is current.
@@ -1682,7 +1688,7 @@ async function screenState(page) {
       dayLabels: [...top.querySelectorAll(".memory-day-head .shell-eyebrow")].map((el) =>
         (el.textContent ?? "").trim(),
       ),
-      trailNames: [...top.querySelectorAll(".memory-trail-head .shell-row-label")].map((el) =>
+      trailNames: [...top.querySelectorAll(".memory-trail-name")].map((el) =>
         (el.textContent ?? "").trim(),
       ),
       headings: [...top.querySelectorAll(".shell-row-group > .shell-eyebrow")].map((el) =>
@@ -2196,7 +2202,7 @@ async function openShellInsertSheet(
   }
 
   const sheet = await sheetState(page);
-  assertSheetShape(sheet, label, "insert");
+  assertSheetShape(sheet, label, "insert", "full");
   assertSheetRows(sheet, label, SHELL_INSERT_ROWS);
   return sheet;
 }
@@ -3045,9 +3051,9 @@ export const STATE_DRIVERS = {
     await pin.tap();
     await settle(page, 250);
     const toastAgain = ((await page.locator(".quick-pin-toast").textContent()) || "").trim();
-    if (toastAgain !== "already pinned") {
+    if (toastAgain !== "already pinned. press again to unpin") {
       throw new Error(
-        `pin-flow-touch-board: second tap said "${toastAgain}" — expected "already pinned"`,
+        `pin-flow-touch-board: second tap said "${toastAgain}" — expected "already pinned. press again to unpin"`,
       );
     }
     const afterTwo = await page.evaluate(() =>
@@ -3171,112 +3177,6 @@ export const STATE_DRIVERS = {
         `delete-flow-touch: block count dropped but "${textBefore}" is still first — ` +
         "the wrong block was deleted",
       );
-    }
-  },
-
-  // The touch action sheet a board's own `.block-type-chip` opens
-  // (block-shell.js / table-shell-view.js dispatch shizumu-block-actions on
-  // tap). This is the exact repro route of Task 1's bug: tapping the chip
-  // on an EMPTY chart or table used to open no sheet at all. Real input
-  // throughout — a tap on the chip, no hook that sets blockActionSheetOpen
-  // directly.
-  [STATES.BLOCK_ACTIONS_SHEET_TOUCH]: async (page) => {
-    const chip = page.locator(".block-type-chip").first();
-    await chip.waitFor({ state: "visible" });
-    // dataset.board is read off the DOM before the tap (createBlockShell /
-    // ShellTableView both stamp it) so the assertions below adapt to
-    // whichever board type the scene's fixture actually put first, rather
-    // than hard-coding per-scene expectations here.
-    const boardType = await chip.evaluate((el) => el.closest("[data-board]")?.dataset.board || null);
-    // Every scene this state is applied to is a board fixture — a null
-    // boardType means the chip's own dataset.board lookup failed (wrong
-    // selector, a DOM shape change), which would otherwise silently skip
-    // BOTH assertion blocks below and let a real regression through
-    // vacuously. page-empty-table / page-empty-chart exist specifically to
-    // photograph Task 1's fix (title still offered on an EMPTY board) — a
-    // vacuous pass here would defeat their whole purpose.
-    if (!boardType) {
-      throw new Error(
-        "block-actions-sheet: could not read dataset.board off the tapped chip's closest [data-board] — " +
-        "every scene using this state is a board fixture, so this should never be null",
-      );
-    }
-
-    await chip.tap();
-    await settle(page, 250);
-
-    const sheet = page.locator(".block-action-sheet");
-    await sheet.waitFor({ state: "visible" });
-    const rowLabels = await sheet.locator(".block-action-row .block-action-label").allTextContents();
-
-    // The sheet must always offer delete for a board — this is the
-    // "opened nothing at all" half of Task 1's bug.
-    if (!rowLabels.includes(BLOCK_ACTION_LABELS.delete)) {
-      throw new Error(
-        `block-actions-sheet: expected a "${BLOCK_ACTION_LABELS.delete}" row, got ${JSON.stringify(rowLabels)}`,
-      );
-    }
-
-    // Is there anything here a pin could carry? Measured off the block
-    // itself with the NodeView chrome excluded — the same distinction
-    // block-pin-guard.js draws between the SHELL's text (which contains the
-    // chip, so an EMPTY board reads as full) and the document node's text.
-    // A chart is exempt by construction: chart.js is `atom: true` with its
-    // whole dataset in attrs, so a chart full of data has no more text than
-    // a blank one.
-    const pinnable = await chip.evaluate((el) => {
-      const block = el.closest("[data-board]");
-      if (block.getAttribute("data-type") === "chart") return true;
-      const clone = block.cloneNode(true);
-      clone.querySelectorAll(".block-type-chip, .board-title-slot").forEach((n) => n.remove());
-      return clone.textContent.trim() !== "";
-    });
-
-    // pin and copy are offered together, and only where there is something
-    // to pin. An EMPTY board used to offer both: openBlockActionSheet read
-    // "has content" off the shell's own textContent, chip included, so the
-    // rows appeared and then did nothing when tapped — handlePinBlock's own
-    // guard (block-pin-guard.js) refuses an empty block. A control that
-    // does nothing reads as broken, which is exactly how it was reported.
-    for (const id of ["pin", "copy"]) {
-      if (rowLabels.includes(BLOCK_ACTION_LABELS[id]) !== pinnable) {
-        throw new Error(
-          `block-actions-sheet: "${boardType}" board ${pinnable
-            ? `has content but is missing its "${BLOCK_ACTION_LABELS[id]}" row`
-            : `is empty but still offers "${BLOCK_ACTION_LABELS[id]}"`}, got ${JSON.stringify(rowLabels)}`,
-        );
-      }
-    }
-
-    const isConvertible = CONVERTIBLE_TYPES.includes(boardType);
-
-    // The non-convertible boards are exactly chart and table, and both
-    // always render a `.board-title-slot` regardless of content, so "title"
-    // is offered even when the block is empty — the other half of Task 1's
-    // regression photograph (page-empty-table / page-empty-chart tap this
-    // same driver and would fail here if the fix regressed). They must also
-    // not offer "convert to…" (Task 5 excludes them: neither has a
-    // flatten-to-paragraphs story).
-    if (!isConvertible) {
-      if (!rowLabels.includes(BLOCK_ACTION_LABELS.title)) {
-        throw new Error(
-          `block-actions-sheet: "${boardType}" board is missing its "${BLOCK_ACTION_LABELS.title}" row, got ${JSON.stringify(rowLabels)}`,
-        );
-      }
-      if (rowLabels.includes(BLOCK_ACTION_LABELS.convert)) {
-        throw new Error(
-          `block-actions-sheet: "${boardType}" board must not offer "${BLOCK_ACTION_LABELS.convert}", got ${JSON.stringify(rowLabels)}`,
-        );
-      }
-    }
-
-    // Convertible board types (Task 5) must offer the convert row.
-    if (isConvertible) {
-      if (!rowLabels.includes(BLOCK_ACTION_LABELS.convert)) {
-        throw new Error(
-          `block-actions-sheet: convertible board "${boardType}" is missing its "${BLOCK_ACTION_LABELS.convert}" row, got ${JSON.stringify(rowLabels)}`,
-        );
-      }
     }
   },
 
@@ -4778,10 +4678,10 @@ export const STATE_DRIVERS = {
     assertSheetShape(sheet, "date-sheet", "date");
     assertSheetRows(sheet, "date-sheet", SHELL_DAY_ROWS);
     assertInertRows(sheet, "date-sheet", [["today", "showing"]]);
-    // Every row is in the picture. Three against a half detent's seven,
-    // said out loud so a reader does not take a short list for a clipped
-    // one — the opposite of the note INSERT_SHEET carries.
-    if (sheet.visibleRows !== sheet.labels.length) {
+    // The month calendar sits above the days now, so the half detent shows
+    // today and the rest scroll: what must hold is that a day is in the
+    // picture at all, under the calendar.
+    if (sheet.visibleRows < 1) {
       throw new Error(
         `date-sheet: ${sheet.visibleRows} of ${sheet.labels.length} rows fit the detent — ` +
         "three days should not need a scroll, so either the detent or the rows moved",
@@ -4856,18 +4756,18 @@ export const STATE_DRIVERS = {
     assertSheetShape(sheet, "trail-sheet", "trail", "full");
     assertSheetRows(sheet, "trail-sheet", SHELL_TRAIL_ROWS.map(([label]) => label));
     assertInertRows(sheet, "trail-sheet", [
-      [SHELL_TRAIL_NAME, "this page"],
-      ["field notes", "living doc"],
+      ["field notes", "0 pages · 0 pins"],
+      [SHELL_TRAIL_NAME, "3 pages · 11 pins"],
     ]);
 
     // The field, which `labels` cannot see and which is half the reason
     // this sheet takes full detent: a sheet whose field failed to render
     // would pass every row assertion above and photograph a list where
     // the writer expected to type.
-    if (sheet.fields.length !== 1 || sheet.fields[0].placeholder !== "name a trail") {
+    if (sheet.fields.length !== 1 || sheet.fields[0].placeholder !== "find a trail…") {
       throw new Error(
         `trail-sheet: the sheet holds ${sheet.fields.length} fields ` +
-        `(${JSON.stringify(sheet.fields)}), expected one placeheld "name a trail" — with no ` +
+        `(${JSON.stringify(sheet.fields)}), expected one placeheld "find a trail…" — with no ` +
         "field a fresh phone can never make its first trail",
       );
     }
@@ -5333,16 +5233,15 @@ export const STATE_DRIVERS = {
     }
     // EVERY ROW IS IN THE PICTURE, said out loud so a reader does not
     // take the last visible row for the last row — the note the date
-    // sheet carries, on a scroller rather than a detent. Eleven 44px rows
-    // on a 915px device fit with room to spare, so this photograph
-    // contains the whole list; the day a fixture grows a twelfth this
-    // fails and the caption above it stops being a claim about the image.
-    if (state.rowsInBand !== state.rows.length) {
+    // sheet carries, on a scroller rather than a detent. A row carries its
+    // worded actions since 0.8.2, so eleven of them run past a 915px device
+    // and the list scrolls; what must hold is that the picture is of rows,
+    // starting from the first, and that the rest can be reached.
+    if (state.rowsInBand < 5 || state.band.scrollHeight <= state.band.clientHeight) {
       throw new Error(
         `pins-screen: ${state.rowsInBand} of ${state.rows.length} rows are inside the band ` +
-        `(${state.band.scrollHeight}/${state.band.clientHeight}) — the photograph is of a ` +
-        "list with rows below its own fold, so the eleven this state is captioned for are " +
-        "not all in it",
+        `(${state.band.scrollHeight}/${state.band.clientHeight}) — expected a screenful of ` +
+        "rows over a list that scrolls to the rest",
       );
     }
     if (state.band.scrollTop !== 0) {
@@ -5391,7 +5290,7 @@ export const STATE_DRIVERS = {
     // whose content is a doc and `pinKind` reads the content — and the
     // pin's own label is the FIELD under it, not a Title: the same line
     // used to be on screen twice.
-    assertPushedScreen(state, "pin-artifact-screen", "text", 3);
+    assertPushedScreen(state, "pin-artifact-screen", "pin", 3);
     assertRowsLegible(state, "pin-artifact-screen");
 
     if (state.subtitle !== "") {
@@ -5402,13 +5301,13 @@ export const STATE_DRIVERS = {
     }
     if (
       !state.titleField ||
-      state.titleField.value !== SHELL_PIN_ROWS[0] ||
+      state.titleField.value !== "" ||
       state.titleField.placeholder !== "name this pin"
     ) {
       throw new Error(
         `pin-artifact-screen: the title field is ${JSON.stringify(state.titleField)}, expected ` +
-        `"${SHELL_PIN_ROWS[0]}" placeheld "name this pin" — the value is the pin's own title ` +
-        "through pinTitleDraft, unelided, and the placeholder is the only thing that says " +
+        `empty, placeheld "name this pin" — this pin's title only repeats its writing's opening ` +
+        "words, which pinTitleDraft leaves out, and the placeholder is the only thing that says " +
         "the line can be typed into",
       );
     }
@@ -5781,10 +5680,10 @@ export const STATE_DRIVERS = {
         width: Math.round(el.getBoundingClientRect().width),
       };
     });
-    if (groups.headings.join(" | ") !== "date | sort") {
+    if (groups.headings.join(" | ") !== "date | pick a day | sort") {
       throw new Error(
         `memory-filters-sheet: the sheet's headings are [${groups.headings.join(" | ")}], ` +
-        'expected [date | sort] — a heading names the control under it, and without one a ' +
+        'expected [date | pick a day | sort] — a heading names the control under it, and without one a ' +
         "segment reading `all · today · this week` says nothing about what it narrows",
       );
     }

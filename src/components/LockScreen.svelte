@@ -1,5 +1,6 @@
 <script>
   import { fade } from "../lib/motion.js";
+  import { WRONG_PASSPHRASE } from "../lib/lock-copy.js";
 
   /** @type {{ onUnlock: () => void }} */
   let { onUnlock } = $props();
@@ -9,10 +10,14 @@
   let passphrase = $state("");
   let shaking = $state(false);
   let unlocking = $state(false);
+  // Set by a refusal and kept until the next one is typed: the line under
+  // the field says why a passphrase can be wrong here (lock-copy.js).
+  let refused = $state(false);
 
   // Refused: shake, clear the field, let them try again.
   function refuse() {
     shaking = true;
+    refused = true;
     passphrase = "";
     unlocking = false;
     setTimeout(() => { shaking = false; }, 500);
@@ -70,6 +75,9 @@
       autocomplete="off"
       autofocus
     />
+    {#if refused}
+      <p class="lock-note" role="alert">{WRONG_PASSPHRASE}</p>
+    {/if}
   </div>
 </div>
 
@@ -139,6 +147,16 @@
 
   .passphrase-input:disabled {
     opacity: 0.4;
+  }
+
+  .lock-note {
+    max-width: 22rem;
+    margin: 1rem auto 0;
+    text-align: center;
+    font-family: var(--font-label, "DM Mono", monospace);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--ink-soft);
   }
 
   /* Shake animation for wrong passphrase */

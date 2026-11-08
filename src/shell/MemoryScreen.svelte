@@ -119,6 +119,16 @@
   summary. memory-model.js's `memoryFilterSummary` carries the argument:
   the count labels a sheet with no trail control in it, and the summary is
   the only thing on screen that can say why an empty list is empty.
+
+  0.8.2 (spec 2026-11-01 §2 and §4): A LIST THAT IS MERELY SHORTER NOW
+  SAYS WHY. Under the mode segment: `showing` and one removable pill per
+  filter in force on this mode (the trail, the date, a non-default order,
+  pinned only), then `show everything`; under that, the count line for the
+  mode — `N pages` / `N pins`, or `1 of 4 pins · 3 hidden by "this month"`.
+  memory-model.js's `memoryFilterBar` decides both over the desktop's own
+  words (src/lib/memory-filter-bar.js). The bar's `filters · 2` and the
+  trail action stay: they are where filters are SET; the pills are where
+  they are SEEN and taken off.
 -->
 <script>
   import Screen from "./ui/Screen.svelte";
@@ -129,6 +139,7 @@
   import Chip from "./ui/Chip.svelte";
   import Segment from "./ui/Segment.svelte";
   import Field from "./ui/Field.svelte";
+  import ToolbarButton from "./ui/ToolbarButton.svelte";
   import Empty from "../lib/ui/Empty.svelte";
   import { navCollapsed } from "./nav-collapse.js";
   import { dayLabel } from "./page-model.js";
@@ -138,6 +149,7 @@
     DEFAULT_SORT,
     MEMORY_MODES,
     memoryDays,
+    memoryFilterBar,
     memoryFilterCount,
     memoryFilterSummary,
     memoryGroups,
@@ -168,6 +180,8 @@
     onScrollEdges?: ((edges: {atTop: boolean, atBottom: boolean}) => void) | null,
     onPage?: ((page: any) => void) | null,
     onPin?: ((pin: any) => void) | null,
+    onRemoveFilter?: ((id: string) => void) | null,
+    onShowEverything?: (() => void) | null,
   }} */
   let {
     pages = [],
@@ -187,6 +201,8 @@
     onScrollEdges = null,
     onPage = null,
     onPin = null,
+    onRemoveFilter = null,
+    onShowEverything = null,
   } = $props();
 
   /** Which of the desktop's three modes is showing. View state, so it
@@ -256,6 +272,23 @@
    *  "yesterday" against a today it was not adjacent to. */
   const yesterday = $derived(yesterdayOf(todayStr));
 
+  /** The pills and the count line for the mode on screen. */
+  const filterBar = $derived(
+    memoryFilterBar({
+      mode,
+      pages,
+      pins,
+      todayStr,
+      dateFilter,
+      sort,
+      pinned,
+      scope,
+      scopeName,
+      matchingIds,
+      query,
+    }),
+  );
+
   const summary = $derived(
     memoryFilterSummary({ query, trail: scopeName, dateFilter, sort, pinned }),
   );
@@ -306,6 +339,27 @@
         ariaLabel="memory mode"
       />
     </div>
+    {#if filterBar.pills.length > 0 || filterBar.canShowEverything}
+      <!-- One row, scrolling sideways when it is wider than the phone, the
+           pins screen's chip row. A pill names its filter and removes it;
+           the × is Latin-1, which every platform font carries. -->
+      <div class="memory-pills" role="toolbar" aria-label="filters in force">
+        <span class="memory-pills-lead">showing</span>
+        {#each filterBar.pills as pill (pill.id)}
+          <span class="memory-pill">
+            <ToolbarButton label={pill.removeLabel} activateOn="click" onPress={() => onRemoveFilter?.(pill.id)}>
+              {pill.label}<span class="memory-pill-x" aria-hidden="true">×</span>
+            </ToolbarButton>
+          </span>
+        {/each}
+        {#if filterBar.canShowEverything && onShowEverything}
+          <span class="memory-pills-all">
+            <ToolbarButton label="show everything" activateOn="click" onPress={onShowEverything} />
+          </span>
+        {/if}
+      </div>
+    {/if}
+    <p class="memory-count" aria-live="polite">{filterBar.countLine}</p>
   {/if}
 
   {#if loading && !hasAnything}
@@ -453,6 +507,61 @@
      neither wraps nor scrolls sideways. */
   .memory-modes {
     padding: var(--space-3) var(--space-4);
+  }
+
+  /* The filters in force: a quiet lead word, then pills drawn as the Chip
+     primitive's accent tone, then `show everything` in the action tone. */
+  .memory-pills {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: var(--space-2);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    padding: 0 var(--space-4);
+  }
+
+  .memory-pills-lead {
+    flex: 0 0 auto;
+    color: var(--ink-soft);
+    font-family: var(--font-ui);
+    font-size: var(--text-xs);
+  }
+
+  .memory-pill,
+  .memory-pills-all {
+    flex: 0 0 auto;
+  }
+
+  .memory-pill :global(.shell-toolbar-button) {
+    border-radius: var(--radius-lg);
+    background: var(--warm-accent-soft);
+    color: var(--accent-text);
+    font-size: var(--text-xs);
+    padding: 0 var(--space-3);
+    white-space: nowrap;
+  }
+
+  .memory-pill-x {
+    margin-left: var(--space-1);
+  }
+
+  .memory-pills-all :global(.shell-toolbar-button) {
+    color: var(--accent-text);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+  }
+
+  /* The count line, in the interface's quiet voice, above the list it
+     counts. */
+  .memory-count {
+    margin: 0;
+    padding: var(--space-1) var(--space-4) var(--space-3);
+    color: var(--ink-soft);
+    font-family: var(--font-ui);
+    font-size: var(--text-xs);
+    line-height: var(--leading-sm);
   }
 
   /* THE SPINE, THE DOT AND THE CHIPS LINE. These were declared here and

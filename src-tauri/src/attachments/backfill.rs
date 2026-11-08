@@ -250,7 +250,7 @@ pub fn run_sweep(
         let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
         let filename = local_image_filename(old);
         // sync: false — a backfill is never the reason bytes leave the device.
-        let dto = insert_attachment(app, db, engine, bytes, filename, None, false)?;
+        let dto = insert_attachment(app, db, engine, bytes, filename, None, Some(false))?;
         Ok(converted_attrs(old, &dto))
     };
     sweep_with(db, &mut register)

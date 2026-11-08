@@ -209,3 +209,15 @@ describe("currentPlatformProfile", () => {
     expect(currentPlatformProfile().edgeBackArmed).toBe(true);
   });
 });
+
+describe("platformProfile — exportZip", () => {
+  it("lets Android share a zip of every page, and only Android", () => {
+    // Android: the Rust side stages the zip and fires MainActivity's share
+    // intent. iOS has no share code in this app yet, and a browser has no
+    // files to pack; both say the export works from the laptop instead.
+    expect(platformProfile({ os: "android" }).exportZip).toBe(true);
+    expect(platformProfile({ os: "ios" }).exportZip).toBe(false);
+    expect(platformProfile({ os: "android", isWeb: true }).exportZip).toBe(false);
+    expect(platformProfile({}).exportZip).toBe(false);
+  });
+});

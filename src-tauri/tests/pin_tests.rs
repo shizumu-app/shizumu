@@ -221,6 +221,61 @@ fn refresh_pin_caches_orphans_missing_pin() {
     assert_eq!(title.as_deref(), Some("kept"));
 }
 
+/// 0.8.2 gives every pinnable block a `blockId` attr inside content_json
+/// (src/lib/block-id.js). The pin cache walk keys on `pinId` alone: a page
+/// whose blocks all carry a blockId must refresh its pin exactly as before,
+/// keep the blockId in the cached node (a carried-forward copy strips it on
+/// the way in, pin-carry-forward.js), never take a blockId for a pin, and
+/// still orphan a pin whose block is gone.
+#[test]
+fn refresh_pin_caches_keeps_working_on_content_carrying_block_ids() {
+    let db = test_db();
+    let page_id = {
+        let conn = db.lock().unwrap();
+        let lineage_id = insert_lineage(&conn, "trail", "discrete");
+        let page_id = insert_page(&conn, "2026-11-01", 1);
+        for id in ["PIN_KEPT", "PIN_GONE"] {
+            let pin_id = insert_pin(&conn, &lineage_id, &page_id, "board", r#"{"type":"list","attrs":{"pinId":"x"}}"#);
+            conn.execute(
+                "UPDATE shared_objects SET id = ?, title = 'old' WHERE id = ?",
+                params![id, &pin_id],
+            )
+            .unwrap();
+        }
+        page_id
+    };
+
+    let new_content = r#"{"type":"doc","content":[
+        {"type":"paragraph","attrs":{"blockId":"aaaaaaaaaaaa"},"content":[{"type":"text","text":"intro"}]},
+        {"type":"list","attrs":{"pinId":"PIN_KEPT","blockId":"bbbbbbbbbbbb","blockTitle":"before friday"},"content":[
+            {"type":"listItem","attrs":{"marker":"task","checked":true},"content":[
+                {"type":"paragraph","attrs":{"blockId":"cccccccccccc"},"content":[{"type":"text","text":"book the van"}]}]}]},
+        {"type":"paragraph","attrs":{"blockId":"PIN_GONE"},"content":[{"type":"text","text":"a blockId is not a pin"}]}
+    ]}"#;
+    commands::save_page_content_inner(&db, &page_id, new_content, None).unwrap();
+
+    let conn = db.lock().unwrap();
+    let (status, title, content): (String, Option<String>, String) = conn
+        .query_row(
+            "SELECT status, title, content FROM shared_objects WHERE id = 'PIN_KEPT'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "open");
+    assert_eq!(title.as_deref(), Some("before friday"));
+    let cached: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(cached["type"], "list", "one stamped node is cached bare: {content}");
+    assert_eq!(cached["attrs"]["blockId"], "bbbbbbbbbbbb", "content was: {content}");
+    assert_eq!(cached["content"][0]["content"][0]["attrs"]["blockId"], "cccccccccccc");
+
+    // A blockId equal to a pin's id is still not that pin: only pinId stamps.
+    let gone: String = conn
+        .query_row("SELECT status FROM shared_objects WHERE id = 'PIN_GONE'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(gone, "orphaned");
+}
+
 #[test]
 fn deleting_a_page_orphans_its_pins_does_not_delete_them() {
     let db = test_db();

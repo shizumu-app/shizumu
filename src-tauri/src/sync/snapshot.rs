@@ -390,6 +390,14 @@ pub fn apply(conn: &mut Connection, s: &Snapshot) -> Result<usize, String> {
         };
         let local_cols = columns_of(&tx, t).map_err(|e| e.to_string())?;
         for row in rows {
+            // A snapshot captured before a key became local-only still
+            // carries it (encryption_enabled until 0.8.2); it never lands.
+            if t == "settings" {
+                let key = row.get("key").and_then(Value::as_str).unwrap_or("");
+                if crate::op_log::LOCAL_ONLY_SETTINGS.contains(&key) {
+                    continue;
+                }
+            }
             let cols: Vec<&String> = local_cols.iter().filter(|c| row.contains_key(*c)).collect();
             if cols.is_empty() {
                 continue;
@@ -652,6 +660,7 @@ pub fn bootstrap(
 mod tests {
     use super::*;
     use crate::test_helpers::test_db;
+    use rusqlite::OptionalExtension;
 
     fn seed(conn: &rusqlite::Connection) {
         conn.execute("INSERT INTO lineages (id, name, created_at, mode) VALUES ('ln-1','kamae','2026-08-22T00:00:00Z','discrete')", []).unwrap();
@@ -677,6 +686,11 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('sync_revoked','1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('encryption_enabled','true')",
             [],
         )
         .unwrap();
@@ -847,6 +861,33 @@ mod tests {
         assert!(keys.contains(&"theme".to_string()));
         assert!(!keys.contains(&"sync_revoked".to_string()));
         assert!(!keys.contains(&"snapshot_last_seq".to_string()));
+        assert!(!keys.contains(&"encryption_enabled".to_string()), "the lock describes this device's file only");
+    }
+
+    #[test]
+    fn apply_drops_a_lock_flag_an_older_device_captured() {
+        // Snapshots taken before 0.8.2 carry encryption_enabled; a phone
+        // that applies one must not end up asking for a passphrase its own
+        // plain file never had.
+        let src = test_db();
+        let mut snap = {
+            let c = src.lock().unwrap();
+            seed(&c);
+            capture(&c, 1).unwrap()
+        };
+        snap.tables.get_mut("settings").unwrap().push(
+            serde_json::from_value(serde_json::json!({"key": "encryption_enabled", "value": "true"})).unwrap(),
+        );
+        let dst = test_db();
+        let mut c = dst.lock().unwrap();
+        apply(&mut c, &snap).unwrap();
+        let v: Option<String> = c
+            .query_row("SELECT value FROM settings WHERE key='encryption_enabled'", [], |r| r.get(0))
+            .optional()
+            .unwrap();
+        assert_eq!(v, None);
+        let theme: String = c.query_row("SELECT value FROM settings WHERE key='theme'", [], |r| r.get(0)).unwrap();
+        assert_eq!(theme, "dark", "the account's own settings still arrive");
     }
 
     #[test]

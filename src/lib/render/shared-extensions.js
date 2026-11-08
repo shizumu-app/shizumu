@@ -36,6 +36,8 @@ import { DayMarker } from "../extensions/day-marker.js";
 import { QABlock } from "../extensions/qa-block.js";
 import { QAPair } from "../extensions/qa-pair.js";
 import { PinId } from "../extensions/pin-id.js";
+import { BlockId } from "../extensions/block-id.js";
+import { BlockState } from "../extensions/block-state.js";
 import { BlockTitle } from "../extensions/block-title.js";
 import { BlockTypeChip } from "../extensions/block-type-chip.js";
 import { TouchBlockHandle } from "../extensions/touch-block-handle.js";
@@ -44,6 +46,7 @@ import { BlockCopyKeymap } from "../extensions/block-copy-keymap.js";
 import { BlockTabNoop } from "../extensions/block-tab-noop.js";
 import { BlockEscExit } from "../extensions/block-esc-exit.js";
 import { SelectionAccentDecorations } from "../extensions/selection-accent-decorations.js";
+import { CaretBlock } from "../extensions/caret-block.js";
 import { LocalImage } from "../extensions/local-image.js";
 import { CodeBlockShizumu } from "../extensions/code-block.js";
 import { Attachment } from "../extensions/attachment.js";
@@ -85,6 +88,9 @@ export const READONLY_EXTENSIONS = [
   QABlock,
   QAPair,
   PinId,
+  // The attribute only: a read-only mount and a pin editor keep the ids
+  // they are given and invent none (extensions/block-id.js, `assign`).
+  BlockId.configure({ assign: false }),
   BlockTitle,
   LocalImage,
   CodeBlockShizumu,
@@ -128,6 +134,7 @@ export function buildEditingExtensions({
   onChartOpen = () => {},
   collaborationDoc = null,
   floatingChrome = true,
+  getPageId = () => null,
 } = {}) {
   // When `collaborationDoc` (a Y.Doc) is supplied — continuous-trail
   // pages with the enable_yjs flag on — the Collaboration extension
@@ -217,13 +224,22 @@ export function buildEditingExtensions({
     QABlock,
     QAPair,
     PinId,
+    // Every pinnable block gets a lasting id; a stored page's blocks get
+    // derived ones on load, which the save path ignores (block-id.js).
+    BlockId.configure({ getPageId }),
     BlockTitle,
     BlockMovement,
     BlockCopyKeymap,
     BlockTabNoop,
+    // A decision's standing/superseded toggle (Mod-Enter) and a question's
+    // `open` chip. The attrs live on DecisionBlock, in both lists.
+    BlockState,
     BlockEscExit,
     SelectionAccentDecorations,
     BlockTypeChip,
+    // The block holding the caret wears `block-caret` while the editor has
+    // focus, so the laptop shows its chip to a keyboard writer (caret-block.js).
+    CaretBlock,
     // The genuinely free one — see the note above. Omitted, not disabled.
     ...(floatingChrome ? [TouchBlockHandle] : []),
     LocalImage,

@@ -1,7 +1,8 @@
 // Orchestrator test for the export pipeline.
 //
 // Mocks the Tauri `invoke` boundary so we can verify:
-//   - lineage tree → folder path mapping (depth-first, collision suffix)
+//   - lineage tree → folder path mapping (depth-first, collision suffix,
+//     unique after slugging and without case)
 //   - per-page filename rules (continuous → _doc.md, discrete → date.md
 //     with same-day suffixes)
 //   - untrailed bucket
@@ -324,5 +325,150 @@ describe("runExport — overwrite handling", () => {
     const writes = [], copies = [];
     bindMock(fixture(), writes, copies, "folder is not empty");
     await expect(runExport("/tmp/export")).rejects.toBeDefined();
+  });
+});
+
+// ── the phone's zip: the same files, packed ─────────────────────────────
+
+const page = (id, date, lineage_id, n = 1) => ({
+  id, date, page_number: n, lineage_id, what_matters_now: null,
+  content_json: JSON.stringify({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: `words of ${id}` }] }] }),
+  created_at: "x", updated_at: "x",
+});
+
+const EVERYTHING = fixture({
+  lineages: [
+    { id: "L1", name: "book", mode: "discrete", parent_id: null, created_at: "x" },
+    { id: "L2", name: "chapter", mode: "continuous", parent_id: "L1", created_at: "x" },
+  ],
+  pages: [
+    page("P1", "2026-05-12", "L1"),
+    page("P2", "2026-05-12", "L1", 2),
+    page("P3", "2026-05-13", "L2"),
+    page("P4", "2026-05-14", null),
+  ],
+});
+
+describe("planExport", () => {
+  it("lists every page the device holds, each in its trail's folder", async () => {
+    const { planExport } = await import("./run.js");
+    const plan = planExport(EVERYTHING);
+    expect(plan.pageCount).toBe(4);
+    expect(plan.files.map((f) => f.path)).toEqual([
+      "book/_trail.md",
+      "book/2026-05-12.md",
+      "book/2026-05-12 (2).md",
+      "book/chapter/_trail.md",
+      "book/chapter/_doc.md",
+      "untrailed/2026-05-14.md",
+    ]);
+    for (const id of ["P1", "P2", "P3", "P4"]) {
+      expect(plan.files.some((f) => f.content.includes(`page_id: ${id}`) && f.content.includes(`words of ${id}`))).toBe(true);
+    }
+  });
+});
+
+describe("runExportZip", () => {
+  it("hands Rust the folder export's files, README included, and the images on this device", async () => {
+    const mod = await import("./run.js");
+    const data = fixture({
+      ...EVERYTHING,
+      pages: [...EVERYTHING.pages, {
+        ...page("P5", "2026-05-15", null),
+        content_json: JSON.stringify({ type: "doc", content: [{ type: "paragraph", content: [
+          { type: "localImage", attrs: { localPath: "/data/images/a.png" } },
+          { type: "attachment", attrs: { kind: "image", blob_hash: "abcdef1234", filename: "shot.png" } },
+          { type: "attachment", attrs: { kind: "image", blob_hash: "99999999ff", filename: "elsewhere.png" } },
+        ] }] }),
+      }],
+    });
+
+    // What the desktop's folder export writes, for the same rows.
+    const writes = [];
+    bindMock(data, writes, [], null, { abcdef1234: "/data/blobs/ab/abcdef1234" });
+    await mod.runExport("/tmp/export");
+
+    let shared = null;
+    invokeMock.mockImplementation((cmd, args) => {
+      if (cmd === "export_trail_folder_list_data") return Promise.resolve(data);
+      if (cmd === "attachment_local_src") return Promise.resolve(args.blobHash === "abcdef1234" ? "/data/blobs/ab/abcdef1234" : null);
+      // Rust packs one of the two: the other turned out unreadable.
+      if (cmd === "export_trail_zip_share") { shared = args; return Promise.resolve({ fileCount: args.files.length + 1, imageCount: 1 }); }
+      return Promise.reject(new Error("unexpected invoke: " + cmd));
+    });
+    const summary = await mod.runExportZip();
+
+    expect(summary).toEqual({ pageCount: 5, trailCount: 2, imageCount: 1 });
+    // The same paths and the same page files as the folder export. The
+    // README differs only in its export time, and goes over on its own.
+    expect([...shared.files.map((f) => f.path), shared.readme.path]).toEqual(writes.map((w) => w.relativePath));
+    const byPath = new Map(writes.map((w) => [w.relativePath, w.content]));
+    for (const f of shared.files) expect(f.content).toBe(byPath.get(f.path));
+    expect(shared.readme.content).toContain("page_count: 5");
+    // The README leaves the image count to Rust, which writes the number
+    // the zip holds (trail_export.rs, IMAGE_COUNT_SLOT): counting here
+    // promised images Rust then skipped (review minor #7).
+    expect(shared.readme.content).toContain(`image_count: ${mod.IMAGE_COUNT_SLOT}`);
+    expect(mod.IMAGE_COUNT_SLOT).toBe("IMAGE_COUNT_PACKED");
+    expect(shared.images).toEqual([
+      { srcPath: "/data/images/a.png", destFilename: "a.png" },
+      { srcPath: "/data/blobs/ab/abcdef1234", destFilename: "abcdef12-shot.png" },
+    ]);
+  });
+});
+
+// ── review #1: two trails must never share a path once their names are
+// slugged. The zip refuses a repeated entry, which failed the phone's whole
+// export; a folder overwrites, which lost one trail's files in silence.
+// Windows and macOS file systems fold case, so "Book/" and "book/" are one
+// folder there: uniqueness is checked case-insensitively.
+describe("planExport — every path is its own", () => {
+  const lin = (id, name, parent_id = null) => ({ id, name, mode: "discrete", parent_id, created_at: "x" });
+  const lowerDupes = (paths) => {
+    const seen = new Set(), dupes = [];
+    for (const p of paths) {
+      const k = p.toLowerCase();
+      if (seen.has(k)) dupes.push(p);
+      seen.add(k);
+    }
+    return dupes;
+  };
+
+  it("keeps trails apart whose names differ only in case or punctuation", async () => {
+    const { planExport } = await import("./run.js");
+    const plan = planExport(fixture({
+      lineages: [lin("A1", "Book"), lin("B2", "book"), lin("C3", "job search"), lin("D4", "job-search")],
+      pages: [page("P1", "2026-11-01", "A1"), page("P2", "2026-11-01", "B2"), page("P3", "2026-11-01", "C3"), page("P4", "2026-11-01", "D4")],
+    }));
+    const paths = plan.files.map((f) => f.path);
+    expect(lowerDupes(paths)).toEqual([]);
+    expect(paths.filter((p) => p.endsWith("_trail.md"))).toHaveLength(4);
+    for (const id of ["P1", "P2", "P3", "P4"]) {
+      expect(plan.files.filter((f) => f.content.includes(`page_id: ${id}`))).toHaveLength(1);
+    }
+  });
+
+  it("never puts a trail in the untrailed or images folder", async () => {
+    const { planExport } = await import("./run.js");
+    const plan = planExport(fixture({
+      lineages: [lin("U1", "Untrailed"), lin("I1", "Images")],
+      pages: [page("P1", "2026-11-02", "U1"), page("P2", "2026-11-02", null), page("P3", "2026-11-02", "I1")],
+    }));
+    const paths = plan.files.map((f) => f.path);
+    expect(lowerDupes(paths)).toEqual([]);
+    expect(paths).toContain("untrailed/2026-11-02.md");
+    const trailFolders = paths.filter((p) => p.endsWith("_trail.md")).map((p) => p.split("/")[0].toLowerCase());
+    expect(trailFolders).not.toContain("untrailed");
+    expect(trailFolders).not.toContain("images");
+  });
+
+  it("keeps nested siblings apart too, and ids that differ only in case", async () => {
+    const { planExport } = await import("./run.js");
+    const plan = planExport(fixture({
+      lineages: [lin("R1", "book"), lin("abcdef1", "Notes", "R1"), lin("ABCDEF2", "notes", "R1"), lin("abcdef3", "NOTES!", "R1")],
+      pages: [page("P1", "2026-11-01", "abcdef1"), page("P2", "2026-11-01", "ABCDEF2"), page("P3", "2026-11-01", "abcdef3")],
+    }));
+    expect(lowerDupes(plan.files.map((f) => f.path))).toEqual([]);
+    expect(plan.files.filter((f) => f.path.endsWith("_trail.md"))).toHaveLength(4);
   });
 });

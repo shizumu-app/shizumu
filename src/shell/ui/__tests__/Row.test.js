@@ -11,6 +11,25 @@ describe("Row", () => {
     expect(target.querySelector(".shell-row-label").textContent.trim()).toBe("sync");
   });
 
+  it("puts a detail line under the label, and the value keeps its own column", () => {
+    // 0.8.2: the trail sheets put `pages · pins` in the value column, so
+    // where a trail lives and `this page` / `one doc` moved to this line.
+    // The label's text is still the label alone — every caller that reads
+    // `.shell-row-label` reads the name, not the name run into its path.
+    const { target } = render(Row, { label: "v0.8", detail: "shizumu · this page", value: "4 pages · 2 pins" });
+    expect(target.querySelector(".shell-row-label").textContent.trim()).toBe("v0.8");
+    expect(target.querySelector(".shell-row-detail").textContent.trim()).toBe("shizumu · this page");
+    expect(target.querySelector(".shell-row-value").textContent.trim()).toBe("4 pages · 2 pins");
+  });
+
+  it("draws no detail line when there is none", () => {
+    // Absent, the row is the markup it always was: no wrapper, no empty
+    // second line taking height in every settings list.
+    const { target } = render(Row, { label: "sync", onSelect: () => {} });
+    expect(target.querySelector(".shell-row-detail")).toBeNull();
+    expect(target.querySelector(".shell-row-text")).toBeNull();
+  });
+
   it("is a button when it navigates and plain markup when it does not", () => {
     // A row that only displays a value is not interactive, and making it a
     // button would put it in the tab order promising something it cannot do.

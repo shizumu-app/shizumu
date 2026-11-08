@@ -1947,6 +1947,24 @@ mod tests {
         assert_eq!(v, "1", "local sync_revoked flag must survive an incoming peer op");
     }
 
+    /// The lock is a fact about one device's file, not about the account.
+    /// A laptop that turned the lock on used to send `encryption_enabled`
+    /// to a phone whose file was plain: the phone showed the lock screen and
+    /// no passphrase could open a file that had none (reported 2026-11-06).
+    #[test]
+    fn merge_setting_ignores_a_peers_encryption_flag() {
+        let db = test_db();
+        let conn = db.lock().unwrap();
+        let payload = json!({"op":"set", "key":"encryption_enabled", "value": "true", "hlc_ts": 9_999_999_i64});
+        let out = apply(&conn, "setting_op", &serde_json::to_vec(&payload).unwrap()).unwrap();
+        assert_eq!(out, MergeOutcome::SkippedStaleHlc);
+        let v: Option<String> = conn
+            .query_row("SELECT value FROM settings WHERE key='encryption_enabled'", [], |r| r.get(0))
+            .optional()
+            .unwrap();
+        assert_eq!(v, None, "this device's file is plain; a peer's lock must not claim otherwise");
+    }
+
     // ---- page_blob ----
 
     #[test]

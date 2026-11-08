@@ -64,8 +64,11 @@ function pinRow({ id, object_type, node, title = null }) {
 }
 
 async function rename(target, pinId, text, landed) {
-  await until(() => target.querySelector(".row-title"), "the pin row to render");
-  target.querySelector(".row-title").click();
+  // Rename lives behind the row's ⋯ since 0.8.2 (pin-row-actions.js).
+  await until(() => target.querySelector(".p-more"), "the pin row to render");
+  target.querySelector(".p-more").click();
+  await until(() => [...target.querySelectorAll(".p-item")].find((b) => b.textContent === "rename"), "the rename item");
+  [...target.querySelectorAll(".p-item")].find((b) => b.textContent === "rename").click();
   await until(() => document.getElementById(`pin-rename-${pinId}`), "the rename input");
   const input = document.getElementById(`pin-rename-${pinId}`);
   input.value = text;

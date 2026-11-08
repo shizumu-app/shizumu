@@ -1,6 +1,6 @@
 [package]
 name = "shizumu"
-version = "0.8.1"
+version = "0.8.2"
 description = "write to think. pin what matters. the rest sinks."
 authors = []
 license = "Apache-2.0"
@@ -97,7 +97,14 @@ tempfile = "3"
 # own the global keymap). Both are gated so the dependency graph
 # remains valid when targeting mobile.
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
-keyring = "3"
+# keyring: until 0.8.2 built with no features, which in keyring 3 means no
+# platform backend at all (an in-process mock that keeps nothing). Now:
+# macOS Keychain, Windows Credential Manager, Linux Secret Service (the
+# sync D-Bus client, so Linux builds need libdbus-1-dev / dbus-devel; the
+# GNOME SDK the flatpak builds with has it). Each feature only pulls its
+# crate on its own OS. The keyring holds a COPY of the database key; the
+# key file stays and wins (src/key_mirror.rs), and Flatpak never calls it.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 tauri-plugin-global-shortcut = "2"
 
 # Android share sheet (attachment_open): reaching the running Activity to

@@ -1514,8 +1514,8 @@
           </Row>
         {/if}
       {:else if syncTab === "storage"}
-        <!-- What this device holds is local fact, not a sync fact: every
-             attachment defaults to unsynced, so this reads the same
+        <!-- What this device holds is local fact, not a sync fact: an
+             attachment added with sync off stays unsynced, so this reads the same
              whether or not sync is ever configured. It stays outside the
              `status?.configured` gate below on purpose — the population
              with no relay copy to fall back on is exactly who needs to

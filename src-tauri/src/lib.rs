@@ -2,6 +2,8 @@ pub mod attachments;
 pub mod commands;
 #[allow(dead_code)]
 mod crypto;
+pub mod account_lock;
+mod key_mirror;
 pub mod db;
 pub mod test_helpers;
 #[cfg(target_os = "linux")]
@@ -129,8 +131,12 @@ pub fn run() {
                 }
             }
 
-            // Try to retrieve passphrase from system keyring
-            let passphrase = crypto::retrieve_key();
+            // The database key: the key file, or the keyring copy when the
+            // file is gone (crypto::retrieve_key).
+            let db_path = app_data_dir.join("settles.db");
+            #[cfg(mobile)]
+            crypto::set_key_dir(app_data_dir.clone());
+            let passphrase = crypto::retrieve_key(&db_path);
 
             // Initialize database synchronously (rusqlite is sync — no deadlock risk)
             // A file that will not open is said on screen, not a crash: the
@@ -139,7 +145,6 @@ pub fn run() {
             // the file is open (commands.rs, `startup_failure`). Until
             // 2026-10-15 this was an .expect, and the app closed at launch
             // with no word, even when all it needed was the passphrase.
-            let db_path = app_data_dir.join("settles.db");
             let database = match db::init_db(app_data_dir, passphrase.as_deref()) {
                 Ok(d) => d,
                 Err(e) => {
@@ -467,6 +472,7 @@ pub fn run() {
             commands::get_lineage_path,
             commands::get_trail_pages,
             commands::get_trail_page_counts,
+            commands::get_trail_pin_counts,
             commands::insert_line_at,
             commands::delete_line,
             commands::update_block_item_text,
@@ -508,6 +514,7 @@ pub fn run() {
             trail_export::export_trail_folder_prepare,
             trail_export::export_trail_folder_write,
             trail_export::export_trail_folder_copy_image,
+            trail_export::export_trail_zip_share,
             commands::sync_generate_phrase,
             commands::sync_reveal_phrase,
             commands::sync_setup,

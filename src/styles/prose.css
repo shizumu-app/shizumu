@@ -262,6 +262,86 @@
 .prose .decision-block > *:nth-child(2)::before { content: "chose"; }
 .prose .decision-block > *:nth-child(3)::before { content: "because"; }
 
+/* ── Block state chips (src/lib/block-state.js) ─────────────────────────
+   A decision's `standing` / `superseded` (a button, block-state.js's
+   createStateChip) sits at the top-right of its block, level with the
+   "considered" label; a question's `open` (a widget, computed, never
+   stored) sits at the right of its pair's empty answer line. Same pill as the type chip,
+   but always shown: it is the block's state, not its actions handle. */
+.prose .block-state-chip {
+  position: absolute;
+  top: 0.25rem;
+  right: 0;
+  margin: 0;
+  font-family: "DM Mono", monospace;
+  font-size: 0.625rem;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: var(--ink-soft);
+  background: transparent;
+  padding: 0.125rem 0.375rem;
+  border: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
+  border-radius: 0.25rem;
+  user-select: none;
+  z-index: 1;
+}
+/* On the answer's line, not the question's: the chip only shows while the
+   answer is empty, so that line always has room, and a long question
+   wrapping on a phone ran under a chip placed beside it. */
+.prose .qa-pair > .block-state-open {
+  top: auto;
+  bottom: 0.35rem;
+  pointer-events: none;
+}
+/* Clear of the block's own type chip. The type chip sits at the block's
+   bottom right (block-type-chip, right: 0.5rem), which is the last pair's
+   answer line too, and on the phone it is always shown: "open" was drawn
+   over "q&a" (the A16 run of 2026-11-07, J4.9's picture). Inset by the
+   width of a short type chip and its gap, so both read. */
+.prose .block-shell .qa-pair > .block-state-open {
+  right: 3.25rem;
+}
+.prose button.block-state-chip {
+  cursor: pointer;
+  transition: color 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+/* Hover only where there is one: on touch, :hover sticks after a tap and
+   the chip would stay lit as if it were still being pressed. */
+@media (hover: hover) {
+  .prose button.block-state-chip:hover {
+    color: var(--accent-text);
+  }
+}
+.prose button.block-state-chip:focus-visible {
+  color: var(--accent-text);
+}
+.prose button.block-state-chip:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--warm-accent) 55%, transparent);
+  outline-offset: 1px;
+}
+/* A read-only page shows what the decision was; a press changes nothing. */
+.prose button.block-state-chip[aria-disabled="true"] {
+  cursor: default;
+}
+.prose button.block-state-chip[aria-disabled="true"]:hover {
+  color: var(--ink-soft);
+}
+/* Touch: a comfortable hit box without resizing the visible pill. */
+@media (pointer: coarse) {
+  .prose button.block-state-chip::after {
+    content: "";
+    position: absolute;
+    inset: -12px;
+  }
+}
+/* A superseded decision reads quieter: its words take the soft ink. Not
+   struck through: it is still what was decided then. */
+.prose .block-shell[data-block-state="superseded"] > .decision-block,
+.prose .block-shell[data-block-state="superseded"] > .decision-block * {
+  color: var(--ink-soft);
+}
+
 /* Placeholder hints for empty slots. ::after sits at the start of the
    slot's content; the :empty selector matches a paragraph with no inline
    children (TipTap's default empty paragraph). Neither block's list slot
@@ -1206,9 +1286,13 @@
    hover)`: webkit2gtk under X11 reports hover:hover false with a real
    mouse (global.css, the board title reveal). A tapped block
    (.block-active-touch) and a block holding the caret show it too, so
-   touch and keyboard still reach the block's actions. */
+   touch and keyboard still reach the block's actions. The caret's block is
+   `.block-caret` (caret-block.js): `:focus-within` below never matches a
+   block inside one contenteditable and stays only for nested inputs. */
 .page-body .prose .block-mouse-hovered .block-type-chip,
 .page-body .prose .block-active-touch .block-type-chip,
+.page-body .prose .block-caret .block-type-chip,
+.page-body .prose .block-caret.block-type-chip-anchor .block-type-chip,
 .page-body .prose .block-shell:focus-within .block-type-chip,
 .page-body .prose .code-block-wrap:focus-within .block-type-chip,
 .page-body .prose .block-type-chip-anchor:hover .block-type-chip,

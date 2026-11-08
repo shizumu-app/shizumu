@@ -1,12 +1,11 @@
 <!--
   TrailMap — orchestrator for the memory trail-map view.
 
-  Layout: one row per active day. Inside each day, every trail that wrote
-  on that day renders as its own block — pins chip + trail name on the
-  header, then one clickable row per page showing its what_matters_now.
-  No SVG arcs, no spawn-day indentation; subtrails are simply additional
-  blocks under the same date. Pin clicks open the items popover so the
-  user can pick a specific pin to view.
+  Layout: one row per active day, in a column capped at reading width
+  beside the day gutter. Inside each day, one entry per page: trail path,
+  title, the page's first line as a preview, and every pin kept from that
+  page under it (spec 2026-11-01 §3; trail-map-entries.js decides all of
+  it). A pin whose page is not on the map shows on its own line on its day.
 
   Single variant (lineageId set): pages/pins are already scoped by Memory
   to that trail + its descendants. Global variant (lineageId null): pages
@@ -15,10 +14,8 @@
 -->
 <script>
   import { onMount, tick } from "svelte";
-  import {
-    daysWithActivity, trailGroupsForDate, dayItemsFor, relativeLineagePath,
-  } from "../lib/memory-filters.js";
-  import ItemsPopover from "./memory/ItemsPopover.svelte";
+  import { daysWithActivity } from "../lib/memory-filters.js";
+  import { trailMapDay } from "../lib/trail-map-entries.js";
 
   /** @type {{
     pages: Array<any>,
@@ -39,17 +36,12 @@
   } = $props();
   void dateFilter;
   void subtrails;
+  // The "n pins" chip and its popover were the only callers; a pin now
+  // shows under its page and opens directly.
+  void onSwitchMode;
 
   // Active days only — empty days dominate the view with "no focus" noise.
   let days = $derived(daysWithActivity(pages, pins));
-
-  // Single popover slot for pin chip clicks.
-  /** @type {{ anchor: HTMLElement, payload: { date: string, lineageId: string, kind: "pins" | "pages" } } | null} */
-  let popover = $state(null);
-  function openPinsPopover(date, lid, anchor) {
-    popover = { anchor, payload: { date, lineageId: lid, kind: "pins" } };
-  }
-  function closePopover() { popover = null; }
 
   // Scroll-to-today on mount.
   onMount(async () => {
@@ -69,30 +61,6 @@
     };
   }
 
-  // Always render the leaf trail name only (no parent prefix). Hide
-  // the chip entirely when the entry's trail IS the active sidebar
-  // selection — the sidebar already names that context.
-  function trailBreadcrumb(group) {
-    if (group.lineageId === "__untrailed__") return "untrailed";
-    const path = group.path || [];
-    if (path.length === 0) return null;
-    // Pages-only blocks on the active sidebar trail render as plain
-    // prose (no card chrome). The chip there reads as redundant since
-    // the sidebar already names that trail. Cards with pins always
-    // show the chip — an empty card header looks confusing.
-    const hasPins = group.pins.length > 0;
-    if (!hasPins && lineageId && group.lineageId === lineageId) return null;
-    const rel = relativeLineagePath(path, lineageId, lineages);
-    return rel.map((l) => l.name).join(" › ");
-  }
-
-  function itemsHeader(date, lid, count) {
-    const f = formatDay(date);
-    const trailLabel = lid === "__untrailed__"
-      ? "untrailed"
-      : (lineages.find((l) => l.id === lid)?.name || "trail");
-    return `${count} ${count === 1 ? "pin" : "pins"} · ${trailLabel} · ${f.num} ${f.month}`;
-  }
 </script>
 
 <div class="trail-map">
@@ -101,8 +69,8 @@
   {:else}
     <div class="spine-track">
       {#each days as d (d.date)}
-        {@const groups = trailGroupsForDate({ pages, pins, lineages, date: d.date })}
         {@const fmt = formatDay(d.date)}
+        {@const day = trailMapDay({ pages, pins, lineages, lineageId, date: d.date })}
         <div class="day-row" data-day={d.date}>
           <div class="day-date">
             <span class="day-num">{fmt.num}</span>
@@ -110,42 +78,38 @@
           </div>
           <div class="day-dot" class:today={d.date === todayStr}></div>
           <div class="day-body">
-            {#each groups as g (g.lineageId)}
-              {@const crumb = trailBreadcrumb(g)}
-              <div class="trail-block has-chrome">
-                {#if g.pins.length > 0 || crumb}
-                  <header class="trail-header">
-                    {#if crumb}
-                      <button
-                        type="button"
-                        class="trail-name"
-                        onclick={() => onSwitchSidebar?.(g.lineageId)}
-                      >{crumb}</button>
-                    {/if}
-                    {#if g.pins.length > 0}
-                      <button
-                        type="button"
-                        class="pins-chip"
-                        onclick={(e) => openPinsPopover(d.date, g.lineageId, e.currentTarget)}
-                        title="open pins from this trail on {d.date}"
-                      >↗ {g.pins.length} {g.pins.length === 1 ? "pin" : "pins"}</button>
-                    {/if}
-                  </header>
+            {#each day.entries as e (e.page.id)}
+              <article class="entry">
+                {#if e.crumb}
+                  <button
+                    type="button"
+                    class="entry-trail"
+                    onclick={() => onSwitchSidebar?.(e.lineageId ?? "__untrailed__")}
+                    aria-label={`show the trail ${e.crumb}`}
+                  >{e.crumb}</button>
                 {/if}
-                {#if g.pages.length > 0}
-                  <ul class="trail-pages">
-                    {#each g.pages as p (p.id)}
-                      <li>
-                        <button
-                          type="button"
-                          class="page-row"
-                          onclick={() => onSelectPage(p)}
-                        class:untitled={!(p.what_matters_now && p.what_matters_now.trim())}
-                        >{(p.what_matters_now && p.what_matters_now.trim()) || "untitled"}</button>
-                      </li>
-                    {/each}
-                  </ul>
+                <button
+                  type="button"
+                  class="entry-title"
+                  class:untitled={e.untitled}
+                  onclick={() => onSelectPage(e.page)}
+                >{e.title}</button>
+                {#if e.preview}
+                  <p class="entry-preview">{e.preview}</p>
                 {/if}
+                {#each e.pins as k (k.pin.id)}
+                  <button type="button" class="entry-pin" onclick={() => onOpenSpecificPin?.(k.pin)}>
+                    <span aria-hidden="true">↗</span> {k.title}
+                  </button>
+                {/each}
+              </article>
+            {/each}
+            {#each day.loosePins as k (k.pin.id)}
+              <div class="entry loose">
+                {#if k.crumb}<span class="entry-trail static">{k.crumb}</span>{/if}
+                <button type="button" class="entry-pin" onclick={() => onOpenSpecificPin?.(k.pin)}>
+                  <span aria-hidden="true">↗</span> {k.title}
+                </button>
               </div>
             {/each}
           </div>
@@ -155,27 +119,6 @@
   {/if}
 </div>
 
-{#if popover}
-  {@const { date, lineageId: lid, kind } = popover.payload}
-  {@const items = dayItemsFor({ pages, pins, date, lineageId: lid, kind })}
-  <ItemsPopover
-    anchor={popover.anchor}
-    open
-    kind={kind}
-    headerLabel={itemsHeader(date, lid, items.length)}
-    items={items}
-    onOpen={(item) => {
-      if (kind === "pages") onSelectPage(item);
-      else onOpenSpecificPin?.(item);
-      closePopover();
-    }}
-    onSeeAll={() => {
-      onSwitchMode?.(kind, { dateFilter: { kind: "specific", date }, lineageId: lid });
-      closePopover();
-    }}
-    onClose={closePopover}
-  />
-{/if}
 
 <style>
   .trail-map {
@@ -283,108 +226,86 @@
     box-shadow: 0 0 0 3px var(--canvas-bg), 0 0 0 4px color-mix(in srgb, var(--warm-accent) 35%, transparent);
   }
 
+  /* Reading width (spec §3): an entry is a title and a line or two, and a
+     card stretched across a wide window put the eye a long way from the
+     date it belongs to. */
   .day-body {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
     min-width: 0;
+    max-width: 47.5rem;
   }
 
-  .trail-block {
+  /* One page. The memory card family's surface (Memory.svelte .cards). */
+  .entry {
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
     gap: 0.1875rem;
-  }
-  /* Card chrome only when the block carries a trail chip or pins —
-     keeps the chip-less "pages on the active trail" rows as plain
-     prose without a box around them. */
-  .trail-block.has-chrome {
-    /* Mirror the memory card surface (Memory.svelte's .cards / .pin-rows
-       :global(.card)): borderless, warm-tinted background + barely-there
-       lift, rounded, comfy padding — so the trail map block reads as the
-       same card family as the pages and pins cards. */
-    padding: 0.875rem 1rem;
-    border: none;
+    padding: 0.625rem 0.875rem;
     background: color-mix(in srgb, var(--warm-accent) 4%, color-mix(in srgb, var(--ink) 3%, var(--canvas-bg)));
     border-radius: 0.625rem;
     box-shadow: 0 1px 3px var(--card-shadow);
-    gap: 0.25rem;
+    min-width: 0;
   }
-  .trail-header {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4375rem;
-    flex-wrap: wrap;
-  }
-  .pins-chip {
-    appearance: none;
-    font-family: "DM Mono", monospace;
-    font-size: 0.5625rem;
-    color: var(--accent-text);
-    padding: 0.0625rem 0.4375rem;
-    border-radius: 0.5rem;
-    background: color-mix(in srgb, var(--warm-accent) 8%, transparent);
-    border: 1px solid color-mix(in srgb, var(--warm-accent) 25%, transparent);
-    cursor: pointer;
-    letter-spacing: 0.02em;
-    transition: background 120ms cubic-bezier(0.2, 0, 0, 1);
-    opacity: 1;
-  }
-  .pins-chip:hover {
-    background: color-mix(in srgb, var(--warm-accent) 18%, transparent);
-    opacity: 1;
-  }
-  .trail-name {
+  .entry.loose { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+  .entry-trail {
     appearance: none;
     background: transparent;
     border: none;
     padding: 0;
-    font-family: "Lora", Georgia, serif;
-    font-style: italic;
-    font-size: 0.8125rem;
+    font-family: "DM Mono", monospace;
+    font-size: 0.75rem;
     color: var(--accent-text);
     cursor: pointer;
     text-align: left;
-    opacity: 1;
   }
-  .trail-name:hover {
-    opacity: 1;
-    text-decoration: underline;
-  }
-
-  .trail-pages {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-  .trail-pages li + li {
-    border-top: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
-    margin-top: 0.25rem;
-    padding-top: 0.25rem;
-  }
-  .page-row {
+  .entry-trail.static { cursor: default; }
+  button.entry-trail:hover { text-decoration: underline; text-underline-offset: 0.2em; }
+  .entry-title {
     appearance: none;
     background: transparent;
     border: none;
-    padding: 0.25rem 0;
+    padding: 0;
     font-family: "Lora", Georgia, serif;
     font-size: 0.9375rem;
+    line-height: 1.4;
     color: var(--ink);
     cursor: pointer;
     text-align: left;
-    width: 100%;
-    line-height: 1.4;
-    opacity: 1;
+    max-width: 100%;
   }
-  .page-row:hover {
-    opacity: 1;
-    color: var(--accent-text);
-  }
-  .page-row.untitled {
-    font-style: italic;
+  .entry-title:hover { color: var(--accent-text); }
+  .entry-title.untitled { font-style: italic; color: var(--ink-soft); }
+  .entry-preview {
+    margin: 0;
+    font-family: "Lora", Georgia, serif;
+    font-size: 0.84375rem;
+    line-height: 1.45;
     color: var(--ink-soft);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
+  /* A pin kept from this page: the pin itself, not a count of pins. */
+  .entry-pin {
+    appearance: none;
+    background: transparent;
+    border: none;
+    border-left: 2px solid var(--warm-accent);
+    margin-top: 0.375rem;
+    padding: 0 0 0 0.5rem;
+    font-family: "Lora", Georgia, serif;
+    font-style: italic;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    cursor: pointer;
+    text-align: left;
+    max-width: 100%;
+  }
+  .entry.loose .entry-pin { margin-top: 0.125rem; }
+  .entry-pin:hover { color: var(--accent-text); }
 </style>

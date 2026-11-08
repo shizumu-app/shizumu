@@ -39,7 +39,7 @@ pub fn attachment_add(
         .and_then(|n| n.to_str())
         .unwrap_or("untitled")
         .to_string();
-    insert_attachment(&app, db.inner(), engine.inner(), bytes, filename, None, sync.unwrap_or(false))
+    insert_attachment(&app, db.inner(), engine.inner(), bytes, filename, None, sync)
 }
 
 /// Like `attachment_add` but takes the file bytes directly. Used where the
@@ -56,15 +56,68 @@ pub fn attachment_add_bytes(
     mime_type: Option<String>,
     sync: Option<bool>,
 ) -> Result<AttachmentDto, String> {
-    insert_attachment(
-        &app,
-        db.inner(),
-        engine.inner(),
-        bytes,
-        filename,
-        mime_type,
-        sync.unwrap_or(false),
+    insert_attachment(&app, db.inner(), engine.inner(), bytes, filename, mime_type, sync)
+}
+
+/// How long a new attachment that started synced waits before the worker may
+/// send it. Keeping one home is a tap on its switch, and that tap has to be
+/// able to arrive before the bytes leave: once a peer holds them, no switch
+/// takes them back. Asked for by a caller, there is nothing to wait for.
+pub(crate) const NEW_ATTACHMENT_GRACE_MS: i64 = 20_000;
+
+/// Where a new attachment's sync switch starts. It follows how this device
+/// syncs: a person who turned sync on expects their page to arrive whole, and
+/// a photo that quietly stayed home was a placeholder on the other device at
+/// the moment it was needed. Keeping one home is the one tap on its switch. A
+/// caller that asks for a value gets it, and a config that cannot be read
+/// keeps the bytes here: nothing leaves the device on a guess.
+pub(crate) fn new_attachment_sync(conn: &rusqlite::Connection, requested: Option<bool>) -> bool {
+    requested.unwrap_or_else(|| {
+        crate::sync::config::load(conn)
+            .map(|cfg| cfg.is_active())
+            .unwrap_or(false)
+    })
+}
+
+/// Write the row and return the switch as it now stands. The same bytes added
+/// again keep the row's switch (the ON CONFLICT leaves `sync` alone), so a
+/// file someone chose to keep home is not sent because they pasted it twice,
+/// and the node must show what the row says rather than what this add asked.
+pub(crate) fn record_attachment(
+    conn: &rusqlite::Connection,
+    blob_hash: &str,
+    filename: &str,
+    mime_type: &Option<String>,
+    size_bytes: i64,
+    requested: Option<bool>,
+    now: &str,
+) -> Result<bool, String> {
+    let sync = new_attachment_sync(conn, requested);
+    let hold_until_ms = if sync && requested.is_none() {
+        crate::attachments::backfill::now_ms() + NEW_ATTACHMENT_GRACE_MS
+    } else {
+        0
+    };
+    conn.execute(
+        "INSERT INTO attachments (blob_hash, filename, mime_type, size_bytes, sync, has_local, created_at, last_seen_at, upload_retry_at_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6, ?7) \
+         ON CONFLICT(blob_hash) DO UPDATE SET \
+            filename = excluded.filename, \
+            mime_type = excluded.mime_type, \
+            size_bytes = excluded.size_bytes, \
+            has_local = 1, \
+            gc_swept = 0, \
+            last_seen_at = excluded.last_seen_at",
+        params![blob_hash, filename, mime_type, size_bytes, sync as i64, now, hold_until_ms],
     )
+    .map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT sync FROM attachments WHERE blob_hash = ?1",
+        params![blob_hash],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|v| v != 0)
+    .map_err(|e| e.to_string())
 }
 
 /// Shared body for both add paths: validate, store the blob, record the row.
@@ -79,7 +132,7 @@ pub(crate) fn insert_attachment(
     bytes: Vec<u8>,
     filename: String,
     mime_type: Option<String>,
-    sync: bool,
+    sync: Option<bool>,
 ) -> Result<AttachmentDto, String> {
     if bytes.is_empty() {
         return Err("file is empty".into());
@@ -103,19 +156,7 @@ pub(crate) fn insert_attachment(
     let now = chrono::Utc::now().to_rfc3339();
 
     let conn = db.lock().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO attachments (blob_hash, filename, mime_type, size_bytes, sync, has_local, created_at, last_seen_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6) \
-         ON CONFLICT(blob_hash) DO UPDATE SET \
-            filename = excluded.filename, \
-            mime_type = excluded.mime_type, \
-            size_bytes = excluded.size_bytes, \
-            has_local = 1, \
-            gc_swept = 0, \
-            last_seen_at = excluded.last_seen_at",
-        params![&blob_hash, &filename, &mime_type, size_bytes, sync as i64, &now],
-    )
-    .map_err(|e| e.to_string())?;
+    let sync = record_attachment(&conn, &blob_hash, &filename, &mime_type, size_bytes, sync, &now)?;
 
     // No op is emitted here even when `sync` is true. The bytes now travel
     // as their own relay object, and the op referencing that object must
@@ -698,6 +739,74 @@ mod tests {
     use crate::test_helpers::test_db;
     use httpmock::prelude::*;
     use serde_json::json;
+
+    fn turn_sync_on(db: &Db) {
+        let conn = db.lock().unwrap();
+        crate::sync::config::set_relay_url(&conn, "https://relay.example").unwrap();
+        crate::sync::config::set_enrollment(&conn, "user", "device", 1).unwrap();
+        crate::sync::config::set_enabled(&conn, true).unwrap();
+    }
+
+    fn record(db: &Db, hash: &str, requested: Option<bool>) -> bool {
+        let conn = db.lock().unwrap();
+        record_attachment(&conn, hash, "harbour.jpg", &None, 3, requested, "2026-11-03T00:00:00Z").unwrap()
+    }
+
+    #[test]
+    fn a_new_attachment_syncs_when_this_device_syncs() {
+        let db = test_db();
+        turn_sync_on(&db);
+        assert!(record(&db, "a", None));
+        // the row is what the worker reads: backfill::pending_object_upload
+        let row: i64 = db.lock().unwrap()
+            .query_row("SELECT sync FROM attachments WHERE blob_hash = 'a'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(row, 1);
+    }
+
+    #[test]
+    fn a_new_synced_attachment_waits_long_enough_for_a_tap_to_keep_it_home() {
+        use crate::attachments::backfill::{now_ms, pending_object_upload, pending_object_upload_at};
+        let db = test_db();
+        turn_sync_on(&db);
+        record(&db, "fresh", None);
+        // Sent at once, a tap on the switch would come after the bytes had left.
+        assert!(pending_object_upload(&db).unwrap().is_empty());
+        let later = now_ms() + NEW_ATTACHMENT_GRACE_MS + 1_000;
+        assert_eq!(pending_object_upload_at(&db, later).unwrap().len(), 1);
+        // The tap inside the wait: nothing is left to send, then or later.
+        attachment_set_sync_inner(&db, &engine_for(&db), "fresh", false).unwrap();
+        assert!(pending_object_upload_at(&db, later).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_new_attachment_stays_home_when_sync_is_off_or_paused() {
+        let db = test_db();
+        assert!(!record(&db, "never-set-up", None));
+        turn_sync_on(&db);
+        crate::sync::config::set_enabled(&db.lock().unwrap(), false).unwrap();
+        assert!(!record(&db, "paused", None));
+    }
+
+    #[test]
+    fn a_caller_that_asks_gets_what_it_asked() {
+        let db = test_db();
+        turn_sync_on(&db);
+        // the localImage backfill: never the reason bytes leave the device
+        assert!(!record(&db, "backfilled", Some(false)));
+    }
+
+    #[test]
+    fn the_same_bytes_added_again_keep_the_choice_already_made() {
+        let db = test_db();
+        turn_sync_on(&db);
+        assert!(record(&db, "kept-home", None));
+        db.lock().unwrap()
+            .execute("UPDATE attachments SET sync = 0 WHERE blob_hash = 'kept-home'", [])
+            .unwrap();
+        // the node shows the row, not what this second add would have chosen
+        assert!(!record(&db, "kept-home", None));
+    }
 
     fn insert_row(db: &Db, blob_hash: &str, size_bytes: i64, has_local: bool) {
         let conn = db.lock().unwrap();

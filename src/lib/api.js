@@ -899,6 +899,16 @@ export function createMockInvoke() {
         }
         return [...counts.entries()];
       }
+      // Mirrors get_trail_pin_counts: the pins each trail itself owns, with
+      // the global pins under a null key.
+      case "get_trail_pin_counts": {
+        const counts = new Map();
+        for (const o of store.pins || []) {
+          const key = o.lineage_id ?? null;
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        return [...counts.entries()];
+      }
       case "get_thread": {
         const sortKey = args.orderBy === "updated_at" ? "updated_at" : "date";
         const allPages = [...store.pages.values()]
@@ -1212,6 +1222,15 @@ export async function getThread(limit = 20, offset = 0, orderBy = "date") {
  */
 export async function getTrailPageCounts() {
   return call("get_trail_page_counts", {});
+}
+
+/**
+ * Pin count per trail across the whole database: the pins each trail itself
+ * owns (lineage_id equals the trail), not its children's. Returns
+ * [lineage_id | null, count] pairs; null is the global pins.
+ */
+export async function getTrailPinCounts() {
+  return call("get_trail_pin_counts", {});
 }
 
 export async function searchPages(query) {
@@ -1813,14 +1832,16 @@ export async function pairNewComplete(qrPayload, deviceLabel, pollAttempts = 120
 
 // ===== attachments (v0.4) =====
 
-/** Returns { blob_hash, filename, mime_type, size_bytes, sync, has_local, created_at }. */
-export async function attachmentAdd(sourcePath, sync = false) {
+/** Returns { blob_hash, filename, mime_type, size_bytes, sync, has_local, created_at }.
+ *  Leave `sync` out and the switch starts where this device's sync is: on when
+ *  it syncs, off when it does not (new_attachment_sync in attachments/commands.rs). */
+export async function attachmentAdd(sourcePath, sync) {
   return call("attachment_add", { sourcePath, sync });
 }
 
 /** Add an attachment from bytes read in the WebView (works on Android/iOS/web,
  *  where the picker returns a content:// URI the Rust fs layer can't read). */
-export async function attachmentAddBytes(bytes, filename, mimeType, sync = false) {
+export async function attachmentAddBytes(bytes, filename, mimeType, sync) {
   return call("attachment_add_bytes", { bytes: Array.from(bytes), filename, mimeType, sync });
 }
 

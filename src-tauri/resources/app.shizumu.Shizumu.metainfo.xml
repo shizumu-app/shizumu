@@ -199,6 +199,16 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.8.2" date="2026-11-07">
+      <description>
+        <p>Find what you kept. The pins panel on the desktop and the pins screen on the phone have a search field and a row of chips with counts: this trail, all trails, carries forward, on this page, and kind. On a nested trail the pins sit in two sections, the ones kept on this trail and the ones from parent trails. On a wide window the pins sit beside the page, and the page stays live.</p>
+        <p>Memory has a field to find a trail, shows the pages and pins of every trail, and lists the filters in force as pills you can remove. The trail map shows each page's first line and the pins kept from it.</p>
+        <p>A decision can be standing or superseded: tap its chip, or press mod+enter on the desktop. A question with no answer reads as open until it is answered.</p>
+        <p>The phone can export: settings, data, export packs every page as markdown files into one zip, in a folder per trail, and hands it to the share sheet. An export marks decisions, tables, code and pinned blocks, so reading it back keeps them. A kept block can be unpinned from the block itself, on both, and both ask first.</p>
+        <p>One lock for every device. Turn the lock on, change the passphrase or turn it off on the desktop or the phone, and every paired device follows with the same passphrase. It travels end-to-end encrypted, like the pages, so it is never typed twice. The phone has the desktop's lock settings, including lock after inactivity.</p>
+        <p>Fixes: a phone synced to a locked desktop no longer asks for a passphrase that could not open it. A page's focus no longer empties after a trail is created from the header. A pinned list turned into tasks keeps its pin. Pinning a range over a titled block no longer renames it. Escape out of a nested list leaves no empty line. A page that arrives unchanged from the other device no longer reloads under the caret. A pasted decision keeps its state. Deleting all writing says when some of it has not reached the other device yet. A keyring that starts locked no longer asks at every launch, and the desktop that set up sync shows its recovery phrase again.</p>
+      </description>
+    </release>
     <release version="0.8.1" date="2026-11-01">
       <description>
         <p>A pin holds the whole passage. Select several blocks and pin them, and the pin keeps every one of them, in order, after an edit, after a restart and on your other device. Before, the pin came out with only the first block in it. Editing a pin of several blocks replaces each block on the page once, with nothing left over, and choosing a trail for a new page brings such a pin onto it whole. If part of a selection is already pinned, the app says so instead of offering a pin button that does nothing.</p>

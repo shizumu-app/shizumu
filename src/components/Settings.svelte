@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy, tick } from "svelte";
-  import { setSetting, getSetting, setCloseToTray, deleteAllData, checkEncryptionStatus, exportPagesGui, backupDatabaseGui, sendNotification, setLockTimeout } from "../lib/api.js";
+  import { setSetting, getSetting, setCloseToTray, deleteAllData, syncStatus, opLogStats, syncFlushNow, checkEncryptionStatus, exportPagesGui, backupDatabaseGui, sendNotification, setLockTimeout } from "../lib/api.js";
+  import { wipeReadiness, mayWipeNow } from "../lib/wipe-readiness.js";
   import { runExport } from "../lib/export/run.js";
   import { isYjsEnabled, setYjsEnabled } from "../lib/yjs/feature-flag.js";
   import SetupEncryption from "./SetupEncryption.svelte";
@@ -165,6 +166,8 @@
 
   let showDeleteInput = $state(false);
   let deleting = $state(false);
+  let wipe = $state(null);
+  let sendingWaiting = $state(false);
   let encrypted = $state(false);
   let showEncryptSetup = $state(false);
   // Deliberately a one-time read, not a $derived: Settings is destroyed and
@@ -328,8 +331,34 @@
     }
   }
 
+  async function readWipe(opts) {
+    try {
+      const [status, stats] = await Promise.all([syncStatus(), opLogStats()]);
+      return wipeReadiness(status, stats, opts);
+    } catch (err) {
+      console.error("Failed to read what is waiting to upload:", err);
+      return wipeReadiness(null, null, { failed: true });
+    }
+  }
+
+  async function askDelete() {
+    showDeleteInput = true;
+    wipe = await readWipe();
+  }
+
+  async function sendFirst() {
+    sendingWaiting = true;
+    await syncFlushNow();
+    wipe = await readWipe({ triedSend: true });
+    sendingWaiting = false;
+  }
+
   async function confirmDelete() {
     if (deleteConfirm !== "delete") return;
+    const fresh = await readWipe();
+    const go = mayWipeNow(wipe, fresh);
+    wipe = fresh;
+    if (!go) return;
     deleting = true;
     try {
       await deleteAllData();
@@ -425,6 +454,41 @@
     lockForm = null;
   }
 </script>
+
+{#snippet deleteConfirmRows()}
+  {#if wipe && !wipe.clear}
+    <Row description={wipe.line}>
+      not everything has been sent
+      {#snippet trailing()}
+        {#if wipe.canSend}
+          <Button variant="ghost" onClick={sendFirst} disabled={sendingWaiting}>
+            {sendingWaiting ? "sending…" : "send it first"}
+          </Button>
+        {/if}
+      {/snippet}
+    </Row>
+  {/if}
+  <Row>
+    type "delete" to confirm
+    {#snippet trailing()}
+      <input
+        type="text"
+        class="delete-input selectable"
+        bind:value={deleteConfirm}
+        placeholder="delete"
+        spellcheck="false"
+        autofocus
+      />
+      <span class="danger-slot">
+        <Button
+          variant="ghost"
+          disabled={deleteConfirm !== "delete" || deleting || !wipe || sendingWaiting}
+          onClick={confirmDelete}
+        >{deleting ? "deleting…" : (wipe?.confirmLabel ?? "confirm")}</Button>
+      </span>
+    {/snippet}
+  </Row>
+{/snippet}
 
 {#if showEncryptSetup}
   <!-- On its own, not inside a Modal: the setup screen is a full-screen
@@ -569,7 +633,7 @@
             {/snippet}
           </Row>
         {:else if mobileView === "encryption"}
-          <Row description="protect every page with a password. you'll be asked for it each time the app starts.">
+          <Row description="protect every page with a password, on every device on this account. you'll be asked for it each time the app starts.">
             lock with password
             {#snippet trailing()}
               {#if encrypted}
@@ -618,31 +682,12 @@
               delete all writing
               {#snippet trailing()}
                 <span class="danger-slot">
-                  <Button variant="ghost" onClick={() => (showDeleteInput = true)}>delete</Button>
+                  <Button variant="ghost" onClick={askDelete}>delete</Button>
                 </span>
               {/snippet}
             </Row>
           {:else}
-            <Row>
-              type "delete" to confirm
-              {#snippet trailing()}
-                <input
-                  type="text"
-                  class="delete-input selectable"
-                  bind:value={deleteConfirm}
-                  placeholder="delete"
-                  spellcheck="false"
-                  autofocus
-                />
-                <span class="danger-slot">
-                  <Button
-                    variant="ghost"
-                    disabled={deleteConfirm !== "delete" || deleting}
-                    onClick={confirmDelete}
-                  >{deleting ? "deleting…" : "confirm"}</Button>
-                </span>
-              {/snippet}
-            </Row>
+            {@render deleteConfirmRows()}
           {/if}
         {:else if mobileView === "about"}
           <Row>
@@ -780,7 +825,7 @@
         </Row>
 
       {:else if activeTab === "encryption"}
-        <Row description="protect every page with a password. you'll be asked for it each time the app starts.">
+        <Row description="protect every page with a password, on every device on this account. you'll be asked for it each time the app starts.">
           lock with password
           {#snippet trailing()}
             {#if encrypted}
@@ -829,31 +874,12 @@
             delete all writing
             {#snippet trailing()}
               <span class="danger-slot">
-                <Button variant="ghost" onClick={() => (showDeleteInput = true)}>delete</Button>
+                <Button variant="ghost" onClick={askDelete}>delete</Button>
               </span>
             {/snippet}
           </Row>
         {:else}
-          <Row>
-            type "delete" to confirm
-            {#snippet trailing()}
-              <input
-                type="text"
-                class="delete-input selectable"
-                bind:value={deleteConfirm}
-                placeholder="delete"
-                spellcheck="false"
-                autofocus
-              />
-              <span class="danger-slot">
-                <Button
-                  variant="ghost"
-                  disabled={deleteConfirm !== "delete" || deleting}
-                  onClick={confirmDelete}
-                >{deleting ? "deleting…" : "confirm"}</Button>
-              </span>
-            {/snippet}
-          </Row>
+          {@render deleteConfirmRows()}
         {/if}
       {:else if activeTab === "about"}
         <Row>

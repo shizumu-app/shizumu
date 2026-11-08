@@ -44,3 +44,27 @@ fn ios_and_android_use_the_file_backend() {
         "no backend covers both phones outside tests: {cfgs:?}"
     );
 }
+
+// 0.8.2 turns real keyring backends on for the database key. The desktop
+// sync backend used to call keyring::Entry, harmlessly, because the crate
+// had no backend and kept nothing; with a real backend the round-trip in
+// keys::persist_user_* would start passing and DELETE the sync_keys rows,
+// leaving a keyring the only copy of the sync identity. Until the move in
+// docs/superpowers/specs/2026-11-02-desktop-keyring-design.md lands, the
+// desktop backend must not reach the keyring crate.
+#[test]
+fn the_desktop_sync_backend_does_not_reach_the_keyring_yet() {
+    let cfg = "#[cfg(all(desktop, not(test)))]\nmod backend {";
+    let start = SRC.find(cfg).expect("a desktop backend exists");
+    let body_end = start + SRC[start..].find("\n}\n").expect("module ends");
+    let body = &SRC[start..body_end];
+    let code: String = body
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains("keyring::"),
+        "the desktop sync backend reaches the keyring crate: the sync_keys rows would be deleted"
+    );
+}

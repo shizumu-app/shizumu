@@ -12,6 +12,7 @@
  * (brand voice: lowercase, no exclamation marks, fewest words). */
 export const BLOCK_ACTION_LABELS = {
   pin: "pin",
+  unpin: "unpin",
   copy: "copy",
   title: "title",
   convert: "convert to…",

@@ -11,7 +11,7 @@
   import { writeClipboard } from "../lib/clipboard-write.js";
   import { resolveCopyTarget } from "../lib/extensions/block-copy-target.js";
   import { serializeBlockToHtml } from "../lib/block-clipboard.js";
-  import { getPins, getPinForReference, getSetting, setSetting } from "../lib/api.js";
+  import { deletePin, getPins, getPinForReference, getSetting, setSetting } from "../lib/api.js";
   import { serializeSelection } from "../lib/markdown-clipboard.js";
   import { isCoarsePointer } from "../lib/responsive.js";
   import { blockActionsFor, BLOCK_ACTION_LABELS } from "../lib/editor/block-actions.js";
@@ -21,6 +21,7 @@
   import { shouldDismissOnBlur, isAffordanceTarget } from "../lib/editor/touch-reveal-dismiss.js";
   import { getViewportHeight, keyboardOpen } from "../lib/keyboard-state.js";
   import { stampedPinIds, PART_PINNED } from "../lib/pin-node.js";
+  import { keptBlockPress, pinHeldBy, KEPT_PRESS_LABEL, KEPT_PRESS_FRESH_MS } from "../lib/editor/kept-block-press.js";
   import { selectionEndRect, pinButtonTop } from "../lib/editor/selection-pin-place.js";
   import SharePopup from "./SharePopup.svelte";
   import FindBar from "./FindBar.svelte";
@@ -1859,7 +1860,7 @@
       const isDuplicate = pinAlreadyHolds(existing, { pinId: topLevelNode?.attrs?.pinId, content: pinContent });
       if (isDuplicate) {
         blockAlreadyPinned = true;
-        showQuickPinToast("already pinned");
+        await pressOnKeptBlock(pinHeldBy(existing, { pinId: topLevelNode?.attrs?.pinId, content: pinContent }));
         return;
       }
     } catch {}
@@ -1918,12 +1919,39 @@
    * handlePinBlock setup paths so the pin row/cache shape stays identical
    * to mouse-flow pins.
    */
+  // The second press on a kept block's pin handle is its unpin; see
+  // kept-block-press.js for why the ask lives on the press.
+  let keptPressArmedFor = null;
+  let keptPressTimer = null;
+  async function pressOnKeptBlock(pin) {
+    const { action, armedFor } = keptBlockPress(pin?.id ?? null, keptPressArmedFor);
+    keptPressArmedFor = armedFor;
+    if (keptPressTimer) clearTimeout(keptPressTimer);
+    if (action === "ask") {
+      showQuickPinToast(pin ? KEPT_PRESS_LABEL : "already pinned", KEPT_PRESS_FRESH_MS);
+      keptPressTimer = setTimeout(() => { keptPressArmedFor = null; }, KEPT_PRESS_FRESH_MS);
+      return;
+    }
+    try {
+      await deletePin(pin.id);
+    } catch (err) {
+      console.error("Failed to unpin:", err);
+      showQuickPinToast("could not unpin");
+      return;
+    }
+    core?.invalidatePinContent(pin.content);
+    blockAlreadyPinned = false;
+    showQuickPinToast("unpinned");
+    // The panel and the count read again, as they do after a new pin.
+    onPinCreated();
+  }
+
   let quickPinToast = $state(null);
   let quickPinToastTimer = null;
-  function showQuickPinToast(label) {
+  function showQuickPinToast(label, ms = 1600) {
     quickPinToast = label;
     if (quickPinToastTimer) clearTimeout(quickPinToastTimer);
-    quickPinToastTimer = setTimeout(() => { quickPinToast = null; }, 1600);
+    quickPinToastTimer = setTimeout(() => { quickPinToast = null; }, ms);
   }
 
   // Generic editor toast (T15) — used by the slash module (and any other

@@ -120,6 +120,10 @@ const api = vi.hoisted(() => ({
   // by default — an answer, so the map draws `0 pages` on every trail;
   // the tests that care set a count or make it reject.
   getTrailPageCounts: vi.fn(() => Promise.resolve([])),
+  // Its pin twin (0.8.2): each trail's own pins as `[lineage_id | null,
+  // count]`, null for the pins on no trail. Feeds the trail sheets'
+  // `pages · pins` and the pins screen's `all trails` count.
+  getTrailPinCounts: vi.fn(() => Promise.resolve([])),
   // The mention extension's two, added for the reason the note above
   // gives about EditorCore's. A typed `@` activates MentionCommand's
   // Suggestion plugin, whose async `items` awaits these alongside
@@ -2501,6 +2505,31 @@ describe("ShellApp — the block sheet", () => {
     expect(ed.state.doc.child(1).attrs.pinId).toBeNull();
   });
 
+  it("a kept block's sheet asks before unpinning, and the unpin lands", async () => {
+    api.getOrCreateToday.mockResolvedValue(blockPage());
+    const rows = pinLedger();
+    const { target } = render(ShellApp, { editing: true, keyboardOpen: true });
+    await settleWithEditor();
+    const ed = editorOf(target);
+    caretIn(ed, "paragraph");
+    tapAndSettle(target, "block-handle");
+    clickRow(target, "block-actions", "pin");
+    await settlePin();
+    const pinId = rows[0].id;
+    api.getPins.mockImplementation(async () => rows);
+
+    tapAndSettle(target, "block-handle");
+    clickRow(target, "block-actions", "unpin");
+    await settlePin();
+    // Asked, not done: the same ask as the pin's own `more` sheet.
+    expect(api.deletePin).not.toHaveBeenCalled();
+    const yes = [...target.querySelectorAll("[data-sheet] .shell-row")].find((b) => b.textContent.trim() === "unpin");
+    expect(yes).toBeTruthy();
+    yes.click();
+    await settlePin();
+    expect(api.deletePin).toHaveBeenCalledWith(pinId);
+  });
+
   it("takes the pin row away on a block it has already kept", async () => {
     // Step 3's decision. P2d's rule is that a sheet is a menu and a menu
     // implies completeness — a row that does nothing is worse than a
@@ -2536,6 +2565,7 @@ describe("ShellApp — the block sheet", () => {
     // Absent, not dead. Asserted as the whole list so a `pin` row rendered
     // disabled would fail here too, rather than only a missing one.
     expect(rowsOf(target, "block-actions")).toEqual([
+      "unpin",
       "copy",
       "turn into",
       "move up",
@@ -5517,6 +5547,39 @@ describe("ShellApp — the header's sheets", () => {
     expect(api.setFocusLineage).not.toHaveBeenCalled();
   });
 
+  it("finds a trail as the name is typed, with each trail's pages and pins", async () => {
+    // 0.8.2 (spec §4): the field was a name only. Typing now narrows the
+    // trails (keeping a match's parent) and still offers to start one.
+    api.getLineages.mockResolvedValue([
+      { id: "S", name: "shizumu", mode: "discrete", parent_id: null },
+      { id: "R", name: "the relay", mode: "discrete", parent_id: "S" },
+      { id: "J", name: "job search", mode: "discrete", parent_id: null },
+    ]);
+    api.getTrailPageCounts.mockResolvedValue([["R", 3]]);
+    api.getTrailPinCounts.mockResolvedValue([["R", 2]]);
+    const { target } = render(ShellApp);
+    await settle();
+
+    await openFromHeader(target, ".ph-trail-button");
+    await settle();
+    const field = target.querySelector('[data-sheet="trail"] .shell-field-input');
+    expect(field.placeholder).toBe("find a trail…");
+    field.value = "relay";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+
+    const rows = [...target.querySelectorAll('[data-sheet="trail"] .shell-row')];
+    const labels = rows.map((r) => r.querySelector(".shell-row-label").textContent.trim());
+    // The empty page also offers the living doc; what matters here is the
+    // tail — the match and the parent that leads to it, and nothing else.
+    expect(labels.slice(-2)).toEqual(["shizumu", "the relay"]);
+    expect(labels).not.toContain("job search");
+    expect(labels[0]).toBe("start the trail “relay”");
+    const relay = rows.find((r) => r.querySelector(".shell-row-label").textContent.trim() === "the relay");
+    expect(relay.querySelector(".shell-row-value").textContent.trim()).toBe("3 pages · 2 pins");
+    expect(relay.querySelector(".shell-row-detail").textContent.trim()).toBe("shizumu");
+  });
+
   it("starts the typed trail on return, which is what the keyboard's Go offers", async () => {
     // The third device pass: the writer typed a name, pressed Go, and
     // nothing happened. Return now runs trailSheetSubmit's row.
@@ -5531,7 +5594,7 @@ describe("ShellApp — the header's sheets", () => {
     // With nothing typed, a line says what to do; the row that does it
     // is not there yet.
     expect(target.querySelector('[data-sheet="trail"] .shell-note').textContent.trim())
-      .toBe("type a name and return to start a trail, or choose one below.");
+      .toBe("type to find a trail, or a new name and return to start one.");
     const field = target.querySelector('[data-sheet="trail"] .shell-field-input');
     field.value = "job search";
     field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -6444,71 +6507,207 @@ describe("ShellApp — the pins screen", () => {
     ...over,
   });
 
-  // ── Step 1: the filter segment ────────────────────────────────────────
+  // ── Step 1: search and the chip row (0.8.2, rulings 5 and 6) ──────────
+  //
+  // The segment over the sections is gone: the phone has the desktop
+  // panel's search and chips (pin-filter.js over src/lib/pin-panel-filter.js),
+  // and each row says what it does in words under the pin.
 
-  it("offers all, then the scopes the list actually holds", async () => {
-    // The axis is the desktop's own sectioning of the same list ("on this
-    // trail" / "inherited" / "global"), not a category filter: pinFamily
-    // has six families plus all, and seven nowrap segments do not fit a
-    // phone.
+  const chipLabels = (target) =>
+    [...top(target).querySelectorAll(".pins-chips:not(.pins-kinds) .pins-chip")].map((c) =>
+      c.textContent.replace(/\s+/g, " ").trim(),
+    );
+
+  function pressChip(target, id) {
+    const button = top(target).querySelector(`.pins-chip[data-chip="${id}"] button`);
+    expect(button, `no "${id}" chip`).toBeTruthy();
+    button.click();
+    flushSync();
+  }
+
+  function searchPinsFor(target, text) {
+    const field = top(target).querySelector(".pins-find .shell-field-input");
+    field.value = text;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+  }
+
+  function pressRowAction(target, pinLabel, word) {
+    const row = [...top(target).querySelectorAll(".pins-row")].find(
+      (r) => r.querySelector(".shell-row-label").textContent.trim() === pinLabel,
+    );
+    expect(row, `no "${pinLabel}" pin row`).toBeTruthy();
+    const button = [...row.querySelectorAll(".pins-row-actions button")].find(
+      (b) => b.textContent.trim() === word,
+    );
+    expect(button, `no "${word}" on the "${pinLabel}" row`).toBeTruthy();
+    button.click();
+    flushSync();
+  }
+
+  it("offers the desktop's chip row, each chip with its count", async () => {
+    // THE BUG: the phone had one segment over the sections, and only when
+    // the list held two of them — no search, no kind, no carries forward.
     api.getOrCreateToday.mockResolvedValue(withLines(pageRow({ lineage_id: "L1" })));
+    api.getPins.mockResolvedValue([note("a", { auto_insert: true }), note("b", { lineage_id: "PARENT" })]);
+    api.getTrailPinCounts.mockResolvedValue([["L1", 1], ["PARENT", 1], [null, 2]]);
+    const { target } = render(ShellApp, {});
+    await settle();
+    await pushPins(target);
+
+    expect(chipLabels(target)).toEqual([
+      "this trail 2",
+      "all trails 4",
+      "carries forward 1",
+      "on this page 0",
+      "kind",
+    ]);
+    expect(top(target).querySelector(".seg-btn")).toBeNull();
+  });
+
+  it("filters to what carries forward, and back", async () => {
+    api.getOrCreateToday.mockResolvedValue(withLines(pageRow({ lineage_id: "L1" })));
+    api.getPins.mockResolvedValue([note("a", { auto_insert: true }), note("b", { lineage_id: "PARENT" })]);
+    const { target } = render(ShellApp, {});
+    await settle();
+    await pushPins(target);
+
+    pressChip(target, "carries");
+    expect(pinRows(target).map((r) => r.label)).toEqual(["a"]);
+    pressChip(target, "carries");
+    expect(pinRows(target).map((r) => r.label).sort()).toEqual(["a", "b"]);
+  });
+
+  it("searches the pins on this trail, and says nothing matches with a way back", async () => {
+    api.getOrCreateToday.mockResolvedValue(withLines(pageRow({ lineage_id: "L1" })));
+    api.getPins.mockResolvedValue([
+      note("a", { content: "the relay holds blobs" }),
+      note("b", { content: "chapter two" }),
+    ]);
+    const { target } = render(ShellApp, {});
+    await settle();
+    await pushPins(target);
+
+    expect(top(target).querySelector(".pins-find .shell-field-input").placeholder).toBe(
+      "search pins on this trail…",
+    );
+    searchPinsFor(target, "relay");
+    expect(pinRows(target).map((r) => r.label)).toEqual(["a"]);
+
+    searchPinsFor(target, "zebra");
+    expect(top(target).querySelector(".empty-title").textContent.trim()).toBe("nothing matches");
+    const clear = [...top(target).querySelectorAll(".empty-actions button")].find(
+      (b) => b.textContent.trim() === "clear filters",
+    );
+    clear.click();
+    flushSync();
+    expect(pinRows(target)).toHaveLength(2);
+  });
+
+  it("sections the trail's own pins and its parents', and says where an inherited one came from", async () => {
+    api.getOrCreateToday.mockResolvedValue(withLines(pageRow({ lineage_id: "L1" })));
+    api.getLineages.mockResolvedValue([
+      { id: "PARENT", name: "shizumu", parent_id: null, mode: "discrete" },
+      { id: "L1", name: "v0.8", parent_id: "PARENT", mode: "discrete" },
+    ]);
     api.getPins.mockResolvedValue([note("a"), note("b", { lineage_id: "PARENT" })]);
     const { target } = render(ShellApp, {});
     await settle();
     await pushPins(target);
 
-    expect(segments(target)).toEqual(["all", "this trail", "inherited"]);
-    expect(chosenSegment(target)).toBe("all");
+    const eyebrows = [...top(target).querySelectorAll(".shell-eyebrow")].map((e) => e.textContent.trim());
+    expect(eyebrows).toEqual(["on this trail · 1", "from parent trails · 1"]);
+    const inherited = [...top(target).querySelectorAll(".pins-row")].find(
+      (r) => r.querySelector(".shell-row-label").textContent.trim() === "b",
+    );
+    expect(inherited.querySelector(".shell-row-detail").textContent.trim()).toBe("from shizumu (parent trail)");
   });
 
-  it("offers the scopes through the shell's Segment and lists the rows in one group", async () => {
-    // Visual pass, Task 9. The floor itself is Segment.test.js's
-    // (`min-height: var(--tap)` on the leaf's segments, by source-read);
-    // what this holds is that the pins screen reaches the leaf THROUGH
-    // the wrapper — the leaf bare shipped the same four-pixel shortfall
-    // memory's mode segment did. And one RowGroup, with the status
-    // wrapper as its direct child, because the group rules between its
-    // direct children and a wrapper outside it would leave the rows
-    // unruled while the dimming still looked right.
+  it("reads every trail's pins the first time all trails is chosen, not before", async () => {
+    // The fan-out is N+1 calls; the common push must not pay for it.
     api.getOrCreateToday.mockResolvedValue(withLines(pageRow({ lineage_id: "L1" })));
-    api.getPins.mockResolvedValue([note("a"), note("b", { lineage_id: "PARENT" })]);
+    api.getLineages.mockResolvedValue([
+      { id: "L1", name: "the book", parent_id: null, mode: "discrete" },
+      { id: "L2", name: "the relay", parent_id: null, mode: "discrete" },
+    ]);
+    api.getPins.mockImplementation((id) =>
+      Promise.resolve(
+        id === "L1" ? [note("a")] : id === "L2" ? [note("x", { lineage_id: "L2" })] : [note("g", { lineage_id: null })],
+      ),
+    );
+    const { target } = render(ShellApp, {});
+    await settle();
+    await pushPins(target);
+    expect(api.getPins.mock.calls.map((c) => c[0])).not.toContain("L2");
+
+    pressChip(target, "all");
+    await settle();
+
+    expect(api.getPins.mock.calls.map((c) => c[0])).toContain("L2");
+    const eyebrows = [...top(target).querySelectorAll(".shell-eyebrow")].map((e) => e.textContent.trim());
+    expect(eyebrows).toEqual(["the book · 1", "the relay · 1", "everywhere · 1"]);
+  });
+
+  it("tells an untrailed page to choose a trail, and the button opens the page's trail sheet", async () => {
+    // THE BUG the desktop shipped: "nothing matches" with nothing searched.
+    api.getOrCreateToday.mockResolvedValue(withLines(pageRow({ lineage_id: null })));
+    api.getPins.mockResolvedValue([]);
     const { target } = render(ShellApp, {});
     await settle();
     await pushPins(target);
 
-    expect(top(target).querySelector('.pins-filter .shell-segment [role="radiogroup"]')).not.toBeNull();
-    expect(top(target).querySelectorAll(".shell-row-group").length).toBe(1);
-    expect(top(target).querySelectorAll(".shell-row-group-body > .pins-row").length).toBe(2);
+    expect(top(target).querySelector(".empty-title").textContent.trim()).toBe("this page has no trail yet.");
+    const choose = [...top(target).querySelectorAll(".empty-actions button")].find(
+      (b) => b.textContent.trim() === "choose a trail",
+    );
+    choose.click();
+    flushSync();
+    await settle();
+    expect(target.querySelector('[data-sheet="trail"]')).not.toBeNull();
   });
 
-  it("shows no segment at all when every pin has the same scope", async () => {
-    // NOT a vacuous absence. With one scope present the control would read
-    // `all | this trail` and both segments would select the identical
-    // rows — an affordance onto nothing, which is the dead row this tree
-    // refuses one surface over. A root trail's pins screen is this case,
-    // and so is every untrailed page's, so it is the common shape.
+  it("asks before it unpins from a row's more, keep first", async () => {
+    // pin-row-actions.js: unpin sits behind more and asks first — on the
+    // desktop it sat one slip from insert with no question asked.
     api.getOrCreateToday.mockResolvedValue(withLines(pageRow({ lineage_id: "L1" })));
     api.getPins.mockResolvedValue([note("a"), note("b")]);
     const { target } = render(ShellApp, {});
     await settle();
     await pushPins(target);
 
-    expect(pinRows(target)).toHaveLength(2);
-    expect(top(target).querySelector(".seg-btn")).toBeNull();
+    pressRowAction(target, "b", "more");
+    expect(sheetLabels(target, "pin-more")).toContain("unpin…");
+    tapSheetRow(target, "pin-more", "unpin…");
+    expect(api.deletePin).not.toHaveBeenCalled();
+    expect(target.querySelector('[data-sheet="pin-more"] .shell-note').textContent.trim()).toBe(
+      "unpin b? the writing stays on its page.",
+    );
+    expect(sheetLabels(target, "pin-more")).toEqual(["keep", "unpin"]);
+
+    tapSheetRow(target, "pin-more", "unpin");
+    await settle();
+    expect(api.deletePin).toHaveBeenCalledWith("b");
+    expect(pinRows(target).map((r) => r.label)).toEqual(["a"]);
   });
 
-  it("keeps only the chosen scope's rows", async () => {
+  it("says open and put on page in words on every row", async () => {
     api.getOrCreateToday.mockResolvedValue(withLines(pageRow({ lineage_id: "L1" })));
-    api.getPins.mockResolvedValue([note("a"), note("b", { lineage_id: "PARENT" })]);
+    api.getPins.mockResolvedValue([note("a")]);
     const { target } = render(ShellApp, {});
     await settle();
     await pushPins(target);
 
-    pickSegment(target, "inherited");
+    const words = [...top(target).querySelectorAll(".pins-row-actions button")].map((b) => b.textContent.trim());
+    expect(words).toEqual(["open", "put on page", "more"]);
+    const named = [...top(target).querySelectorAll(".pins-row-actions button")].map((b) => b.getAttribute("aria-label"));
+    expect(named).toEqual(["open a", "put a on this page", "more for a"]);
 
-    expect(pinRows(target).map((r) => r.label)).toEqual(["b"]);
-    pickSegment(target, "all");
-    expect(pinRows(target).map((r) => r.label)).toEqual(["a", "b"]);
+    const before = depth(target);
+    pressRowAction(target, "a", "open");
+    await settle();
+    // The pin's own screen, pushed over the list — the row's title does
+    // the same, as it always has.
+    expect(depth(target)).toBe(before + 1);
   });
 
   it("shows the trail exactly as many rows as the toast just counted", async () => {
@@ -7444,27 +7643,6 @@ describe("ShellApp — the pins screen", () => {
 
     expect(api.updatePinContent).toHaveBeenCalledWith("a", "one, then two", "a");
   });
-
-  it("drops the segment's selection when its scope leaves the list", async () => {
-    // Unpinning the last inherited row takes that option away while it is
-    // selected. Without pinFilterValue the screen would render an empty
-    // list under a segment with nothing lit — the control and the list
-    // describing different things.
-    api.getOrCreateToday.mockResolvedValue(withLines(pageRow({ lineage_id: "L1" })));
-    api.getPins.mockResolvedValue([note("a"), note("b", { lineage_id: "PARENT" })]);
-    const { target } = render(ShellApp, {});
-    await settle();
-    await pushPins(target);
-    pickSegment(target, "inherited");
-    tapPinRow(target, "b");
-    await settle();
-
-    tapTopRow(target, "unpin");
-    await settle();
-
-    expect(top(target).querySelector(".seg-btn")).toBeNull();
-    expect(pinRows(target).map((r) => r.label)).toEqual(["a"]);
-  });
 });
 
 // The memory root, from the app: what it reads on the way in, what its
@@ -7742,6 +7920,65 @@ describe("ShellApp — memory", () => {
     // The bar counts what the writer moved, so the way back is visible
     // from outside the sheet.
     expect(target.querySelector(".shell-navbar-action").textContent.trim()).toBe("filters · 1");
+  });
+
+  it("names the date filter in force with a pill, counts what it hides, and takes it off", async () => {
+    // 0.8.2 (spec §2, §4): a list that is merely shorter says why. The
+    // desktop's bug was a pins tab at 1 of 4 under a filter nothing named.
+    api.getThread.mockResolvedValue([
+      memoryPage({ id: "a", date: TODAY, what_matters_now: "the second reader" }),
+      memoryPage({ id: "b", date: "2020-03-04", what_matters_now: "the first draft" }),
+    ]);
+    api.getLineages.mockResolvedValue([{ id: "L1", name: "the book", parent_id: null }]);
+    const { target } = render(ShellApp, {});
+    await settle();
+    await openMemory(target);
+    // At rest: no pill, and the count line says the whole.
+    expect(target.querySelector(".memory-pills")).toBeNull();
+
+    openFilters(target);
+    sheetSegment(target, "memory-filters", "today");
+    target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await settle();
+
+    const pills = [...target.querySelectorAll(".memory-pill button")];
+    expect(pills.map((b) => b.getAttribute("aria-label"))).toEqual(["remove today"]);
+    expect(target.querySelector(".memory-count").textContent.trim()).toBe(
+      '1 of 2 pages · 1 hidden by "today"',
+    );
+
+    pills[0].click();
+    flushSync();
+    await settle();
+    expect(target.querySelector(".memory-pills")).toBeNull();
+    expect(target.querySelector(".memory-count").textContent.trim()).toBe("2 pages");
+    expect(rowLabels(target)).toEqual(["the second reader", "the first draft"]);
+  });
+
+  it("shows everything: every pill off and the search cleared", async () => {
+    api.getThread.mockResolvedValue([
+      memoryPage({ id: "a", date: TODAY, what_matters_now: "the second reader", pin_count: 1 }),
+      memoryPage({ id: "b", date: "2020-03-04", what_matters_now: "the first draft" }),
+    ]);
+    api.getLineages.mockResolvedValue([{ id: "L1", name: "the book", parent_id: null }]);
+    const { target } = render(ShellApp, {});
+    await settle();
+    await openMemory(target);
+
+    openFilters(target);
+    sheetSegment(target, "memory-filters", "today");
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await settle();
+    expect(rowLabels(target)).toEqual(["the second reader"]);
+
+    const all = [...target.querySelectorAll(".memory-pills-all button")][0];
+    expect(all.textContent.trim()).toBe("show everything");
+    all.click();
+    flushSync();
+    await settle();
+    expect(rowLabels(target)).toEqual(["the second reader", "the first draft"]);
+    expect(target.querySelector(".shell-navbar-action").textContent.trim()).toBe("filters");
   });
 
   it("narrows the list to a day picked off the calendar", async () => {
@@ -8413,6 +8650,70 @@ describe("ShellApp — the reading view, and the index of trails", () => {
     expect(all.textContent).toContain("showing");
   });
 
+  it("finds a trail in the scope sheet, keeping its parent, with each trail's own pages and pins", async () => {
+    // 0.8.2 (spec §4): the sheet had no search and no counts. The counts
+    // are two read-only queries, not a tally of memory's capped list.
+    api.getThread.mockResolvedValue([summary({ lineage_id: null })]);
+    api.getLineages.mockResolvedValue(LINEAGES);
+    api.getTrailPageCounts.mockResolvedValue([["L1", 6], ["L3", 2]]);
+    api.getTrailPinCounts.mockResolvedValue([["L1", 4], [null, 1]]);
+    const { target } = render(ShellApp, {});
+    await settle();
+    await openMemory(target);
+    tapAction(target, "trails");
+    await settle();
+
+    const value = (label) =>
+      [...target.querySelectorAll('[data-sheet="trail-scope"] .shell-row')]
+        .find((r) => r.querySelector(".shell-row-label").textContent.trim() === label)
+        .querySelector(".shell-row-value").textContent.trim();
+    expect(value("the book")).toBe("6 pages · 4 pins");
+    expect(value("chapter three")).toBe("2 pages · 0 pins");
+    // The one untrailed page memory read, and the one pin on no trail.
+    expect(value("untrailed")).toBe("1 page · 1 pin");
+
+    const field = target.querySelector('[data-sheet="trail-scope"] .shell-field-input');
+    expect(field.placeholder).toBe("find a trail…");
+    field.value = "chapter";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect(sheetRowsIn(target, "trail-scope")).toEqual([
+      "all trails",
+      "untrailed",
+      "the book",
+      "chapter three",
+    ]);
+
+    field.value = "zebra";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect(target.querySelector('[data-sheet="trail-scope"] .shell-note').textContent.trim()).toBe(
+      "no trail is named like that.",
+    );
+  });
+
+  it("names the scoped trail with a pill, and the pill takes the scope off", async () => {
+    api.getThread.mockResolvedValue([
+      summary({ id: "a", lineage_id: "L1", what_matters_now: "the book itself" }),
+      summary({ id: "c", lineage_id: "L2", what_matters_now: "the cover letter" }),
+    ]);
+    api.getLineages.mockResolvedValue(LINEAGES);
+    const { target } = render(ShellApp, {});
+    await settle();
+    await openMemory(target);
+    tapAction(target, "trails");
+    tapSheetRow(target, "trail-scope", "a job search");
+    await settle();
+
+    const pill = target.querySelector(".memory-pill button");
+    expect(pill.getAttribute("aria-label")).toBe("remove a job search");
+    pill.click();
+    flushSync();
+    await settle();
+    expect(target.querySelector(".memory-pill")).toBeNull();
+    expect(actionLabels(target)).toEqual(["filters", "trails"]);
+  });
+
   it("scopes memory to the trail that was picked, and closes", async () => {
     api.getThread.mockResolvedValue([
       summary({ id: "a", lineage_id: "L1", what_matters_now: "the book itself" }),
@@ -9001,7 +9302,7 @@ describe("ShellApp — settings, and the sections it pushes", () => {
 
     expect(target.textContent).not.toContain("not built yet");
     expect(title(target)).toBe("settings");
-    expect(topRowLabels(target)).toEqual(["tone", "font", "sync", "labs", "about"]);
+    expect(topRowLabels(target)).toEqual(["tone", "font", "data", "lock", "sync", "labs", "about"]);
   });
 
   it("keeps the tab bar in the slot at the settings root", async () => {
@@ -9034,6 +9335,19 @@ describe("ShellApp — settings, and the sections it pushes", () => {
     // band rather than reserving an empty one.
     expect(target.querySelector(".shell-tabbar")).toBeNull();
     expect(target.querySelector(".shell-slot")).toBeNull();
+  });
+
+  it("opens the data section with its export row", async () => {
+    // A browser profiles as web, which cannot share a zip, so the row shows
+    // with the laptop note under it (platform.js exportZip). J10.2's check
+    // looks for this row on the phone.
+    const { target } = render(ShellApp, {});
+    await settle();
+    await openSettings(target);
+    await openSection(target, "data");
+    expect(title(target)).toBe("data");
+    expect(topRowLabels(target)).toEqual(["export"]);
+    expect(topEntry(target).textContent).toContain("export works from the laptop for now.");
   });
 
   it("comes back the way every pushed screen does", async () => {

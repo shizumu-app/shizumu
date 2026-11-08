@@ -237,6 +237,19 @@ describe("EditorCore", () => {
     expect(stored.every((n) => n.attrs.pinId === "pin-1")).toBe(true);
   });
 
+  it("a pin over a range leaves a board inside it with its own title; a board pinned alone takes the pin's", async () => {
+    const board = (title) => ({ type: "blockquote", attrs: { blockTitle: title }, content: [para("the ferry")] });
+    const range = await mountCore({ initialContent: doc(para("before the trip"), board("what to pack")) });
+    const positions = [];
+    range.editor.state.doc.forEach((_n, offset) => positions.push(offset));
+    await range.instance.confirmPin({ title: "the trip", category: "board", content: JSON.stringify(range.editor.getJSON()), nodePositions: positions });
+    expect(range.editor.state.doc.child(1).attrs.blockTitle).toBe("what to pack");
+
+    const alone = await mountCore({ initialContent: doc(board(null)) });
+    await alone.instance.confirmPin({ title: "the trip", category: "board", content: JSON.stringify(alone.editor.getJSON()), nodePositions: [0] });
+    expect(alone.editor.state.doc.child(0).attrs.blockTitle).toBe("the trip");
+  });
+
   it("calls onStamped after the stamp but before the durable save", async () => {
     // Chrome's block flash rides on onStamped. Pre-split it ran at exactly
     // this point — pin row created, pinId in the doc, save not yet issued —

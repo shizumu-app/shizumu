@@ -64,6 +64,9 @@ export function safeAreaStyle(insets) {
   return out;
 }
 
+/** Session storage key for the last insets the activity told this session. */
+const KEPT = "shizumu:native-insets";
+
 /**
  * Listen for the activity's window insets and publish them.
  *
@@ -83,9 +86,19 @@ export function startSafeArea(win = typeof window !== "undefined" ? window : nul
     const style = safeAreaStyle(insets);
     for (const [name, value] of Object.entries(style)) root.style.setProperty(name, value);
     nativeInsets.set({ ...insets });
+    try { win.sessionStorage?.setItem(KEPT, JSON.stringify(insets)); } catch {}
   };
 
+  // The activity tells each page once, keyed by URL, and location.reload()
+  // keeps the URL, so a reloaded page is never told (the startup lock
+  // screen's unlock reloads; A16, 2026-11-08). The same activity's bars do
+  // not move across a reload, so the last insets told to this session stand
+  // in until the activity speaks again. Its own stash, when there is one,
+  // wins.
+  let kept = null;
+  try { kept = JSON.parse(win.sessionStorage?.getItem(KEPT) || "null"); } catch {}
   if (win.__nativeInsetsState) apply(win.__nativeInsetsState);
+  else if (kept) apply(kept);
   win.__nativeInsets = apply;
 
   let released = false;

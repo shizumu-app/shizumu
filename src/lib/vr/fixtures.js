@@ -218,7 +218,7 @@ export async function pageWithShortBoard(invoke) {
 
 // A 3x2 table (header row + 2 body rows), titled, cells filled with short
 // words — the shape the touch action-sheet's title-row and convert-absence
-// assertions (BLOCK_ACTIONS_SHEET_TOUCH) need a real filled table to prove.
+// assertions (the board-at-rest photograph) need a real filled table to prove.
 export async function pageWithTableContent(invoke) {
   const { page } = await invoke("get_or_create_today", {});
   await invoke("update_what_matters_now", {

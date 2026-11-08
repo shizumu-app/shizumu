@@ -49,6 +49,7 @@ const NOTICED = new Map([
   ["pair_existing_confirm", DEMO_COPY.sync],
   ["backup_database_gui", DEMO_COPY.exportBackup],
   ["export_pages_gui", DEMO_COPY.exportBackup],
+  ["export_trail_zip_share", DEMO_COPY.exportBackup],
   ["attachment_add", DEMO_COPY.files],
   ["attachment_add_bytes", DEMO_COPY.files],
   ["attachment_open", DEMO_COPY.files],

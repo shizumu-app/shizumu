@@ -421,9 +421,11 @@ function buildCodeBlock(sourceNodeJson, blockTitle) {
  *     source (including "already this shape"), or inputs are malformed
  *
  * `blockTitle` survives onto the converted node (every board type has the
- * attr, per block-title.js's global registration); `pinId` does not — the
- * pin pointed at the OLD shape, and the converted node is a new shape it
- * never described. `schema` is accepted for API symmetry with the caller
+ * attr, per block-title.js's global registration). `pinId` survives a list
+ * turned into another kind of list, which is the same passage with different
+ * markers, so the pin keeps following it and a tick reaches it. Every other
+ * target rebuilds the block into a new shape the pin never described, and the
+ * pin stays behind on its snapshot. `schema` is accepted for API symmetry with the caller
  * (which needs it for `schema.nodeFromJSON`) but this function itself stays
  * schema-free — it only ever produces JSON shapes the app's own schema
  * already defines.
@@ -467,7 +469,7 @@ export function convertBlockNode(sourceNodeJson, target, schema) { // eslint-dis
 
   if (sourceType === "list" && LIST_MARKER_TARGETS.has(target)) {
     const converted = setListMarkerDeep(src, target);
-    return { ...converted, attrs: { ...(converted.attrs || {}), blockTitle, pinId: null } };
+    return { ...converted, attrs: { ...(converted.attrs || {}), blockTitle, pinId: src.attrs?.pinId ?? null } };
   }
   if (LIST_MARKER_TARGETS.has(target)) {
     const paragraphs = flattenToParagraphs(src);

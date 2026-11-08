@@ -81,7 +81,11 @@ export function serializeSelection(editor) {
     updated_at: "",
     content_json: JSON.stringify(doc),
   };
-  const full = serializePage({ page: fakePage, pins: [] });
+  // A selection is not a page: what lands in another app should be the
+  // writing, so the only block lines are a decision's kind, state and date,
+  // which a cut and paste inside the app must keep (markdown.js,
+  // clipboardBlockLine). No ids and no pins: a paste is a new block.
+  const full = serializePage({ page: fakePage, pins: [], blockLines: "clipboard" });
   // Strip the YAML frontmatter — clipboard recipients don't want it.
   const m = full.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
   return m ? m[1] : full;
@@ -142,8 +146,25 @@ export function parseAndInsert(editor, md) {
   } catch {
     return false;
   }
-  const docContent = parsed?.doc?.content ?? [];
+  const docContent = (parsed?.doc?.content ?? []).map(asNewBlock);
   if (docContent.length === 0) return false;
   editor.chain().focus().insertContent(docContent).run();
   return true;
+}
+
+/**
+ * A pasted block is a new block: markdown pasted from an exported page file
+ * carries `id=` and `pin=`, and inserted as-is the copy would share the
+ * source's id and be bound to its pin. Both are dropped, at every depth; the
+ * block-id plugin gives the new block its own id. State, date and title stay.
+ */
+export function asNewBlock(node) {
+  if (!node || typeof node !== "object") return node;
+  const out = { ...node };
+  if (node.attrs) {
+    const { blockId, pinId, ...rest } = node.attrs;
+    out.attrs = rest;
+  }
+  if (Array.isArray(node.content)) out.content = node.content.map(asNewBlock);
+  return out;
 }

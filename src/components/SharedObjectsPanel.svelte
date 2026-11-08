@@ -1,7 +1,7 @@
 <script>
   import { holdsPin } from "../lib/pin-node.js";
   import { fade } from "../lib/motion.js";
-  import { untrack, onMount, onDestroy } from "svelte";
+  import { untrack, onDestroy } from "svelte";
   import { navPush, navClose } from "../lib/navstack.js";
   import { pinToNodes } from "../lib/pin-carry-forward.js";
   import { pinTitleAuthority } from "../lib/pin-title-authority.js";
@@ -16,16 +16,15 @@
   import { buildMentionLabel } from "../lib/mention-label.js";
   import { pinFamily, pinDisplayTitle, pinSearchText } from "../lib/pin-display.js";
   import { pinModalFor, pinForModal, writePinEdit, textIntoNode } from "../lib/pin-edit-route.js";
-  import SidebarShell from "../lib/ui/SidebarShell.svelte";
-  import SidebarNavRow from "../lib/ui/SidebarNavRow.svelte";
-  import SectionHeader from "../lib/ui/SectionHeader.svelte";
-  import BottomSheet from "../lib/ui/BottomSheet.svelte";
-  import { isPhoneViewport, watchPhoneViewport } from "../lib/responsive.js";
-  import Empty from "../lib/ui/Empty.svelte";
+  import Popover from "../lib/ui/Popover.svelte";
   import Input from "../lib/ui/Input.svelte";
-  import Chip from "../lib/ui/Chip.svelte";
   import Button from "../lib/ui/Button.svelte";
-  import TriggerChip from "../lib/ui/TriggerChip.svelte";
+  import {
+    defaultPanelFilter, panelChips, toggleChip, setKind, filterPanelPins, sortPanelPins,
+    scopeRows, panelSections, pinSourceLine, panelTitle, searchPlaceholder,
+    clearPanelFilters, mergePinRows, canReorder, KINDS, SCOPE_ALL, SORT_DEFAULT, SORT_NEWEST,
+  } from "../lib/pin-panel-filter.js";
+  import { pinsEmptyState } from "../lib/pin-panel-empty.js";
   import PinRow from "./pins/PinRow.svelte";
   import PinArtifactModal from "./pins/PinArtifactModal.svelte";
   import PinNoteModal from "./pins/PinNoteModal.svelte";
@@ -37,7 +36,7 @@
   } from "../lib/render/preview-card.js";
 
   /** @type {{ lineageId: string|null, lineageName: string, pageId: string, editorDoc: any, onClose: () => void, onPinRemoved: (content: string) => void, onPinInject: (nodes: any[]) => void, onPinLocate: (pinId: string) => void, onSamePagePinSave: (pinId: string, newNode: any) => boolean|undefined, onBeforePageWrite: (pageId: string) => Promise<void>|void, onPageWritten: (pageId: string) => void, onNavigateToSource: (pageId: string) => void }} */
-  let { lineageId = null, lineageName = "", pageId, refreshToken = 0, editorDoc = null, openPinId = null, onPinOpened = () => {}, onClose, onPinRemoved = () => {}, onPinInject = () => {}, onPinLocate = () => {}, onSamePagePinSave = () => false, onBeforePageWrite = () => {}, onPageWritten = () => {}, onNavigateToSource = () => {} } = $props();
+  let { lineageId = null, lineageName = "", pageId, refreshToken = 0, editorDoc = null, openPinId = null, docked = false, canPutOnPage = true, canChooseTrail = true, onChooseTrail = () => {}, onReturnToEditor = () => {}, onPinOpened = () => {}, onClose, onPinRemoved = () => {}, onPinInject = () => {}, onPinLocate = () => {}, onSamePagePinSave = () => false, onBeforePageWrite = () => {}, onPageWritten = () => {}, onNavigateToSource = () => {} } = $props();
 
   // The panel is mounted/unmounted by the caller's {#if} (there's no
   // internal open prop to react to), so it registers on the navstack once
@@ -47,16 +46,50 @@
   // buttons and the overlay click already use. hideBar: true so the
   // MobileActionBar steps aside while the panel (and any pin modal nested
   // inside it) is open.
+  //
+  // DOCKED (spec 2026-11-01, ruling 4): a panel beside a live page is not a
+  // layer over it, so it joins the stack only while focus is inside it —
+  // otherwise back, the edge swipe and the header's overlay checks would
+  // all treat the page as covered while the writer is typing in it.
   let panelNavId = null;
-  onMount(() => {
+  let focusInside = $state(false);
+  function pushNav() {
+    if (panelNavId !== null) return;
     panelNavId = navPush("shared-objects-panel", () => {
       panelNavId = null;
       onClose?.();
     }, { hideBar: true });
+  }
+  function dropNav() {
+    if (panelNavId === null) return;
+    const id = panelNavId;
+    panelNavId = null;
+    navClose(id);
+  }
+  $effect(() => {
+    if (!docked || focusInside) untrack(pushNav);
+    else untrack(dropNav);
   });
-  onDestroy(() => {
-    if (panelNavId !== null) navClose(panelNavId);
-  });
+  onDestroy(dropNav);
+
+  let panelEl = $state(/** @type {HTMLElement|null} */ (null));
+  function handleFocusIn() { focusInside = true; }
+  function handleFocusOut(e) {
+    const next = /** @type {Node|null} */ (e.relatedTarget);
+    if (next && panelEl?.contains(next)) return;
+    focusInside = false;
+  }
+
+  // Escape inside the panel. Docked, it hands the caret back to the page
+  // and leaves the panel open beside it; as an overlay, it closes the panel,
+  // which is what a layer does. An Escape something inside already spent
+  // (the search box clearing its text, a row's ⋯ menu closing) is not one.
+  function handlePanelKeydown(e) {
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    e.preventDefault();
+    if (docked) onReturnToEditor?.();
+    else onClose?.();
+  }
 
   // Pin lists split by scope so the sectioned feed can render them together.
   // Trail tab semantics (current + ancestors) remain; we fetch global in
@@ -65,6 +98,11 @@
   let pinsTrail = $state([]);
   let pinsGlobal = $state([]);
   let allPins = $derived([...pinsTrail, ...pinsGlobal]);
+  // Every trail's pins, for the `all trails` scope and its count. get_pins
+  // walks ancestors upward, so the fetch asks each trail and mergePinRows
+  // keeps each pin once (the same fan-out memory does).
+  let pinsAllTrails = $state([]);
+  let everyPin = $derived(mergePinRows([pinsTrail, pinsAllTrails, pinsGlobal]));
 
   /**
    * Patch one pin everywhere it lives (trail or global). Used after optimistic
@@ -73,6 +111,7 @@
    * `loadPins()` afterwards — the backend re-evaluates ancestry visibility.
    */
   function patchPin(id, mut) {
+    pinsAllTrails = pinsAllTrails.map((p) => (p.id === id ? { ...p, ...mut } : p));
     pinsTrail = pinsTrail.map((p) => (p.id === id ? { ...p, ...mut } : p));
     pinsGlobal = pinsGlobal.map((p) => (p.id === id ? { ...p, ...mut } : p));
     pinsReached = pinsReached.map((p) => (p.id === id ? { ...p, ...mut } : p));
@@ -80,6 +119,7 @@
 
   /** Drop a pin everywhere it lives. Used by removePin. */
   function dropPin(id) {
+    pinsAllTrails = pinsAllTrails.filter((p) => p.id !== id);
     pinsTrail = pinsTrail.filter((p) => p.id !== id);
     pinsGlobal = pinsGlobal.filter((p) => p.id !== id);
     pinsReached = pinsReached.filter((p) => p.id !== id);
@@ -218,28 +258,22 @@
     onPinOpened();
   });
   let allLineages = $state([]);
-  let scopeMenuFor = $state(null); // pin id whose scope menu is open
 
   // Side-nav filter state (Task 2.3). Single-select category + scope; the
   // old multi-select chip set (`filters.types: Set`, `filters.recent`, etc.)
   // collapsed into these axes plus a single carry-forward-only toggle and
   // a free-text search.
+  //
+  // Since 0.8.2 they are one row of chips under the search, decided in
+  // pin-panel-filter.js. The sidebar that held them was too narrow to show
+  // on desktop and nothing opened its drawer, so only search was reachable.
   let query = $state("");
-  let cat = $state(/** @type {"all"|"text"|"lists"|"structure"|"charts"|"code"|"files"} */ ("all"));
-  let scope = $state(/** @type {"any"|"here"|"inherited"|"global"} */ ("any"));
-  let carriesOnly = $state(false);
-  let onPageOnly = $state(false);
-  let drawerOpen = $state(false);
-
-  // Phone branch: replace the sidebar drawer with a bottom-sheet filter.
-  // The shell loses its sidebar entirely on phone; the user opens
-  // filters via an explicit toolbar button.
-  let isPhone = $state(isPhoneViewport());
-  let filterSheetOpen = $state(false);
-  $effect(() => {
-    const unwatch = watchPhoneViewport((m) => { isPhone = m; });
-    return unwatch;
-  });
+  let chipState = $state(defaultPanelFilter());
+  let filter = $derived({ ...chipState, query });
+  let kindMenuOpen = $state(false);
+  let kindChipEl = $state(/** @type {HTMLElement|null} */ (null));
+  let sortMenuOpen = $state(false);
+  let sortBtnEl = $state(/** @type {HTMLElement|null} */ (null));
 
   // Inline rename buffer. The PinRow component owns the in-row input UI
   // and reports a final title via onRename; this string just bridges the
@@ -252,45 +286,11 @@
     if (!id) return null;
     return allLineages.find((l) => l.id === id) || null;
   }
-  function parentLineageOf(id) {
-    const l = lineageById(id);
-    return l ? lineageById(l.parent_id) : null;
-  }
-  // Walk parent_id up to root; root -> self order. Empty for global pins.
-  function lineagePathFor(id) {
-    if (!id) return [];
-    const out = [];
-    let cur = lineageById(id);
-    const seen = new Set();
-    while (cur && !seen.has(cur.id)) {
-      seen.add(cur.id);
-      out.unshift({ id: cur.id, name: cur.name });
-      cur = cur.parent_id ? lineageById(cur.parent_id) : null;
-    }
-    return out;
-  }
-
-  // Actions available on a pin based on its current scope + birth page's trail.
-  function scopeActionsFor(pin) {
-    const actions = [];
-    const parent = parentLineageOf(pin.lineage_id);
-    if (parent) {
-      actions.push({ kind: "share-up", label: `share up to ${parent.name}`, target: parent.id });
-    }
-    if (pin.lineage_id) {
-      actions.push({ kind: "make-global", label: "make global", target: null });
-    }
-    const birth = lineageById(pin.source_page_lineage_id);
-    if (birth && birth.id !== pin.lineage_id) {
-      actions.push({ kind: "restore", label: `restore to ${birth.name}`, target: birth.id });
-    }
-    return actions;
-  }
-
-  async function applyScopeAction(pin, action) {
-    scopeMenuFor = null;
+  // Move a pin to another trail (the row's ⋯ → move …; the choices come
+  // from pinMoveActions in pin-row-actions.js).
+  async function movePin(pin, target) {
     // Optimistic local update; if the pin is no longer visible from here, drop it.
-    const nextId = action.target;
+    const nextId = target;
     patchPin(pin.id, { lineage_id: nextId });
     try {
       await updatePinScope(pin.id, nextId);
@@ -308,7 +308,6 @@
     refreshToken;
     untrack(() => {
       loadPins();
-      getLineages().then((list) => { allLineages = list || []; }).catch(() => {});
     });
   });
 
@@ -325,13 +324,20 @@
   async function loadPins() {
     loading = true;
     try {
-      const [trailRows, globalRows, attachments] = await Promise.all([
+      const lineages = await getLineages().catch(() => []);
+      allLineages = lineages || [];
+      const others = allLineages.map((l) => l.id).filter((id) => id !== lineageId);
+      const [trailRows, globalRows, attachments, ...otherRows] = await Promise.all([
         lineageId ? getPins(lineageId) : Promise.resolve([]),
         getPins(null),
         // Isolated catch: pins must still render on a device where the
         // attachment surface is unavailable.
         attachmentList().catch(() => null),
+        // Every other trail, for `all trails`. One failing trail costs that
+        // trail's pins in that scope, not the panel.
+        ...others.map((id) => getPins(id).catch(() => [])),
       ]);
+      pinsAllTrails = mergePinRows(otherRows);
       localBlobs = attachments ? attachmentLocality(attachments) : null;
       // The trail query's CTE already includes global pins indirectly (a pin
       // with lineage_id NULL won't match `IN (chain)` because chain never
@@ -347,7 +353,6 @@
   }
 
   const isBoard = (o) => ["artifact", "board", "table", "file"].includes(o.object_type);
-  const isNote = (o) => !isBoard(o);
 
   // Scope key for a pin in the current panel context. Used both for the
   // sidebar scope counts and for grouping the visible feed into sections.
@@ -357,113 +362,35 @@
     return "inherited";
   }
 
-  // Side-nav counts — computed against the unfiltered union so the user
-  // always sees the full size of each axis, not the post-filter remainder.
-  let textCount = $derived(allPins.filter((p) => pinFamily(p) === "text").length);
-  let listsCount = $derived(allPins.filter((p) => pinFamily(p) === "lists").length);
-  let structureCount = $derived(allPins.filter((p) => pinFamily(p) === "structure").length);
-  let chartsCount = $derived(allPins.filter((p) => pinFamily(p) === "charts").length);
-  let codeCount = $derived(allPins.filter((p) => pinFamily(p) === "code").length);
-  let filesCount = $derived(allPins.filter((p) => pinFamily(p) === "files").length);
-  let carriesCount = $derived(allPins.filter((p) => p.auto_insert).length);
-  let onPageCount = $derived(allPins.filter((p) => p.source_page_id === pageId).length);
-  let allCount = $derived(allPins.length);
-  let hereCount = $derived(allPins.filter((p) => scopeOf(p) === "here").length);
-  let inheritedCount = $derived(allPins.filter((p) => scopeOf(p) === "inherited").length);
-  let globalCount = $derived(allPins.filter((p) => scopeOf(p) === "global").length);
-
-  // Memoize pin content parsing. Keyed by pin id + updated_at so we
-  // re-parse automatically when a pin row's updated_at advances on save.
-  // Caveat: for same-page pins, effectivePin() synthesizes a fresh content
-  // string from the live editor doc; between saves, that synthesized
-  // content is not reflected here (we still return the last cached parse
-  // for the pin's updated_at). The board-type / summary helpers are
-  // tolerant of this lag because those signals only change on save.
-  const parsedContentCache = new Map();
-  function getParsedContent(pin) {
-    if (!pin) return null;
-    const key = `${pin.id}:${pin.updated_at || ""}`;
-    if (parsedContentCache.has(key)) return parsedContentCache.get(key);
-    let parsed = null;
-    try { parsed = JSON.parse(pin.content); } catch { parsed = null; }
-    parsedContentCache.set(key, parsed);
-    return parsed;
-  }
-
-  function getPlainText(pin) {
-    const parsed = getParsedContent(pin);
-    if (parsed && parsed.type === "doc" && parsed.content) {
-      function walk(node) {
-        if (node.text) return node.text;
-        if (node.content) return node.content.map(walk).join(" ");
-        return "";
-      }
-      return parsed.content.map(walk).join(" ");
-    }
-    return (pin && pin.content) || "";
-  }
-
-  /**
-   * Search predicate. Substring over everything the pin has words in.
-   * Never status-based — `open / closed / orphaned` is an implementation
-   * detail.
-   *
-   * The haystack comes from pin-display's pinSearchText rather than the
-   * local getPlainText walk below: that one cannot see a block's title
-   * (it is a node ATTRIBUTE, not a text node) and falls back to the raw
-   * JSON string for anything it doesn't recognise, which made schema keys
-   * like "paragraph" matchable. getPlainText stays for the carry-forward
-   * row's label, where a title would only duplicate the line above it.
-   */
-  function pinMatches(p, q) {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return true;
-    return pinSearchText(p).toLowerCase().includes(needle);
-  }
-
-  let visiblePins = $derived.by(() => {
-    let r = allPins;
-    if (cat !== "all") r = r.filter((p) => pinFamily(p) === cat);
-    if (scope !== "any") r = r.filter((p) => scopeOf(p) === scope);
-    if (carriesOnly) r = r.filter((p) => p.auto_insert);
-    if (onPageOnly) r = r.filter((p) => p.source_page_id === pageId);
-    if (query.trim()) r = r.filter((p) => pinMatches(p, query));
-    // Stable order: object_type bucket, then position.
-    return [...r].sort((a, b) => {
-      const t = (a.object_type || "").localeCompare(b.object_type || "");
-      if (t !== 0) return t;
-      return (a.position || 0) - (b.position || 0);
-    });
-  });
-
-  /**
-   * Group visible pins into ordered sections by scope:
-   *   - "on this trail" (lineage_id === current)
-   *   - "inherited" (any ancestor)
-   *   - "global" (lineage_id === null)
-   */
-  let sections = $derived.by(() => {
-    const groups = { here: [], inherited: [], global: [] };
-    for (const p of visiblePins) {
-      const s = scopeOf(p);
-      if (groups[s]) groups[s].push(p);
-    }
-    const out = [];
-    if (groups.here.length) out.push({ label: "on this trail", pins: groups.here });
-    if (groups.inherited.length) out.push({ label: "inherited", pins: groups.inherited });
-    if (groups.global.length) out.push({ label: "global", pins: groups.global });
+  // The chip row, the rows it shows and their headings: pin-panel-filter.js.
+  let chips = $derived(panelChips({ trailPins: allPins, allPins: everyPin, pageId, lineageId, filter }));
+  let kindCounts = $derived.by(() => {
+    const inScope = scopeRows({ trailPins: allPins, allPins: everyPin }, filter.scope);
+    const out = Object.fromEntries(KINDS.map((k) => [k, 0]));
+    for (const p of inScope) { const f = pinFamily(p); if (f in out) out[f] += 1; }
     return out;
   });
-
-  function hasActivePinFilters() {
-    return cat !== "all" || scope !== "any" || carriesOnly || onPageOnly || query.trim().length > 0;
+  function pressChip(chip, e) {
+    if (chip.menu) { kindChipEl = e?.currentTarget ?? null; kindMenuOpen = !kindMenuOpen; return; }
+    chipState = toggleChip(chipState, chip.id);
   }
 
+  let scopeCount = $derived(scopeRows({ trailPins: allPins, allPins: everyPin }, filter.scope).length);
+  let visiblePins = $derived(
+    sortPanelPins(
+      filterPanelPins(scopeRows({ trailPins: allPins, allPins: everyPin }, filter.scope), filter, { pageId }),
+      filter.sort,
+    ),
+  );
+  let sections = $derived(panelSections(visiblePins, { filter, lineageId, lineages: allLineages }));
+  let emptyState = $derived(pinsEmptyState({
+    loading, lineageId, scopeCount, visibleCount: visiblePins.length, allScope: filter.scope === SCOPE_ALL,
+  }));
+  let reorderable = $derived(canReorder(filter));
+  let title = $derived(panelTitle(lineageId, allLineages));
+
   function clearFilters() {
-    cat = "all";
-    scope = "any";
-    carriesOnly = false;
-    onPageOnly = false;
+    chipState = clearPanelFilters(chipState);
     query = "";
   }
 
@@ -499,23 +426,11 @@
     }
   });
 
-  // Carry-forward pins for the current trail (strict ownership; not
-  // inherited). Surfaces in the panel footer so the user can see what will
-  // auto-insert into tomorrow's first page on this trail.
-  let carryForwardPins = $derived(
-    lineageId
-      ? allPins.filter((p) =>
-          p.lineage_id === lineageId && p.auto_insert && p.status !== "orphaned",
-        )
-      : [],
-  );
-  let carryForwardOpen = $state(false);
-
   // Lookup helper used by the single-modal render block to resolve the
   // current pin row by id, so the modal child sees an always-up-to-date
   // pin (after patchPin mutations).
   function pinById(id) {
-    return allPins.find((p) => p.id === id) || pinsReached.find((p) => p.id === id) || null;
+    return everyPin.find((p) => p.id === id) || pinsReached.find((p) => p.id === id) || null;
   }
 
   // Save handler for the text-pin (note) modal. The note modal opens only
@@ -905,151 +820,104 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="overlay" onclick={onClose} transition:fade={{ duration: 120 }}></div>
+{#if !docked}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="overlay" onclick={onClose} transition:fade={{ duration: 120 }}></div>
+{/if}
 
-<!-- Filter rows snippet — defined at top level so both the SidebarShell
-     sidebar (desktop) and the BottomSheet (phone, which lives outside
-     .panel) can render it. Svelte 5 snippets are lexically scoped. -->
-{#snippet filterRows()}
-  <SidebarNavRow active={cat === "all"}       accent={cat === "all"}       count={allCount}       onClick={() => (cat = "all")}>all</SidebarNavRow>
-  <SidebarNavRow active={cat === "text"}      accent={cat === "text"}      count={textCount}      onClick={() => (cat = cat === "text"      ? "all" : "text")}>text</SidebarNavRow>
-  <SidebarNavRow active={cat === "lists"}     accent={cat === "lists"}     count={listsCount}     onClick={() => (cat = cat === "lists"     ? "all" : "lists")}>lists</SidebarNavRow>
-  <SidebarNavRow active={cat === "structure"} accent={cat === "structure"} count={structureCount} onClick={() => (cat = cat === "structure" ? "all" : "structure")}>structure</SidebarNavRow>
-  <SidebarNavRow active={cat === "charts"}    accent={cat === "charts"}    count={chartsCount}    onClick={() => (cat = cat === "charts"    ? "all" : "charts")}>charts</SidebarNavRow>
-  <SidebarNavRow active={cat === "code"}      accent={cat === "code"}      count={codeCount}      onClick={() => (cat = cat === "code"      ? "all" : "code")}>code</SidebarNavRow>
-  <SidebarNavRow active={cat === "files"}     accent={cat === "files"}     count={filesCount}     onClick={() => (cat = cat === "files"     ? "all" : "files")}>files</SidebarNavRow>
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<aside
+  class="panel"
+  class:docked
+  aria-label={title}
+  bind:this={panelEl}
+  onfocusin={handleFocusIn}
+  onfocusout={handleFocusOut}
+  onkeydown={handlePanelKeydown}
+  transition:fade={{ duration: 120 }}
+>
+  <header class="panel-head">
+    <div class="head-row">
+      <button class="panel-back" type="button" onclick={onClose} aria-label="close pins">‹</button>
+      <h2 class="panel-title">{title}</h2>
+      <button class="panel-close" type="button" onclick={onClose} aria-label="close pins">×</button>
+    </div>
+    <div class="panel-search">
+      <Input variant="search" bind:value={query} placeholder={searchPlaceholder(filter, lineageId)} ariaLabel="search pins" />
+    </div>
+    <div class="chips" role="group" aria-label="filter pins">
+      {#each chips as chip (chip.id)}
+        <button
+          type="button"
+          class="f-chip"
+          class:on={chip.active}
+          aria-pressed={chip.menu ? undefined : chip.active}
+          aria-haspopup={chip.menu ? "menu" : undefined}
+          aria-expanded={chip.menu ? kindMenuOpen : undefined}
+          onclick={(e) => pressChip(chip, e)}
+        >{chip.label}{#if chip.count != null}<span class="f-n">{chip.count}</span>{/if}</button>
+      {/each}
+    </div>
+  </header>
 
-  <SectionHeader label="filters" />
-  <SidebarNavRow active={carriesOnly} accent={carriesOnly} count={carriesCount} onClick={() => (carriesOnly = !carriesOnly)}>carries</SidebarNavRow>
-  {#if lineageId == null}
-    <SidebarNavRow active={onPageOnly} accent={onPageOnly} count={onPageCount} onClick={() => (onPageOnly = !onPageOnly)}>on page</SidebarNavRow>
-  {/if}
-
-  <SectionHeader label="scope" />
-  <SidebarNavRow active={scope === "here"}      accent={scope === "here"}      count={hereCount}      onClick={() => (scope = scope === "here" ? "any" : "here")}>this trail</SidebarNavRow>
-  <SidebarNavRow active={scope === "inherited"} accent={scope === "inherited"} count={inheritedCount} onClick={() => (scope = scope === "inherited" ? "any" : "inherited")}>inherited</SidebarNavRow>
-  <SidebarNavRow active={scope === "global"}    accent={scope === "global"}    count={globalCount}    onClick={() => (scope = scope === "global" ? "any" : "global")}>global</SidebarNavRow>
-{/snippet}
-
-<div class="panel" transition:fade={{ duration: 120 }}>
-  <button class="panel-close" onclick={onClose} aria-label="close">×</button>
-  <button class="panel-back" onclick={onClose} aria-label="back">‹</button>
-
-  <SidebarShell sidebarWidth="11rem" density="compact" sidebarMode="auto" bind:drawerOpen>
-    {#if !isPhone}
-      {#snippet sidebar()}
-        {@render filterRows()}
-      {/snippet}
-    {/if}
-
-    {#snippet toolbar()}
-      {#if isPhone}
-        <div class="phone-toolbar">
-          <div class="phone-header">
-            <h2 class="phone-title">pins</h2>
-          </div>
-          <div class="phone-search-row">
-            <div class="toolbar-search"><Input variant="search" bind:value={query} placeholder="search pins…" /></div>
-            <TriggerChip
-              active={filterSheetOpen}
-              onClick={() => (filterSheetOpen = true)}
-              ariaLabel="open filters"
-            >
-              {#snippet leading()}
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M3 5h18M6 12h12M10 19h4" />
-                </svg>
-              {/snippet}
-              filter
-            </TriggerChip>
-          </div>
-        </div>
-      {:else}
-        <div class="toolbar-search"><Input variant="search" bind:value={query} placeholder="search pins…" /></div>
-      {/if}
-    {/snippet}
-
-    {#snippet footer()}
-      {#if carryForwardPins.length > 0}
-        <div class="cf-footer" class:open={carryForwardOpen}>
-          <!-- A button with its state named (aria-expanded), so a keyboard
-               opens it too; it was a div only a mouse could (2026-10-31). -->
-          <button type="button" class="cf-summary" aria-expanded={carryForwardOpen} onclick={() => (carryForwardOpen = !carryForwardOpen)}>
-            <span class="cf-caret" aria-hidden="true">{carryForwardOpen ? "▾" : "▸"}</span>
-            <span class="cf-text">
-              tomorrow's first lines · {carryForwardPins.length} {carryForwardPins.length === 1 ? "pin" : "pins"}
-            </span>
-          </button>
-          {#if carryForwardOpen}
-            <ul class="cf-list">
-              {#each carryForwardPins as p (p.id)}
-                <li class="cf-item">
-                  <span class="cf-glyph">↻</span>
-                  <span class="cf-title">{p.title || (isBoard(p) ? "untitled" : getPlainText(p).slice(0, 60))}</span>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </div>
-      {/if}
-    {/snippet}
-
+  <div class="panel-body">
     {#if editNotice}
       <p class="edit-notice label" role="status">{editNotice}</p>
     {/if}
     {#if loading}
       <div class="empty-loading"><p class="empty-text label">loading…</p></div>
-    {:else if visiblePins.length === 0}
-      <Empty hasActiveFilters={hasActivePinFilters()}>
-        {#snippet title()}nothing matches{/snippet}
-        {#snippet body()}
-          <!-- Deliberately no "hover" here. This copy shipped as "hover a
-               line and tap ↗", which on a phone describes a gesture the
-               device does not have — the panel is full-screen on touch, so
-               it was read there more than anywhere. Naming the verb (pin)
-               rather than the input device reads correctly on both. -->
-          {allPins.length === 0
-            ? (lineageId ? "what continues lives here. pin a line to keep it." : "what matters lives here. pin a line to keep it.")
-            : "loosen a filter or clear them all."}
-        {/snippet}
-        {#snippet actions()}
-          <Chip onClick={clearFilters}>clear all</Chip>
-        {/snippet}
-      </Empty>
+    {:else if emptyState}
+      <div class="empty" role="status">
+        <p class="empty-title">{emptyState.title}</p>
+        {#if emptyState.body}<p class="empty-body">{emptyState.body}</p>{/if}
+        {#if emptyState.action === "clearFilters"}
+          <Button variant="subtle" onClick={clearFilters}>clear filters</Button>
+        {:else if emptyState.action === "chooseTrail" && canChooseTrail}
+          <Button variant="subtle" onClick={onChooseTrail}>choose a trail</Button>
+        {/if}
+      </div>
     {:else}
-      {#each sections as section (section.label)}
-        <SectionHeader label={section.label} count={section.pins.length} />
-        {@const limit = sectionLimit[section.label] ?? SECTION_PAGE_SIZE}
+      {#each sections as section, si (section.key)}
+        {@const limit = sectionLimit[section.key] ?? SECTION_PAGE_SIZE}
+        <div class="sec-line">
+          <h3 class="sec-label">{section.label} · {section.pins.length}</h3>
+          {#if si === 0}
+            <button
+              type="button"
+              class="sort-btn"
+              bind:this={sortBtnEl}
+              aria-haspopup="menu"
+              aria-expanded={sortMenuOpen}
+              aria-label={`order: ${filter.sort === SORT_NEWEST ? "newest" : "your order"}`}
+              onclick={() => (sortMenuOpen = !sortMenuOpen)}
+            >{filter.sort === SORT_NEWEST ? "newest" : "your order"} ▾</button>
+          {/if}
+        </div>
         <div class="pin-rows">
           {#each section.pins.slice(0, limit) as obj (obj.id)}
             {@const eff = effectivePin(obj)}
-            {@const actions = scopeActionsFor(obj)}
-            {@const samePage = obj.source_page_id === pageId}
             <PinRow
               pin={obj}
               eff={eff}
               isBoard={isBoard(obj)}
-              lineagePath={lineagePathFor(obj.lineage_id)}
+              lineages={allLineages}
+              sourceLine={pinSourceLine(obj, { filter, lineageId, lineages: allLineages })}
               localBlobs={localBlobs}
-              samePage={samePage}
-              sortMode={"position"}
+              samePage={obj.source_page_id === pageId}
+              canPutOnPage={canPutOnPage}
+              sortMode={reorderable ? "position" : "newest"}
               draggingId={draggingId}
               dragOverId={dragOverId}
-              scopeActions={actions}
-              scopeMenuOpen={scopeMenuFor === obj.id}
               onClick={() => handleRowClick(obj, eff)}
-              onRename={async (title) => {
-                inlineRenameText = title || "";
+              onRename={async (t) => {
+                inlineRenameText = t || "";
                 await commitInlineRename(obj);
               }}
               onCarryForward={() => toggleAutoInsert(obj)}
               onInject={() => injectPinNow(eff)}
               onDelete={() => removePin(obj)}
-              onScopeChange={() => {}}
-              onScopeMenuToggle={() => { scopeMenuFor = scopeMenuFor === obj.id ? null : obj.id; }}
-              onScopeAction={(act) => applyScopeAction(obj, act)}
+              onMove={(target) => movePin(obj, target)}
               onDragStart={(e) => onRowDragStart(e, obj)}
               onDragOver={(e) => onRowDragOver(e, obj)}
               onDragLeave={onRowDragLeave}
@@ -1058,7 +926,7 @@
           {/each}
           {#if section.pins.length > limit}
             <div class="show-more">
-              <Button variant="subtle" onClick={() => loadMore(section.label)}>
+              <Button variant="subtle" onClick={() => loadMore(section.key)}>
                 show {section.pins.length - limit} more
               </Button>
             </div>
@@ -1066,16 +934,35 @@
         </div>
       {/each}
     {/if}
-  </SidebarShell>
-</div>
+  </div>
+</aside>
 
-<!-- Phone: filters live in a bottom sheet, not a drawer. Same filterRows
-     content, opened from the toolbar's "filter" button. -->
-{#if isPhone}
-  <BottomSheet open={filterSheetOpen} onClose={() => (filterSheetOpen = false)} title="filter">
-    {@render filterRows()}
-  </BottomSheet>
-{/if}
+<Popover anchor={kindChipEl} open={kindMenuOpen} role="menu" title="kind" placement="bottom-end" onClose={() => (kindMenuOpen = false)}>
+  <div class="menu-list">
+    {#each KINDS as k (k)}
+      <button
+        type="button"
+        role="menuitemradio"
+        aria-checked={filter.kind === k}
+        class="menu-item"
+        class:on={filter.kind === k}
+        onclick={() => { chipState = setKind(chipState, k); kindMenuOpen = false; }}
+      ><span>{k}</span><span class="f-n">{kindCounts[k]}</span></button>
+    {/each}
+    {#if filter.kind}
+      <button type="button" role="menuitem" class="menu-item" onclick={() => { chipState = setKind(chipState, null); kindMenuOpen = false; }}>any kind</button>
+    {/if}
+  </div>
+</Popover>
+
+<Popover anchor={sortBtnEl} open={sortMenuOpen} role="menu" title="order" placement="bottom-end" onClose={() => (sortMenuOpen = false)}>
+  <div class="menu-list">
+    <button type="button" role="menuitemradio" aria-checked={filter.sort === SORT_DEFAULT} class="menu-item" class:on={filter.sort === SORT_DEFAULT}
+      onclick={() => { chipState = { ...chipState, sort: SORT_DEFAULT }; sortMenuOpen = false; }}>your order</button>
+    <button type="button" role="menuitemradio" aria-checked={filter.sort === SORT_NEWEST} class="menu-item" class:on={filter.sort === SORT_NEWEST}
+      onclick={() => { chipState = { ...chipState, sort: SORT_NEWEST }; sortMenuOpen = false; }}>newest</button>
+  </div>
+</Popover>
 
 <!-- Single modal slot. `modal` is either null, an artifact-typed handle,
      or a note-typed handle. Setting `modal` to a new value always replaces
@@ -1122,229 +1009,175 @@
 {/if}
 
 <style>
-  /* Overlay */
-  /* The page dims behind the panel, as it does behind a phone sheet: the
-     panel slid over a page that looked as live as ever (2026-10-31). */
+  /* The page dims behind the panel only when the panel is a layer over it
+     (narrow windows). Docked beside the page there is no scrim: the page
+     stays live (spec 2026-11-01 §1). */
   .overlay { position: fixed; inset: 0; z-index: 149; background: var(--scrim-soft); }
 
-  .edit-notice { margin: 8px 12px; color: var(--ink-soft); }
+  .edit-notice { margin: 0 0 8px; color: var(--ink-soft); }
 
-  /* Panel — right-anchored side panel; modal-scale shadow. The chrome
-     inside (sidebar / toolbar / body / footer) is the SidebarShell from
-     the v0.4 design system; the .panel wrapper just handles fixed
-     positioning and the close affordance. */
+  /* Right-anchored. As an overlay it floats with the modal shadow; docked
+     it is part of the desk, a hairline at its edge and no shadow, the
+     same width the page makes room for (pins-dock.js DOCK_PANEL_WIDTH). */
   .panel {
     position: fixed; top: 0; right: 0; bottom: 0;
-    width: 36rem; max-width: 92vw;
+    width: 380px; max-width: 92vw;
     background: var(--surface-raised);
     border-left: 1px solid var(--elev-border);
     box-shadow: var(--elev-2);
-    z-index: 150; display: flex; flex-direction: column;
+    z-index: 150;
+    display: flex; flex-direction: column;
+    min-height: 0;
   }
-  /* On tablet/phone the side panel becomes a full-screen sheet — the
-     92vw cap left only ~50px of canvas peeking through on a 360px
-     viewport, which felt worse than a clean full-width takeover. The
-     existing close gesture (× button) stays as the dismiss path. */
+  .panel.docked { box-shadow: none; z-index: 40; }
   @media (max-width: 768px), (orientation: landscape) and (max-height: 480px) {
-    .panel {
-      width: 100%;
-      max-width: 100%;
-      border-left: none;
-      box-shadow: none;
-    }
+    .panel { width: 100%; max-width: 100%; border-left: none; box-shadow: none; }
   }
 
-  .panel-close {
-    position: absolute;
-    top: 0.5rem; right: 0.625rem;
-    z-index: 2;
-    background: none; border: none; cursor: pointer;
-    font-size: 1.125rem; color: var(--ink-soft);
-    padding: 0.25rem 0.5rem;
-    border-radius: var(--radius-sm, 0.25rem);
-    transition: color var(--motion-fast), background-color var(--motion-fast);
-  }
-  .panel-close:hover { color: var(--ink); background: var(--hover-tint); }
-
-  /* Phone: swap the top-right × for a top-left ‹ back arrow.
-     Matches the universal-back-arrow pattern from Settings. */
-  .panel-back {
-    display: none;
-    position: absolute;
-    top: max(0.5rem, var(--safe-top));
-    left: max(0.5rem, var(--safe-left));
-    z-index: 2;
-    width: 2.5rem; height: 2.5rem;
-    background: none; border: none; cursor: pointer;
-    font-family: "Lora", Georgia, serif;
-    font-size: 1.5rem; line-height: 1;
-    color: var(--ink-soft);
-    border-radius: 0.375rem;
-    align-items: center; justify-content: center;
-    transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1), opacity 120ms cubic-bezier(0.2, 0, 0, 1);
-  }
-  .panel-back:hover { opacity: 1; background: color-mix(in srgb, var(--ink) 5%, transparent); }
-
-  @media (max-width: 480px), (orientation: landscape) and (max-height: 480px) {
-    .panel-close { display: none; }
-    /* Phone: floating back-arrow sits absolute at top-left so the
-       toolbar's title + search rows can share the SAME left edge
-       (otherwise an in-toolbar back-arrow shoves the title 3rem to
-       the right of the search row, misaligning the header). */
-    .panel-back {
-      display: inline-flex;
-      top: calc(var(--safe-top) + 0.25rem);
-    }
-    /* Push the toolbar contents right to clear the floating back. */
-    .phone-toolbar { padding-left: 2.5rem; }
-  }
-
-  /* Phone toolbar — two stacked rows inside the shell-toolbar slot:
-     row 1 = back arrow + title, row 2 = search + filter. The wrapper
-     spans the whole toolbar so the SidebarShell flex row holds it. */
-  .phone-toolbar {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-  .phone-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    min-height: 2.5rem;
-  }
-  .phone-title {
-    margin: 0;
-    font-family: "Lora", serif;
-    font-size: 1.25rem;
-    font-weight: 500;
-    line-height: 1.3;
-    color: var(--ink);
-    opacity: 1;
-  }
-  .phone-search-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .phone-search-row .toolbar-search {
-    flex: 1;
-    min-width: 0;
-  }
-
-  /* Toolbar slot composition */
-  .toolbar-search {
-    flex: 1;
-    min-width: 0;
-  }
-
-  /* Body: pin rows stack with no padding (SidebarShell .shell-body handles
-     gutters). The pin-rows wrapper preserves the row-stack styling the
-     PinRow component expects. */
-  .pin-rows {
-    display: flex;
-    flex-direction: column;
-  }
-
-  /* Pagination affordance — sits below the last visible row in a section
-     when the section has more than the render cap. */
-  .show-more {
-    display: flex;
-    justify-content: center;
-    padding: 0.25rem 0 0.5rem;
-  }
-
-  .empty-loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 2rem 1rem;
-  }
-  .empty-text {
-    font-family: "Lora", serif; font-style: italic; font-size: 0.875rem;
-    color: var(--ink-soft);
-  }
-
-  /* Density popover layout — two stacked rows of chips. */
-  :global(.popover) .popover-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.375rem;
-    padding: 0.25rem;
-  }
-  :global(.popover) .popover-row + .popover-row {
-    border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
-    margin-top: 0.25rem;
-  }
-
-  /* Carry-forward footer — disclosure of pins that auto-insert on tomorrow's
-     first page of the current trail. Calm by default; reveals a list when
-     the user expands the summary. */
-  .cf-footer {
-    /* SidebarShell .shell-footer already provides padding + top border. */
-  }
-  .cf-summary {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    width: 100%;
-    padding: 0;
-    background: none;
-    border: none;
-    text-align: left;
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
-    user-select: none;
-  }
-  .cf-caret {
-    font-family: "DM Mono", monospace;
-    font-size: 0.625rem;
-    color: var(--ink-soft);
-    line-height: 1;
-  }
-  .cf-text {
-    font-family: var(--font-ui);
-    font-size: 0.6875rem;
-    text-transform: lowercase;
-    letter-spacing: 0.05em;
-    color: var(--ink-soft);
-    transition: color var(--motion-fast);
-  }
-  .cf-summary:hover .cf-text {
-    color: var(--ink);
-  }
-  .cf-list {
-    list-style: none;
-    margin: 0.375rem 0 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.125rem;
-  }
-  .cf-item {
-    display: flex;
-    align-items: baseline;
-    gap: 0.375rem;
-    padding: 0.125rem 0 0.125rem 1rem;
-    font-family: "Lora", serif;
-    font-style: italic;
-    font-size: 0.8125rem;
-    color: var(--ink-soft);
-  }
-  .cf-glyph {
-    color: var(--accent-text);
-    font-size: 0.625rem;
+  .panel-head {
     flex-shrink: 0;
+    padding: 0.875rem 1rem 0.625rem;
+    border-bottom: 1px solid var(--elev-border);
   }
-  .cf-title {
+  .head-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.625rem; }
+  .panel-title {
+    margin: 0 auto 0 0;
+    min-width: 0;
+    font-family: "DM Mono", monospace;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--ink);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .panel-close, .panel-back {
+    background: none; border: none; cursor: pointer;
+    color: var(--ink-soft);
+    border-radius: var(--radius-sm, 0.25rem);
+    transition: color var(--motion-fast), background-color var(--motion-fast);
+  }
+  .panel-close { font-size: 1.125rem; line-height: 1; padding: 0.25rem 0.5rem; }
+  .panel-close:hover, .panel-back:hover { color: var(--ink); background: var(--hover-tint); }
+  .panel-back {
+    display: none;
+    width: 2.5rem; height: 2.5rem;
+    margin-left: -0.5rem;
+    font-family: "Lora", Georgia, serif;
+    font-size: 1.5rem; line-height: 1;
+    align-items: center; justify-content: center;
+  }
+  /* Phone: the universal back arrow at the left instead of the ×. */
+  @media (max-width: 480px), (orientation: landscape) and (max-height: 480px) {
+    .panel-head { padding-top: calc(var(--safe-top) + 0.5rem); }
+    .panel-close { display: none; }
+    .panel-back { display: inline-flex; }
+    .panel-title { font-family: "Lora", serif; font-size: 1.25rem; font-weight: 500; }
+  }
 
-  /* Pin modal styles live in PinArtifactModal.svelte and PinNoteModal.svelte
-     (extracted in Task 2.2). */
+  .panel-search { margin-bottom: 0.625rem; }
+
+  /* One row of chips. Wraps on the desktop's 380px; never a hidden
+     sidebar again. */
+  .chips { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+  .f-chip {
+    font-family: "DM Mono", monospace;
+    font-size: 0.75rem;
+    line-height: 1.2;
+    border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+    border-radius: 999px;
+    padding: 0.25rem 0.625rem;
+    background: transparent;
+    color: var(--ink-soft);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+  }
+  .f-chip:hover { color: var(--ink); border-color: color-mix(in srgb, var(--ink) 24%, transparent); }
+  .f-chip.on {
+    background: color-mix(in srgb, var(--warm-accent) 14%, transparent);
+    border-color: transparent;
+    color: var(--accent-text);
+  }
+  .f-n { margin-left: 0.3125rem; color: var(--ink-soft); }
+  .f-chip.on .f-n { color: inherit; opacity: 0.8; }
+
+  .panel-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    /* Bottom room so the last row scrolls clear of the shortcuts "?"
+       that sits fixed in the window's corner. */
+    padding: 0.75rem 1rem 3.5rem;
+    overscroll-behavior: contain;
+  }
+
+  .sec-line {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin: 0.375rem 0 0.5rem;
+  }
+  .sec-line:not(:first-of-type) { margin-top: 0.875rem; }
+  .sec-label {
+    margin: 0;
+    font-family: "DM Mono", monospace;
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: var(--ink-soft);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sort-btn {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: "DM Mono", monospace;
+    font-size: 0.75rem;
+    color: var(--ink-soft);
+    padding: 0.125rem 0.25rem;
+    border-radius: 0.25rem;
+  }
+  .sort-btn:hover, .sort-btn[aria-expanded="true"] { color: var(--ink); background: var(--hover-tint); }
+
+  .menu-list { display: flex; flex-direction: column; min-width: 10rem; padding: 0.25rem; }
+  .menu-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    background: none;
+    border: none;
+    text-align: left;
+    cursor: pointer;
+    padding: 0.375rem 0.5rem;
+    border-radius: 0.3125rem;
+    font-family: "DM Mono", monospace;
+    font-size: 0.75rem;
+    color: var(--ink);
+  }
+  .menu-item:hover, .menu-item:focus-visible { background: var(--hover-tint); }
+  .menu-item.on { color: var(--accent-text); }
+
+  .pin-rows { display: flex; flex-direction: column; }
+
+  .show-more { display: flex; justify-content: center; padding: 0.25rem 0 0.5rem; }
+
+  .empty-loading { display: flex; align-items: center; justify-content: center; padding: 2rem 1rem; }
+  .empty-text { font-family: "Lora", serif; font-style: italic; font-size: 0.875rem; color: var(--ink-soft); }
+
+  .empty {
+    padding: 2rem 0.75rem;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.375rem;
+  }
+  .empty-title { margin: 0; font-family: "Lora", serif; font-size: 0.9375rem; color: var(--ink); }
+  .empty-body { margin: 0 0 0.5rem; font-family: "Lora", serif; font-size: 0.875rem; line-height: 1.5; color: var(--ink-soft); }
+
+  /* Pin modal styles live in PinArtifactModal.svelte and PinNoteModal.svelte. */
 </style>

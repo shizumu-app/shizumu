@@ -50,7 +50,8 @@ export const config = {
       maxInstances: 1,
       "tauri:options": {
         application: APP_BINARY,
-        env: { XDG_DATA_HOME: E2E_DATA_HOME },
+        // FLATPAK_ID: never the system keyring from a test profile (crypto.rs).
+        env: { XDG_DATA_HOME: E2E_DATA_HOME, FLATPAK_ID: "app.shizumu.Shizumu.Test" },
       },
     },
   ],

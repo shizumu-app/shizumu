@@ -160,3 +160,31 @@ describe("SettingsSectionScreen", () => {
     expect(target.querySelector(".shell-navbar-back")).not.toBeNull();
   });
 });
+
+describe("SettingsSectionScreen — data", () => {
+  it("runs the export from its row, with what it holds on the second line", () => {
+    const onAction = vi.fn();
+    const { target } = mountSection("data", { exportZip: true }, { onAction });
+    const row = rowFor(target, "export");
+    expect(row.tagName).toBe("BUTTON");
+    expect(row.dataset.kind).toBe("action");
+    expect(row.querySelector(".shell-row-detail").textContent.trim()).toBe("every page as markdown files, in one zip");
+    row.click();
+    expect(onAction).toHaveBeenCalledExactlyOnceWith("export");
+  });
+
+  it("holds the row while the zip packs, and says so under it", () => {
+    const onAction = vi.fn();
+    const { target } = mountSection("data", { exportZip: true, exportStatus: { state: "working" } }, { onAction });
+    // Inert while busy: a second press would pack every page twice.
+    expect(rowFor(target, "export").tagName).not.toBe("BUTTON");
+    expect(target.textContent).toContain("packing every page…");
+  });
+
+  it("shows the row and the laptop note where the phone cannot share a zip", () => {
+    const onAction = vi.fn();
+    const { target } = mountSection("data", { exportZip: false }, { onAction });
+    expect(rowFor(target, "export").tagName).not.toBe("BUTTON");
+    expect(target.textContent).toContain("export works from the laptop for now.");
+  });
+});

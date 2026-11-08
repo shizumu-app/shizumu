@@ -3,7 +3,9 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Fragment, Slice } from "@tiptap/pm/model";
 import { holdsPin, isPinMention } from "../pin-node.js";
 
-const PINNABLE_TYPES = [
+// The block types a pin can stamp. Shared with blockId (block-id.js): every
+// block a pin can point at also carries a lasting id of its own.
+export const PINNABLE_TYPES = [
   "paragraph",
   "heading",
   "list",

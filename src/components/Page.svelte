@@ -64,6 +64,7 @@
   import { escapeReturnsToPage } from "../lib/escape-to-page.js";
   import { pageNavStep } from "../lib/page-nav-keys.js";
   import { SYNC_JOINED } from "../lib/sync-joined.js";
+  import { pinsPanelPlacement, dockedSheetWidth, DOCK_PANEL_WIDTH } from "../lib/pins-dock.js";
   import { handedOutAsToday } from "../lib/today-page.js";
 
   /** @type {{ onNavigateMemory: () => void, currentTone: string, onToneChange: (t: string) => void, currentFontFamily: string, onFontFamilyChange: (f: string) => void, currentFontSize: number, onFontSizeChange: (n: number) => void, onDeleteAll: () => void, continueFocus: any }} */
@@ -80,6 +81,44 @@
     showSettings = true;
   }
   let showSharedPanel = $state(false);
+
+  // Pins beside the page (spec 2026-11-01 §1, ruling 4). Whether the panel
+  // docks is pins-dock.js's call from the window width and the canvas
+  // font's `ch`; it is worked out each time the panel opens and on every
+  // resize while it is open, never stored. Docked, the sheet moves left by
+  // half the panel and may narrow toward (never below) 72 characters, so
+  // the page keeps its writing width and stays live beside the pins.
+  let pageEl = $state(/** @type {HTMLElement|null} */ (null));
+  let viewportWidth = $state(typeof window === "undefined" ? 0 : window.innerWidth);
+  let chPx = $state(0);
+  function measureCh() {
+    if (!pageEl || typeof document === "undefined") return 0;
+    const probe = document.createElement("span");
+    probe.style.cssText = "position:absolute;visibility:hidden;width:100ch;height:0;";
+    pageEl.appendChild(probe);
+    const w = probe.getBoundingClientRect().width / 100;
+    probe.remove();
+    return w;
+  }
+  $effect(() => {
+    if (!showSharedPanel || typeof window === "undefined") return;
+    const sync = () => { viewportWidth = window.innerWidth; chPx = measureCh(); };
+    sync();
+    window.addEventListener("resize", sync);
+    return () => window.removeEventListener("resize", sync);
+  });
+  let pinsDocked = $derived(
+    showSharedPanel && !isPhone && chPx > 0 && pinsPanelPlacement({ viewportWidth, chPx }) === "dock",
+  );
+  let dockedSheetPx = $derived(pinsDocked ? dockedSheetWidth({ viewportWidth, chPx }) : 0);
+  // Escape in the docked panel: back to where the caret was, not to the
+  // end of the doc (focusInput's focus("end") is for arriving fresh).
+  // Focusing the editable keeps ProseMirror's stored selection.
+  function returnCaretFromPins() {
+    const pm = /** @type {HTMLElement|null} */ (pageEl?.querySelector(".ProseMirror[contenteditable='true']"));
+    if (pm) pm.focus({ preventScroll: true });
+    else flowModeRef?.focusInput();
+  }
   let isPhone = $state(isPhoneViewport());
   $effect(() => {
     const unwatch = watchPhoneViewport((m) => { isPhone = m; });
@@ -1211,6 +1250,10 @@
 <div
   class="page"
   class:transitioning
+  class:pins-docked={pinsDocked}
+  bind:this={pageEl}
+  style:--pins-dock-w={pinsDocked ? `${DOCK_PANEL_WIDTH}px` : null}
+  style:--pins-docked-sheet={pinsDocked ? `${dockedSheetPx}px` : null}
   use:verticalFlick={{
     onUp: () => onNavigateMemory(),
     // .sheet: a fast vertical drag scrolling a BottomSheet's body (date
@@ -1515,6 +1558,11 @@
         pageId={page.id}
         editorDoc={editorDoc}
         openPinId={targetPinId}
+        docked={pinsDocked}
+        canPutOnPage={isWritable}
+        canChooseTrail={isWritable}
+        onChooseTrail={() => window.dispatchEvent(new CustomEvent("shizumu:manage-trail", { detail: { action: "open" } }))}
+        onReturnToEditor={returnCaretFromPins}
         onPinOpened={() => (targetPinId = null)}
         onClose={() => { showSharedPanel = false; targetPinId = null; loadPinCount(); }}
         onPinRemoved={(content) => {
@@ -1602,6 +1650,19 @@
   }
   @media (max-width: 768px) {
     .page { box-shadow: none; }
+  }
+  /* Pins docked beside the page (pins-dock.js): the sheet narrows to what
+     fits beside the panel — never below 72ch, which is the dock's own
+     condition — and moves left by half the panel, so it sits centred in
+     the desk that is left. `left`, not a transform: a transform here would
+     become the containing block of every fixed overlay the editor mounts
+     (see .page-body.transitioning below). */
+  .page.pins-docked {
+    max-width: var(--pins-docked-sheet);
+    left: calc(var(--pins-dock-w) / -2);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .page { transition: opacity 150ms ease, left 180ms cubic-bezier(0.2, 0, 0, 1), max-width 180ms cubic-bezier(0.2, 0, 0, 1); }
   }
 
   /* Writing body: fills the column below the header, and carries the

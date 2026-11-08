@@ -24,15 +24,18 @@
 //! Flathub policy; `is_available()` returns `false` inside Flatpak so
 //! setup paths can refuse to enable sync rather than silently storing
 //! secrets in the database again.
+//!
+//! Where the bundle actually lives (0.8.2): phones keep it in a 0600 file
+//! (the mobile backend below); desktop has never kept it anywhere but the
+//! `sync_keys` rows, because the keyring crate had no backend, and 0.8.2
+//! keeps it there on purpose (see the desktop backend's comment).
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
-// Only the production backend actually reaches the keyring crate; the
-// in-process backend used under `cfg(test)` and non-desktop ignores
-// these. `allow(dead_code)` keeps the constants visible to humans
-// without warning in test builds.
+// No backend reaches the keyring crate in 0.8.2 (see the desktop backend
+// below); the names are kept for the move the design doc describes.
 #[allow(dead_code)]
 const KEYRING_SERVICE: &str = "app.shizumu.Shizumu";
 #[allow(dead_code)]
@@ -138,56 +141,41 @@ pub fn delete() -> Result<(), SecretStoreError> {
 
 #[cfg(all(desktop, not(test)))]
 mod backend {
-    use super::{SecretStoreError, KEYRING_SERVICE, KEYRING_USER};
+    //! Desktop: the sync identity stays in the database's `sync_keys` rows
+    //! in 0.8.2, exactly where it has lived on every desktop build so far.
+    //!
+    //! Until 0.8.2 this backend called `keyring::Entry`, but the crate had
+    //! no platform backend, so each entry was an in-process mock that kept
+    //! nothing: `store` answered Ok, the round-trip `load` in
+    //! `keys::persist_user_*` came back empty, and the database copy was
+    //! kept. 0.8.2 turns real keyring backends on for the database key
+    //! (crypto.rs, key_mirror.rs). Left calling the keyring here, that would
+    //! silently change the sync identity's home: the round-trip would now
+    //! pass and `persist_user_*` and `try_migrate_legacy` would DELETE the
+    //! `sync_keys` rows, making a keyring that can lock, prompt, or be reset
+    //! the only copy, under one slot name every profile shares. This backend
+    //! answers what the old one effectively answered, without reaching the
+    //! keyring, so nothing about sync changes in 0.8.2. Moving the sync
+    //! identity is designed in
+    //! docs/superpowers/specs/2026-11-02-desktop-keyring-design.md.
+    use super::SecretStoreError;
 
     pub fn is_available() -> bool {
-        if std::env::var_os("FLATPAK_ID").is_some() {
-            return false;
-        }
-        keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).is_ok()
+        false
     }
 
-    pub fn set(payload: &str) -> Result<(), SecretStoreError> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-            .map_err(|e| SecretStoreError::Unavailable(e.to_string()))?;
-        entry
-            .set_password(payload)
-            .map_err(|e| SecretStoreError::Io(e.to_string()))
+    pub fn set(_payload: &str) -> Result<(), SecretStoreError> {
+        Err(SecretStoreError::Unavailable(
+            "the sync identity stays in the database on desktop".into(),
+        ))
     }
 
     pub fn get() -> Result<Option<String>, SecretStoreError> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-            .map_err(|e| SecretStoreError::Unavailable(e.to_string()))?;
-        match entry.get_password() {
-            Ok(s) => Ok(Some(s)),
-            Err(e) => {
-                // `keyring` folds "entry not found" into a typed error
-                // variant; match on its Display string since the public
-                // enum may add variants between minor versions.
-                let msg = e.to_string();
-                if msg.contains("No matching entry") || msg.contains("NoEntry") {
-                    Ok(None)
-                } else {
-                    Err(SecretStoreError::Io(msg))
-                }
-            }
-        }
+        Ok(None)
     }
 
     pub fn delete() -> Result<(), SecretStoreError> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-            .map_err(|e| SecretStoreError::Unavailable(e.to_string()))?;
-        match entry.delete_credential() {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("No matching entry") || msg.contains("NoEntry") {
-                    Ok(())
-                } else {
-                    Err(SecretStoreError::Io(msg))
-                }
-            }
-        }
+        Ok(())
     }
 }
 

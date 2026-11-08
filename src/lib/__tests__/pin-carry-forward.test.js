@@ -176,6 +176,26 @@ describe("pinToNodes — pin id retention", () => {
     const list = nodes.find((n) => n.type === "taskList");
     expect(list.attrs.pinId).toBe("PIN-1");
   });
+
+  // The cache holds the source block as saved, its blockId included. What
+  // lands on the page is a new block either way, and the page's editor gives
+  // it an id of its own; a copy keeping the source's id would make one id
+  // name two blocks on two pages (block-id.js).
+  it("never carries the source block's blockId, in either mode", () => {
+    const withIds = {
+      ...pin,
+      content: JSON.stringify({ type: "list", attrs: { pinId: "PIN-1", blockId: "srcblock0001" }, content: [
+        { type: "listItem", attrs: { marker: "task" }, content: [
+          { type: "paragraph", attrs: { blockId: "srcblock0002" }, content: [{ type: "text", text: "a" }] },
+        ] },
+      ] }),
+    };
+    for (const opts of [{}, { keepPinIds: true }]) {
+      const text = JSON.stringify(pinToNodes(withIds, opts));
+      expect(text).not.toContain("blockId");
+    }
+    expect(pinToNodes(withIds, { keepPinIds: true })[0].attrs.pinId).toBe("PIN-1");
+  });
 });
 
 describe("withTitle via pinToNodes — the block's own title wins, else fill", () => {

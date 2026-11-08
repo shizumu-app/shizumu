@@ -1,146 +1,193 @@
-// pin-filter.js — which pins the pins screen shows, and whether there is
-// anything to choose between at all.
+// pin-filter.js — what the phone's pins screen shows: the search, the chip
+// row and its counts, the sections, the words under each row, and which
+// empty state an empty list is.
 //
-// §2 gives the pins screen a "filter segment", one control, and the axis
-// it filters on is NOT invented here: it is the axis the desktop's own
-// panel is SECTIONED by. SharedObjectsPanel derives `scopeOf` (its
-// :303-307) and groups the feed into "on this trail" / "inherited" /
-// "global" (:401-403) before any of its five filters run. Its other axes —
-// the six-family category, carries-forward, on-this-page, free text — are
-// side-nav checkboxes over that grouping. One of them had to be the
-// phone's single control, and the grouping is the one the desktop already
-// treats as structure rather than as a filter.
+// ── what this replaced (0.8.2, spec 2026-11-01 §4, ruling 5) ─────────
 //
-// It is also the axis this product is for. CLAUDE.md: pin × trail is the
-// cross-product, "show me the pins on my book trail" is the six-month
-// executive summary. Splitting a nested trail's list into what this trail
-// kept and what it inherited from its parent is that question, asked on
-// the surface where the answer lives.
+// The screen used to have ONE control: a segment over the desktop panel's
+// sections (all | this trail | inherited | global), offered only when the
+// list held more than one of them. The owner's complaint about the desktop
+// panel — "no search or filtering capabilities" — was true here too: no
+// search, no kind, no carries-forward, nothing for a writer with forty pins
+// on one trail. Ruling 5 gives the phone the desktop's chip set, and the
+// decisions are the desktop's own module (src/lib/pin-panel-filter.js), so
+// a chip means the same thing and counts the same thing on both. This file
+// is the phone's reading of it, and adds only what the phone does
+// differently:
 //
-// THE CATEGORY AXIS WAS THE OTHER CANDIDATE and it does not fit the
-// control: `pinFamily` has six families plus "all", and SegmentedControl
-// is documented for 2-5 options with `white-space: nowrap` on every
-// segment. Seven of those do not fit a phone's width, and the honest
-// version of that filter is a sheet — which §2 gives to MEMORY ("filters
-// in a sheet") and deliberately does not give to pins.
+//   - `all trails` rows are read when the chip is first pressed, not on
+//     every push (N+1 calls; see the host). Until then its count comes from
+//     the per-trail pin counts query, and its list says it is reading.
+//   - the kind chip opens a second chip row of the six families instead of
+//     a menu: the shell has no popover, and a sheet for one choice would
+//     cover the list it narrows (the spec leaves this to the builder).
+//   - no symbol glyphs in the labels (shell-rules: "draws its symbols
+//     instead of typing them") — the kind chip says `kind`, not `kind ▾`.
 //
-// ── the options are derived from the pins, not declared ───────────────
+// ── the toast's count still names this list at rest ──────────────────
 //
-// A pins screen pushed from a page on a root trail holds one scope: every
-// row is that trail's own. A segment there would be `all | this trail`,
-// two controls selecting the same rows — the "affordance onto nothing"
-// this tree keeps refusing, in the form the block sheet refuses as a dead
-// row. So the control exists only when the list actually holds more than
-// one scope, and pinFilterOptions returns [] otherwise.
-//
-// That also means the filtered list can never be empty: every offered
-// value names a scope some row carries. The screen needs two empty states
-// (nothing kept, not read yet) and not a third for "nothing matches".
-//
-// ── the count on the toast, and this list, must agree ─────────────────
-//
-// pin-toast.js's header states the contract from the other end: the
-// breadcrumb is "a POINTER at a list, and the list it points at shows the
-// same rows (PinRow renders closed and orphaned dimmed, not absent). A
-// count that disagreed with the list it names would be worse than no
-// count." `getPins(lineageId)` filters on no status and walks ancestors
-// upward, and the toast passes its length unfiltered.
-//
-// Hence: `all` is the default and it filters NOTHING — not "everything
-// except orphans", not "open only". filterPins returns the array it was
-// given for `all`, so the row count at rest is the number the toast said.
-// A status filter added here would break that agreement silently, which
-// is why the axis is scope and the default is a pass-through.
+// pin-toast.js's header: the breadcrumb is "a POINTER at a list, and the
+// list it points at shows the same rows". Its number is
+// `getPins(lineageId).length`, every status included. So the resting
+// filter (this trail, no toggle, no kind, no search) filters NOTHING out
+// of that fetch — orphaned and closed rows stay, dimmed — and the global
+// pins are not folded into `this trail` on the phone the way the desktop
+// panel adds them with a second fetch: adding rows the toast did not count
+// would put the two out of step. The global pins are one chip away, in
+// `all trails`, grouped under `everywhere`.
 
-/** The resting value: every row the fetch returned. */
-export const ALL = "all";
+import {
+  KINDS,
+  SCOPE_ALL,
+  SCOPE_TRAIL,
+  clearPanelFilters,
+  defaultPanelFilter,
+  filterPanelPins,
+  narrowing,
+  panelChips,
+  panelSections,
+  pinSection,
+  pinSourceLine,
+  searchPlaceholder,
+  setKind,
+  sortPanelPins,
+  toggleChip,
+} from "../lib/pin-panel-filter.js";
+import { pinFamily } from "../lib/pin-display.js";
+import { pinsEmptyState } from "../lib/pin-panel-empty.js";
+
+export { KINDS, clearPanelFilters, defaultPanelFilter, setKind, toggleChip };
+
+/** Which section a pin falls in, seen from the trail the screen was
+ *  pushed for: `here`, `inherited` or `global`. The desktop's rule, kept
+ *  under the name the shell has always called it. */
+export const pinScope = pinSection;
+
+const plural = (n) => (n === 1 ? "pin" : "pins");
 
 /**
- * Which scope a pin has, seen from the trail the screen was pushed for.
- *
- * `scopeOf` on the desktop (SharedObjectsPanel:303-307), with one
- * difference worth naming: there, `lineageId` is the panel's trail and
- * global pins arrive from a SECOND fetch (`getPins(null)`). The shell
- * makes one call, so on a trailed page "global" is unreachable — the CTE
- * matches `so.lineage_id IN (chain)` and NULL matches no IN list — and on
- * an untrailed page every row is global and nothing else is. The function
- * stays total anyway rather than encoding the caller's arithmetic.
+ * The words under a pin's title: where it came from when that is not this
+ * trail, and that it carries forward when it does. Null when there is
+ * nothing to say.
  *
  * @param {any} pin
- * @param {string|null} lineageId  the trail the pins were read for
- * @returns {"here"|"inherited"|"global"}
+ * @param {{ filter: object, lineageId?: string|null, lineages?: any[] }} ctx
+ * @returns {string|null}
  */
-export function pinScope(pin, lineageId) {
-  const owner = pin?.lineage_id ?? null;
-  if (owner === null) return "global";
-  return owner === lineageId ? "here" : "inherited";
-}
-
-// Order is the desktop's section order (SharedObjectsPanel:401-403): the
-// trail's own first, what it inherited next, global last. A segment whose
-// order changed with the data would move under the reader's thumb.
-const SCOPE_ORDER = ["here", "inherited", "global"];
-
-// The desktop's section headings, shortened only where a segment cannot
-// carry them: "on this trail" is its label for `here`, and four words in a
-// nowrap segment beside two more segments does not fit a phone. The other
-// two are its words unchanged.
-const SCOPE_LABELS = {
-  here: "this trail",
-  inherited: "inherited",
-  global: "global",
-};
-
-/**
- * The segment's options, or [] when there is nothing to choose between.
- *
- * @param {any[]} pins
- * @param {string|null} lineageId
- * @returns {{value: string, label: string}[]}
- */
-export function pinFilterOptions(pins, lineageId) {
-  const rows = Array.isArray(pins) ? pins : [];
-  const present = new Set(rows.map((pin) => pinScope(pin, lineageId)));
-  const scopes = SCOPE_ORDER.filter((scope) => present.has(scope));
-  // One scope (or none) means every option would select every row. See the
-  // header: a control that cannot change what is on screen is not a
-  // control.
-  if (scopes.length < 2) return [];
-  return [
-    { value: ALL, label: "all" },
-    ...scopes.map((scope) => ({ value: scope, label: SCOPE_LABELS[scope] })),
-  ];
+export function pinDetailLine(pin, ctx) {
+  const parts = [];
+  const source = pinSourceLine(pin, ctx);
+  if (source) parts.push(source);
+  if (pin?.auto_insert) parts.push("carries forward to new pages");
+  return parts.length ? parts.join(" · ") : null;
 }
 
 /**
- * The rows to render. `all` is a pass-through by design — see the header
- * on the toast's count.
+ * Everything the pins screen renders, from what the host read and what the
+ * writer chose.
  *
- * @param {any[]} pins
- * @param {string|null} lineageId
- * @param {string} value
- * @returns {any[]}
+ * @param {object} input
+ * @param {any[]} [input.trailPins]  getPins(lineageId), as the host read it
+ * @param {any[]|null} [input.allPins]  every pin, or null until read
+ * @param {number|null} [input.allCount]  every pin, counted (getTrailPinCounts)
+ * @param {boolean} [input.loading]  the trail fetch is in flight
+ * @param {string|null} [input.lineageId]
+ * @param {string|null} [input.pageId]
+ * @param {any[]} [input.lineages]
+ * @param {object} input.filter  pin-panel-filter's PanelFilter
+ * @param {boolean} [input.kindOpen]  the kind row is showing
  */
-export function filterPins(pins, lineageId, value) {
-  const rows = Array.isArray(pins) ? pins : [];
-  if (!value || value === ALL) return rows;
-  return rows.filter((pin) => pinScope(pin, lineageId) === value);
+export function pinsScreenModel({
+  trailPins = [],
+  allPins = null,
+  allCount = null,
+  loading = false,
+  lineageId = null,
+  pageId = null,
+  lineages = [],
+  filter,
+  kindOpen = false,
+}) {
+  const trail = Array.isArray(trailPins) ? trailPins : [];
+  const allLoaded = Array.isArray(allPins);
+  const all = allLoaded ? allPins : [];
+  const allScope = filter.scope === SCOPE_ALL;
+
+  const chips = panelChips({ trailPins: trail, allPins: all, pageId, lineageId, filter }).map((chip) => {
+    // The all-trails count before its rows are read: the counts query
+    // answers it in one SELECT, and a 0 there would be a lie about the
+    // writer's whole account.
+    const count = chip.id === "all" && !allLoaded ? allCount : chip.count;
+    const label = chip.id === "kind" ? (filter.kind ?? "kind") : chip.label;
+    return {
+      id: chip.id,
+      label,
+      count,
+      active: chip.id === "kind" ? !!filter.kind || kindOpen : chip.active,
+      ariaLabel: count == null ? label : `${label}, ${count} ${plural(count)}`,
+    };
+  });
+
+  const inScope = allScope ? all : trail;
+  const kinds = kindOpen
+    ? KINDS.map((kind) => {
+        const count = inScope.filter((p) => pinFamily(p) === kind).length;
+        return {
+          id: kind,
+          label: kind,
+          count,
+          active: filter.kind === kind,
+          ariaLabel: `${kind}, ${count} ${plural(count)}`,
+        };
+      })
+    : [];
+
+  const reading = allScope ? !allLoaded : loading;
+  const visible = sortPanelPins(filterPanelPins(inScope, filter, { pageId }), filter.sort);
+  const ctx = { filter, lineageId, lineages };
+  const sections = panelSections(visible, ctx).map((section) => ({
+    key: section.key,
+    label: `${section.label} · ${section.pins.length}`,
+    pins: section.pins.map((pin) => ({ pin, detail: pinDetailLine(pin, ctx) })),
+  }));
+
+  const empty = reading
+    ? null
+    : pinsEmptyState({
+        lineageId,
+        scopeCount: inScope.length,
+        visibleCount: visible.length,
+        allScope,
+      });
+
+  return {
+    chips,
+    kinds,
+    sections,
+    reading: reading && visible.length === 0,
+    empty,
+    placeholder: searchPlaceholder(filter, lineageId),
+    narrowing: narrowing(filter),
+    needsAllPins: allScope && !allLoaded,
+  };
 }
 
 /**
- * The value the segment should actually be showing, given what it offers.
+ * What a chip tap does: the scope chips and toggles go through the
+ * desktop's `toggleChip`; `kind` opens or closes the kind row, and closing
+ * it with a kind on clears the kind (the row is the only place it shows).
  *
- * The pins list is mutable from this screen — unpinning removes a row —
- * so the last row of a scope can leave while that scope is selected. The
- * option then disappears from the control and the selection names a scope
- * nothing carries: an empty list under a segment with no segment lit.
- * Falling back to ALL is what keeps the rendered control and the rendered
- * list describing the same thing.
- *
- * @param {{value: string}[]} options
- * @param {string} value
- * @returns {string}
+ * @returns {{ filter: object, kindOpen: boolean }}
  */
-export function pinFilterValue(options, value) {
-  return options.some((option) => option.value === value) ? value : ALL;
+export function tapChip({ filter, kindOpen = false }, id) {
+  if (id === "kind") {
+    if (kindOpen) return { filter: setKind(filter, null), kindOpen: false };
+    return { filter, kindOpen: true };
+  }
+  return { filter: toggleChip(filter, id), kindOpen };
+}
+
+/** Is this the resting filter, the one the toast's count describes? */
+export function atRest(filter) {
+  return filter.scope === SCOPE_TRAIL && !narrowing(filter);
 }

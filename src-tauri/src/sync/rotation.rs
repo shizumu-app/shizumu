@@ -250,7 +250,10 @@ pub fn recover_epoch_keys_from_phrase(
     base_url: &str,
     user_id: &str,
 ) -> Result<usize, String> {
-    let recovery_priv = epoch::recovery_kex_from_stored_phrase()?
+    let recovery_priv = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        epoch::recovery_kex_from_stored_phrase(&conn)?
+    }
         .ok_or_else(|| "no phrase stored on this device; cannot recover epoch keys".to_string())?;
     let rows =
         wire::epochs::get_recovery_keys(base_url, device_keys, user_id).map_err(|e| e.to_string())?;

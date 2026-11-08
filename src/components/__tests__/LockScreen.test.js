@@ -18,6 +18,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { tick } from "svelte";
 import { render, cleanupAll } from "../../lib/ui/test-helper.js";
 import LockScreen from "../LockScreen.svelte";
+import { WRONG_PASSPHRASE } from "../../lib/lock-copy.js";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -108,6 +109,9 @@ describe("LockScreen under Tauri", () => {
     expect(onUnlock).not.toHaveBeenCalled();
     expect(input.value).toBe("");
     expect(input.classList.contains("shake")).toBe(true);
+    // Said in words too, with the account lock's one case a person can
+    // meet: a passphrase changed on another device while this one was shut.
+    expect(document.querySelector(".lock-note")?.textContent.trim()).toBe(WRONG_PASSPHRASE);
   });
 
   it("unlocks when unlock answers true", async () => {

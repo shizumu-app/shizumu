@@ -6,7 +6,7 @@
   import Onboarding from "./components/Onboarding.svelte";
   import LockScreen from "./components/LockScreen.svelte";
   import { checkOnboardingComplete, getSetting, checkEncryptionStatus, createNewPage, syncFlushNow, lockApp, getStartupFailure } from "./lib/api.js";
-  import { shouldAutoLock, LOCK_SETTINGS_EVENT } from "./lib/auto-lock.js";
+  import { shouldAutoLock, readLockState, markJustUnlocked, consumeJustUnlocked, LOCK_SETTINGS_EVENT } from "./lib/auto-lock.js";
   import { startupScreen } from "./lib/startup-gate.js";
   import StartupFailure from "./components/StartupFailure.svelte";
   import { installSyncFlushOnHide } from "./lib/sync-flush-on-hide.js";
@@ -195,17 +195,34 @@
 
     try { startupFailure = await getStartupFailure(); } catch {}
 
-    // Check encryption status
-    try {
-      isEncrypted = await checkEncryptionStatus();
-      if (isEncrypted) isLocked = true;
-    } catch {}
+    // Whether this file is locked, and the account's inactivity timeout.
+    {
+      const st = await readLockState({ checkEncryptionStatus, getSetting });
+      if (st.encrypted !== undefined) isEncrypted = st.encrypted;
+      // Not after the startup lock screen's own unlock: the passphrase
+      // was just typed there, and this boot is its reload.
+      const justUnlocked = consumeJustUnlocked(window.sessionStorage);
+      if (isEncrypted && !justUnlocked) isLocked = true;
+      if (st.timeoutMin !== undefined) lockTimeoutMin = st.timeoutMin;
+    }
 
-    // Load lock timeout setting
-    try {
-      const timeout = await getSetting("lock_timeout_minutes");
-      if (timeout) lockTimeoutMin = parseInt(timeout, 10) || 0;
-    } catch {}
+    // The account's one lock (src-tauri/src/account_lock.rs): another
+    // device can turn it on, change it or turn it off, and this one follows
+    // with its own file during a sync tick, which then says `sync-pulled`.
+    // Re-read whether this file is locked, so the inactivity timer below
+    // locks a device that has just followed the account, and stops locking
+    // one whose lock was turned off elsewhere. The timeout too: it is the
+    // account's, and a phone that kept launch's "never" did not lock when
+    // the laptop chose five minutes (A16, 2026-11-08, J17.3).
+    if (isTauri) {
+      import("@tauri-apps/api/event")
+        .then(({ listen }) => listen("sync-pulled", async () => {
+          const st = await readLockState({ checkEncryptionStatus, getSetting });
+          if (st.encrypted !== undefined) isEncrypted = st.encrypted;
+          if (st.timeoutMin !== undefined) lockTimeoutMin = st.timeoutMin;
+        }))
+        .catch(() => {});
+    }
 
     // Settings announces a lock turned on or off and a new timeout, so the
     // timer below follows them without a restart (src/lib/auto-lock.js).
@@ -706,7 +723,7 @@
          start, as a launch that had found the key would have. The desktop
          lock screen on every tree: the shell's lock gate stays inside the
          isLocked branch only, which shell-boot.test.js holds as text. -->
-    <LockScreen onUnlock={() => location.reload()} />
+    <LockScreen onUnlock={() => { markJustUnlocked(window.sessionStorage); location.reload(); }} />
   {:else if onboardingComplete === null}
     <!-- Loading -->
   {:else if !onboardingComplete}

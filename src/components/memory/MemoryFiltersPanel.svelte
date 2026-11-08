@@ -69,7 +69,7 @@
         accent={activeLineageId === trail.id}
         count={trail.pageCount}
         indent={trail.depth * 1.125}
-        tag={trail.mode === "continuous" ? "continuous" : "discrete"}
+        tag={trail.mode === "continuous" ? "one doc" : undefined}
         onClick={() => setLineage(trail.id)}
       >
         {#if trail.hasChildren}

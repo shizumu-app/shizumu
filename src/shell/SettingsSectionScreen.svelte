@@ -57,6 +57,13 @@
   RowGroup needs a way to hold prose unruled, and that is a change to the
   primitive, not a wrapper here.
 
+  ── AN ACTION ROW DOES ITS THING WHERE IT IS ──────────────────────────
+
+  The data section's export is the one `action` row: a press runs it and
+  nothing is pushed, and the sentence that follows (packing, done, failed)
+  is a `note` the model adds under it. While it runs the model marks the
+  row busy and it renders inert, so a second press cannot pack twice.
+
   ── THE BLURB RIDES THE BAR ───────────────────────────────────────────
 
   `NavBar` already has a subtitle line and already drops it on collapse.
@@ -77,8 +84,9 @@
     onBack?: (() => void) | null,
     onChoose?: ((rowId: string) => void) | null,
     onToggle?: ((rowId: string, checked: boolean) => void) | null,
+    onAction?: ((rowId: string) => void) | null,
   }} */
-  let { section = null, onBack = null, onChoose = null, onToggle = null } = $props();
+  let { section = null, onBack = null, onChoose = null, onToggle = null, onAction = null } = $props();
 
   const rows = $derived(section?.rows ?? []);
   // The split the header argues: rows in the group, sentences under it.
@@ -108,8 +116,16 @@
             kind="choice"
             onSelect={onChoose ? () => onChoose(row.id) : null}
           />
+        {:else if row.kind === "action"}
+          <!-- A busy action is inert: the model holds it while it runs. -->
+          <Row
+            label={row.label}
+            detail={row.detail ?? ""}
+            kind="action"
+            onSelect={onAction && !row.busy ? () => onAction(row.id) : null}
+          />
         {:else}
-          <Row label={row.label} value={row.value ?? ""} />
+          <Row label={row.label} detail={row.detail ?? ""} value={row.value ?? ""} />
         {/if}
       {/each}
     </RowGroup>

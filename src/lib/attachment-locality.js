@@ -30,7 +30,7 @@ export const AWAY_LABEL = "not on this device";
  * bytes rather than alone. See SyncSettings.svelte, storage tab.
  */
 export const ATTACHMENT_LOCALITY_NOTE =
-  "a file stays on the device that added it unless you sync it — synced, the pin travels with its bytes. unsynced, the pin travels alone.";
+  "with sync on, a new file travels with your writing unless you keep it here — synced, the pin travels with its bytes. kept here, the pin travels alone.";
 
 /**
  * The gc floor, named where the user meets it: a pin is a pointer plus a

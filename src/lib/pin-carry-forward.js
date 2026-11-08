@@ -16,6 +16,7 @@
 // to a note at all. One function, shape detected rather than assumed.
 import { stripPinIdsFromJSON } from "./extensions/pin-id.js";
 import { isBoardType } from "./extensions/block-title.js";
+import { stripBlockIdsFromJSON } from "./block-id.js";
 
 /**
  * @param {{id?:string, object_type?:string, title?:string|null, content?:string|null}|null} pin
@@ -27,7 +28,11 @@ import { isBoardType } from "./extensions/block-title.js";
  */
 export function pinToNodes(pin, opts = {}) {
   if (!pin) return [];
-  const nodes = contentNodes(pin.content, opts);
+  // Never the source block's blockId, in either mode: what lands is a new
+  // block on this page (a pin still points at it through pinId when kept),
+  // and the page's editor gives it an id of its own. Two blocks on two
+  // pages sharing one id would make the id point at neither.
+  const nodes = stripBlockIdsFromJSON(contentNodes(pin.content, opts));
   if (nodes.length === 0) return [];
   return withTitle(nodes, pin.title);
 }

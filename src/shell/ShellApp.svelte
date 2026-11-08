@@ -200,6 +200,8 @@
   import SettingsScreen from "./SettingsScreen.svelte";
   import SettingsSectionScreen from "./SettingsSectionScreen.svelte";
   import SyncDevicesScreen from "./SyncDevicesScreen.svelte";
+  import LockSettingsScreen from "./LockSettingsScreen.svelte";
+  import { announceLockSettings } from "../lib/auto-lock.js";
   import SyncPairScreen from "./SyncPairScreen.svelte";
   import SyncScanScreen from "./SyncScanScreen.svelte";
   import SyncSetupScreen from "./SyncSetupScreen.svelte";
@@ -242,7 +244,8 @@
   import { monthOf } from "./calendar-month.js";
   // The scopes the trail sheet offers — the same list memory's map hangs
   // its blocks on.
-  import { trailIndexRows } from "./trail-index.js";
+  import { noTrailMatches, trailIndexRows } from "./trail-index.js";
+  import { untrailedPageCount } from "../lib/memory-trails.js";
   import {
     moveUnderRows,
     pinTrailRows,
@@ -256,6 +259,7 @@
   import { blockPinnable } from "./block-pinnable.js";
   import { pinToastMessage, carryForwardMessage, PIN_TOAST_MS } from "./pin-toast.js";
   import { settingsGroups, settingsRowScreen, settingsSection } from "./settings-model.js";
+  import { runExportZip } from "../lib/export/run.js";
   import { SHELL_SWITCH_KEY, shellSwitchChecked, shellSwitchValue } from "./shell-switch.js";
   import { UNNAMED_NEW_DEVICE, disconnectSheet, pairErrorText, pairSide } from "./sync-model.js";
   import {
@@ -281,11 +285,15 @@
     SORTS,
     memoryFilterCount,
     mergePinRows,
+    removeMemoryFilter,
+    showEverythingPatch,
     yesterdayOf,
   } from "./memory-model.js";
   import { navBack, subscribe as navSubscribe } from "../lib/navstack.js";
   import { pageAddress } from "../lib/page-address.js";
-  import { buildCarryForwardNodes } from "../lib/pin-carry-forward.js";
+  import { buildCarryForwardNodes, pinToNodes } from "../lib/pin-carry-forward.js";
+  import { pinMoreSheet } from "./pin-more-sheet.js";
+  import { pinRowLabel } from "./pin-label.js";
   import { getLocalDateStr } from "../lib/utils.js";
   import { listen } from "@tauri-apps/api/event";
   import { pulledReadAddress, pulledPageAction, pullRefreshTargets } from "./pull-refresh.js";
@@ -298,7 +306,7 @@
   import { writePinEdit, textIntoNode, findPinNode } from "../lib/pin-edit-route.js";
   import { withNodesAtPinId, withTitleAtPinId } from "./pin-rename.js";
   import { stampPinRun } from "../lib/pin-run.js";
-  import { nodeKind } from "../lib/pin-display.js";
+  import { nodeKind, pinDisplayTitle } from "../lib/pin-display.js";
   import { convertTargetsFor, convertBlockNode } from "../lib/editor/block-convert.js";
   import { commandItems, SlashCommandsPluginKey } from "../lib/slash-commands.js";
   import { needsFreshLine } from "../lib/editor/slash-insert-target.js";
@@ -321,6 +329,10 @@
     setFocusLineage,
     getCarryForwardPins,
     getPins,
+    // 0.8.2: the trail sheets' `pages · pins` and the pins screen's
+    // `all trails` count — two read-only aggregates, one SELECT each.
+    getTrailPageCounts,
+    getTrailPinCounts,
     updatePinAutoInsert,
     updatePinContent,
     // The focus line's one write (commitFocusLine). The shell rendered the
@@ -337,6 +349,13 @@
     searchPages,
     getSetting,
     setSetting,
+    // The account's one lock (LockSettingsScreen, src-tauri/src/account_lock.rs):
+    // the laptop's four lock commands, now on the phone too.
+    checkEncryptionStatus,
+    setupEncryption,
+    changePassphrase,
+    removeEncryption,
+    setLockTimeout,
     // The sync stack's fourteen, and only these — of the thirty-odd sync
     // commands api.js exposes: seven for the devices list and the pairing
     // exchange, seven more for setup (the account wizard, on the phone
@@ -675,6 +694,17 @@
    *  and velocityX, applied to a list and the trail it belongs to. */
   let pinsLineage = $state(null);
 
+  /** 0.8.2: the pins screen's `all trails` (spec §4, ruling 5). The rows
+   *  are null until the chip is first pressed — reading them is a fan-out
+   *  over every trail (memory's N+1, see loadMemory), which the common
+   *  push should not pay for — and the count beside the chip comes from
+   *  the per-trail pin counts query until then. The trails are read with
+   *  the push for the section headings and the move choices. */
+  let pinAllList = $state(null);
+  let pinAllCount = $state(null);
+  let pinAllReading = false;
+  let pinsLineages = $state([]);
+
   /** The scroller under the finger, as Screen measured it. Straight
    *  through to gestureOwner's canvas row; nothing in this file reads
    *  either. Both were the table's inputs with no producer anywhere —
@@ -736,6 +766,9 @@
     push("pins");
     pinsLoading = true;
     pinList = [];
+    pinAllList = null;
+    pinAllCount = null;
+    readPinsContext();
     // Read once, here, and handed to the screen with the rows it belongs
     // to — see pinsLineage.
     const lineageId = page?.lineage_id || null;
@@ -751,6 +784,107 @@
     } finally {
       if (live) pinsLoading = false;
     }
+  }
+
+  /** The trails and the all-trails count, beside the push's own fetch and
+   *  not before it: neither is needed to show the trail's rows. */
+  async function readPinsContext() {
+    try {
+      const [lineages, counts] = await Promise.all([getLineages(), getTrailPinCounts()]);
+      if (!live) return;
+      pinsLineages = Array.isArray(lineages) ? lineages : [];
+      pinAllCount = Array.isArray(counts) ? counts.reduce((n, pair) => n + (Number(pair?.[1]) || 0), 0) : null;
+    } catch (err) {
+      console.error("shell: could not read the trails for the pins screen", err);
+    }
+  }
+
+  /** `all trails`, read the first time the chip asks for it. */
+  async function loadAllPins() {
+    if (pinAllReading || Array.isArray(pinAllList)) return;
+    pinAllReading = true;
+    try {
+      const lineages = pinsLineages.length ? pinsLineages : (await getLineages()) ?? [];
+      const lists = await Promise.all([getPins(null), ...lineages.map((l) => getPins(l.id))]);
+      if (live) pinAllList = mergePinRows(lists);
+    } catch (err) {
+      console.error("shell: could not read every trail's pins", err);
+      if (live) pinAllList = [];
+    } finally {
+      pinAllReading = false;
+    }
+  }
+
+  /** `put on page`: the desktop panel's `injectPinNow`, against the core
+   *  method carry-forward already uses. The pin's title goes with it (the
+   *  row's title, derived when the column is blank), and `keepPinIds`
+   *  makes the block the pin rather than a copy — the desktop's call. The
+   *  screen goes back to the page, so the writer sees where it landed. */
+  function putPinOnPage(pin) {
+    if (!pin || readonly || !core?.appendNodesToDoc) return;
+    const titled = { ...pin, title: (pin.title || "").trim() || pinDisplayTitle(pin) };
+    const nodes = pinToNodes(titled, { keepPinIds: true });
+    if (nodes.length === 0) return;
+    const landed = core.appendNodesToDoc(nodes) ?? 0;
+    if (pushed[pushed.length - 1]?.kind === "pins") popScreen();
+    if (landed > 0) showToast("the pin is on the page");
+  }
+
+  /** The untrailed empty state's `choose a trail`: back to the page, and
+   *  the page's own trail sheet over it — choosing is the way back to a
+   *  trail's pins (CLAUDE.md's context clause), and it is the page's
+   *  choice, not the pins screen's. */
+  function chooseTrailFromPins() {
+    if (pushed[pushed.length - 1]?.kind === "pins") popScreen();
+    openTrailSheet();
+  }
+
+  // ── a pin row's `more` sheet ───────────────────────────────────────
+  //
+  // pin-more-sheet.js decides what it offers (the desktop's list, ruling
+  // 6); this is what each row does. `unpin…` re-asks in the same sheet.
+  let morePin = $state(null);
+  let moreConfirming = $state(false);
+  const moreSheet = $derived(
+    pinMoreSheet(morePin, {
+      lineages: pinsLineages,
+      title: morePin ? pinRowLabel(morePin) : "",
+      confirming: moreConfirming,
+    }),
+  );
+
+  function openPinMore(pin) {
+    morePin = pin;
+    moreConfirming = false;
+    openSheet = "pin-more";
+  }
+
+  async function runPinMoreRow(row) {
+    const pin = morePin;
+    if (!pin) return;
+    if (row.id === "unpin") {
+      moreConfirming = true;
+      return;
+    }
+    openSheet = null;
+    if (row.id === "carry") await toggleCarry(pin);
+    else if (row.id === "unpinNow") await unpin(pin);
+    else if (row.id === "move") await movePin(pin, row.target ?? null);
+  }
+
+  /** A move from the `more` sheet: the same write the pin screen's trail
+   *  picker makes (pickPinTrail), patched once it has landed. */
+  async function movePin(pin, lineageId) {
+    try {
+      await updatePinScope(pin.id, lineageId);
+    } catch (err) {
+      console.error("shell: could not move the pin", err);
+      return;
+    }
+    if (!live) return;
+    patchPin(pin.id, { lineage_id: lineageId });
+    if (pushed.some((entry) => entry?.kind === "pins")) refreshPins();
+    measurePinCount();
   }
 
   // ── memory ───────────────────────────────────────────────────────────
@@ -842,6 +976,18 @@
     setMemorySort(DEFAULT_SORT);
   }
 
+  /** A pill's ×, or `show everything` (0.8.2): memory-model.js says what
+   *  changes; this applies it to the state that lives here. The sort goes
+   *  through setMemorySort, because the backend owns that order. */
+  function applyMemoryPatch(patch) {
+    if ("trail" in patch) memoryTrail = patch.trail;
+    if ("range" in patch) memoryRange = patch.range;
+    if ("day" in patch) memoryDay = patch.day;
+    if ("pinned" in patch) memoryPinned = patch.pinned;
+    if ("query" in patch) searchMemory(patch.query);
+    if ("sort" in patch) setMemorySort(patch.sort);
+  }
+
   /** A preset and a picked day are one filter said two ways, so each
    *  clears the other. Without this the segment would light `today` over
    *  a list the calendar had scoped to the eleventh. */
@@ -856,6 +1002,30 @@
     // presets shows nothing lit while a day is on.
     memoryDay = memoryDay === date ? null : date;
     memoryMonth = monthOf(date) ?? memoryMonth;
+  }
+
+  /** Each trail's own pages and pins (ruling 1), as Maps keyed by lineage
+   *  id — null keys the pins on no trail. Null until first read: the trail
+   *  sheets then carry no count rather than a guessed zero. Read with
+   *  memory and when the page's trail sheet opens; one SELECT apiece. */
+  let trailPageCounts = $state(null);
+  let trailPinCounts = $state(null);
+
+  async function readTrailCounts() {
+    // Two tries, not one: a failed page count must not cost the pin count,
+    // and neither may cost the list it sits beside.
+    try {
+      const pairs = await getTrailPageCounts();
+      if (live && Array.isArray(pairs)) trailPageCounts = new Map(pairs);
+    } catch (err) {
+      console.error("shell: could not count each trail's pages", err);
+    }
+    try {
+      const pairs = await getTrailPinCounts();
+      if (live && Array.isArray(pairs)) trailPinCounts = new Map(pairs);
+    } catch (err) {
+      console.error("shell: could not count each trail's pins", err);
+    }
   }
 
   async function loadMemory({ quiet = false } = {}) {
@@ -876,6 +1046,7 @@
         ...memoryLineages.map((l) => getPins(l.id)),
       ]);
       if (live) memoryPinList = mergePinRows(lists);
+      readTrailCounts();
     } catch (err) {
       // The previous lists are left standing. Pages do not stop existing,
       // so a failed read means the writer sees what they saw a moment ago
@@ -994,15 +1165,30 @@
   // trail-first ordering and the page counts; if either is missed it
   // comes back as a mode on that segment, not as a second screen.
   function openTrails() {
+    trailScopeQuery = "";
     openSheet = "trail-scope";
   }
+
+  /** What is typed into the scope sheet's `find a trail…` (0.8.2). Cleared
+   *  each time the sheet opens, so it never greets a writer with a list
+   *  narrowed by a search they made last time. */
+  let trailScopeQuery = $state("");
+  const trailScopeNoMatch = $derived(noTrailMatches(memoryLineages, trailScopeQuery));
 
   /** The rows the scope sheet offers: `all trails`, `untrailed`, then the
    *  tree in name order — `trailIndexRows`, which is also the list
    *  memory's map hangs its blocks on, so the two cannot disagree about
    *  which trails exist or how they nest. */
   const trailScopeRows = $derived(
-    trailIndexRows({ lineages: memoryLineages, selectedId: memoryTrail }),
+    trailIndexRows({
+      lineages: memoryLineages,
+      selectedId: memoryTrail,
+      query: trailScopeQuery,
+      pageCounts: trailPageCounts,
+      pinCounts: trailPinCounts,
+      // Memory's own list, while it is under its cap; unknown past it.
+      untrailedPages: untrailedPageCount(memoryPageList, MEMORY_PAGE_FETCH),
+    }),
   );
 
   /** A tap on a scope row: scope memory, or — on the trail memory is
@@ -1435,6 +1621,7 @@
   function patchPin(id, mut) {
     const patch = (rows) => rows.map((row) => (row.id === id ? { ...row, ...mut } : row));
     pinList = patch(pinList);
+    if (Array.isArray(pinAllList)) pinAllList = patch(pinAllList);
     memoryPinList = patch(memoryPinList);
     if (artifactPin?.id === id) artifactPin = { ...artifactPin, ...mut };
   }
@@ -1462,6 +1649,8 @@
       // hold the same pin.
       if (!live) return;
       pinList = pinList.filter((row) => row.id !== pin.id);
+      if (Array.isArray(pinAllList)) pinAllList = pinAllList.filter((row) => row.id !== pin.id);
+      if (pinAllCount != null) pinAllCount = Math.max(0, pinAllCount - 1);
       memoryPinList = memoryPinList.filter((row) => row.id !== pin.id);
       measurePinCount();
     } catch (err) {
@@ -1954,7 +2143,7 @@
   let settingsSectionId = $state(null);
 
   const settingsRootGroups = $derived(
-    settingsGroups({ tone, font: fontFamily, sync: syncState }),
+    settingsGroups({ tone, font: fontFamily, sync: syncState, lock: lockOn }),
   );
   const settingsSectionModel = $derived(
     settingsSection(settingsSectionId, {
@@ -1966,6 +2155,8 @@
       // strand a reader on a layout they cannot leave.
       offerShellSwitch: !import.meta.env.VITE_DEMO,
       version: `${appVersion} · ${buildSha}`,
+      exportZip: platform.exportZip,
+      exportStatus,
     }),
   );
 
@@ -1992,6 +2183,55 @@
     // root has to know it. Devices are NOT read here — the settings root
     // shows one word and the list is a screen away.
     await loadSyncState();
+    // The lock row's on or off, the same way.
+    await loadLock();
+  }
+
+  // ── the account's lock (LockSettingsScreen) ──────────────────────
+  //
+  // Whether THIS device's file is locked, read from the file itself
+  // (commands.rs encryption_status_inner), and the inactivity timeout. A
+  // change here goes to the account (account_lock.rs) and every paired
+  // device follows; the root row's value and the App's inactivity timer
+  // follow here at once.
+  let lockOn = $state(false);
+  let lockTimeout = $state(0);
+  let lockBusy = $state(false);
+  let lockError = $state(/** @type {string|null} */ (null));
+
+  async function loadLock() {
+    try { lockOn = !!(await checkEncryptionStatus()); } catch {}
+    try { lockTimeout = parseInt((await getSetting("lock_timeout_minutes")) || "0", 10) || 0; } catch {}
+  }
+
+  async function submitLock(form, values) {
+    if (lockBusy) return;
+    lockBusy = true;
+    lockError = null;
+    try {
+      if (form === "setup") await setupEncryption(values.next);
+      else if (form === "change") await changePassphrase(values.current, values.next);
+      else if (form === "off") await removeEncryption(values.current);
+      await loadLock();
+      announceLockSettings({ encrypted: lockOn });
+      if (pushed[pushed.length - 1]?.kind === "lock") popScreen();
+      showToast(form === "setup" ? "the lock is on, on every device" : form === "off" ? "the lock is off, on every device" : "the passphrase changed, on every device");
+    } catch (err) {
+      // The backend's own words ("that is not the current passphrase").
+      lockError = String(err?.message ?? err);
+    } finally {
+      lockBusy = false;
+    }
+  }
+
+  async function chooseLockTimeout(minutes) {
+    lockTimeout = minutes;
+    try {
+      await setLockTimeout(minutes);
+      announceLockSettings({ timeoutMin: minutes });
+    } catch (err) {
+      console.error("shell: could not save the lock timeout", err);
+    }
   }
 
   /** The push, and it is the model's own id that travels. Nothing here
@@ -2008,6 +2248,12 @@
     if (settingsRowScreen(id) === "sync") {
       push("sync");
       loadSyncDevices();
+      return;
+    }
+    if (settingsRowScreen(id) === "lock") {
+      lockError = null;
+      push("lock");
+      loadLock();
       return;
     }
     settingsSectionId = id;
@@ -2132,6 +2378,35 @@
 
   function toggleSetting(rowId, checked) {
     SETTINGS_TOGGLES[rowId]?.(checked);
+  }
+
+  /** The data section's export: what it last did, for the note under the
+   *  row. null until pressed. settings-model.js decides what it says. */
+  let exportStatus = $state(null);
+
+  /** Every page, packed into one zip and handed to the share sheet
+   *  (runExportZip). The model holds the row while this runs, so a second
+   *  press is not reachable; the guard here is for a caller that is not
+   *  the row. */
+  async function exportEverything() {
+    if (exportStatus?.state === "working") return;
+    exportStatus = { state: "working" };
+    try {
+      const summary = await runExportZip();
+      if (live) exportStatus = { state: "done", pageCount: summary.pageCount };
+    } catch (err) {
+      console.error("shell: the export did not finish", err);
+      if (live) exportStatus = { state: "failed" };
+    }
+  }
+
+  /** Action rows, by row id: a row exists exactly when its action does. */
+  const SETTINGS_ACTIONS = {
+    export: exportEverything,
+  };
+
+  function actOnSetting(rowId) {
+    SETTINGS_ACTIONS[rowId]?.();
   }
 
   // ── sync ─────────────────────────────────────────────────────────────
@@ -3510,6 +3785,24 @@
    *  button, so the tap dropped the keyboard (this file's header), and the
    *  writer should get it back on the tap rather than three round trips
    *  later — the pin is durable by then, but the caret never moved. */
+  /** The block's own way back: the same ask and the same write as the pin's
+   *  `more` sheet (unpinNow, `unpin`), about the pin this block carries. */
+  async function unpinSheetBlock(block) {
+    const node = blockNodeAt(block);
+    const id = node && stampedPinIds(node).find((pinId) => !deadPins.has(pinId));
+    if (!id) return;
+    try {
+      const lineages = pinsLineages.length ? pinsLineages : (await getLineages()) ?? [];
+      const lists = await Promise.all([getPins(null), ...lineages.map((l) => getPins(l.id))]);
+      const pin = mergePinRows(lists).find((row) => row.id === id);
+      if (!pin || !live) return;
+      openPinMore(pin);
+      moreConfirming = true;
+    } catch (err) {
+      console.error("shell: could not read the block's pin", err);
+    }
+  }
+
   async function pinSheetBlock(block) {
     try {
       const intent = pinIntentFor(block);
@@ -4018,6 +4311,7 @@
     // same write, same breadcrumb as the strip's `pin` — about the block
     // the sheet names rather than about the caret.
     pin: pinSheetBlock,
+    unpin: unpinSheetBlock,
     copy: copyBlock,
     // The only row that deliberately does NOT restoreFocus() afterwards.
     // Every other one hands the writer back to the doc; this one hands
@@ -4083,7 +4377,7 @@
   // a pure DOM question the core answers without knowing about readonly.
   // Withholding it in `rowsFor`'s filter is the same answer at a different
   // seam, and it fails closed the way the allowlist is meant to.
-  const READONLY_ROWS = new Set(["copy", "pin"]);
+  const READONLY_ROWS = new Set(["copy", "pin", "unpin"]);
 
   /** The rows for a block, or [] for none. A plain function rather than
    *  only a $derived because the open handlers have to know whether there
@@ -4105,6 +4399,7 @@
     return blockSheetRows({
       activeBlock: block,
       canPin: mayPin(node),
+      canUnpin: !!node && stampedPinIds(node).some((id) => !deadPins.has(id)),
       // NOT `block.isTitled`, which is the neighbouring question and the
       // whole reason this row was absent for three phases. The gate is
       // whether a slot EXISTS to focus, a DOM fact the snapshot is pure of,
@@ -5095,6 +5390,8 @@
       // be wrong with — it withholds the irreversible row, never offers it.
       pageEmpty: pageLooksEmpty,
       canonicalByLineage: trailCanonicals,
+      pageCounts: trailPageCounts,
+      pinCounts: trailPinCounts,
     }),
   );
 
@@ -5374,6 +5671,7 @@
     try {
       const rows = await getLineages();
       if (live) trailList = Array.isArray(rows) ? rows : [];
+      readTrailCounts();
       await loadTrailCanonicals(trailList);
     } catch (err) {
       // The sheet keeps its field and whatever list it already had. A
@@ -6077,6 +6375,8 @@
       onScrollEdges={takeScrollEdges}
       onPage={openReading}
       onPin={openPinArtifact}
+      onRemoveFilter={(id) => applyMemoryPatch(removeMemoryFilter(id))}
+      onShowEverything={() => applyMemoryPatch(showEverythingPatch())}
     />
   {:else if active === "settings"}
     <SettingsScreen groups={settingsRootGroups} onOpen={openSettingsRow} />
@@ -6095,10 +6395,19 @@
 {#snippet pinsView()}
   <PinsScreen
     pins={pinList}
+    allPins={pinAllList}
+    allCount={pinAllCount}
     loading={pinsLoading}
     lineageId={pinsLineage}
+    pageId={page?.id ?? null}
+    lineages={pinsLineages}
+    canPutOnPage={!!page && !readonly && (page?.lineage_id || null) === pinsLineage}
     onBack={popScreen}
     onPin={openPinArtifact}
+    onPutOnPage={putPinOnPage}
+    onMore={openPinMore}
+    onChooseTrail={page && !readonly && loadedTrailMode !== "continuous" ? chooseTrailFromPins : null}
+    onNeedAllPins={loadAllPins}
   />
 {/snippet}
 
@@ -6166,6 +6475,7 @@
     onBack={popScreen}
     onChoose={chooseSetting}
     onToggle={toggleSetting}
+    onAction={actOnSetting}
   />
 {/snippet}
 
@@ -6176,6 +6486,19 @@
      components, so they take the same route `reading`, `trails` and `pins`
      already take. Setup and pair are siblings at depth 3, both pushed
      from the devices screen. -->
+{#snippet lockSettingsView()}
+  <LockSettingsScreen
+    on={lockOn}
+    timeout={lockTimeout}
+    busy={lockBusy}
+    error={lockError}
+    onBack={popScreen}
+    onSubmit={submitLock}
+    onTimeout={chooseLockTimeout}
+    onFormChange={() => (lockError = null)}
+  />
+{/snippet}
+
 {#snippet syncDevicesView()}
   <SyncDevicesScreen
     status={syncState}
@@ -6278,6 +6601,7 @@
           "pin-artifact": pinArtifactView,
           trail: trailView,
           settings: settingsSectionView,
+          lock: lockSettingsView,
           sync: syncDevicesView,
           "sync-pair": syncPairView,
           "sync-scan": syncScanView,
@@ -6841,9 +7165,12 @@
   detent="full"
   onDismiss={() => dismissedSheet("trail")}
 >
+  <!-- 0.8.2: the field finds as well as names (trail-sheet-model.js's
+       header) — typing narrows the trails below and still offers to start
+       a trail no name matches. -->
   <Field
-    label="name a trail"
-    placeholder="name a trail"
+    label="find or name a trail"
+    placeholder="find a trail…"
     bind:value={newTrailName}
     onSubmit={submitTrailName}
   />
@@ -6857,7 +7184,7 @@
   {#if nestingNow}
     <Note>choose the trail “{newTrailName.trim()}” goes inside.</Note>
   {:else if !newTrailName.trim()}
-    <Note>type a name and return to start a trail, or choose one below.</Note>
+    <Note>type to find a trail, or a new name and return to start one.</Note>
   {/if}
   <!--
     The eyebrow says what the list IS, because in nesting mode it is the
@@ -6873,6 +7200,7 @@
       <Row
         label={row.label}
         value={row.value}
+        detail={row.detail ?? ""}
         kind={row.kind === "create" || row.kind === "nest"
           ? "action"
           : row.kind === "manage"
@@ -6913,13 +7241,20 @@
   detent="half"
   onDismiss={() => dismissedSheet("trail-scope")}
 >
+  <!-- 0.8.2: `find a trail…` and each row's own `pages · pins`. The two
+       scope rows stay while searching (trail-index.js says why). -->
+  <Field label="find a trail" placeholder="find a trail…" bind:value={trailScopeQuery} />
+  {#if trailScopeNoMatch}
+    <Note>no trail is named like that.</Note>
+  {/if}
   <RowGroup flush>
     {#each trailScopeRows as row (row.id ?? "all")}
       <!-- The showing row is a push for a trail — its screen, task 9e —
            and inert for all trails and untrailed (scopeRowAction). -->
       <Row
         label={row.label}
-        value={row.selected ? "showing" : (row.mode ?? "")}
+        value={row.value}
+        detail={row.detail}
         kind={scopeRowAction(row) === "scope" ? "choice" : scopeRowAction(row) === "manage" ? "push" : null}
         onSelect={scopeRowAction(row) ? () => tapScopeRow(row) : null}
       />
@@ -6986,6 +7321,28 @@
   <RowGroup flush>
     <Row label={disconnectWords.stay} kind="action" onSelect={() => dismissedSheet("sync-disconnect")} />
     <Row label={disconnectWords.confirm} destructive={true} onSelect={disconnectSync} />
+  </RowGroup>
+</Sheet>
+
+<!--
+  0.8.2: A PIN ROW'S `more`, from the pins screen. What it offers is
+  pin-more-sheet.js's (the desktop's own list, ruling 6). `unpin…` asks in
+  the same sheet: the question as its note, `keep` first, `unpin` last.
+  Dismissing it is a keep.
+-->
+<Sheet
+  open={openSheet === "pin-more"}
+  tag="pin-more"
+  detent="half"
+  onDismiss={() => dismissedSheet("pin-more")}
+>
+  {#if moreSheet.note}
+    <Note size="base">{moreSheet.note}</Note>
+  {/if}
+  <RowGroup flush eyebrow={moreSheet.note ? "" : (morePin ? pinRowLabel(morePin) : "")}>
+    {#each moreSheet.rows as row (row.key)}
+      <Row label={row.label} kind={row.kind} onSelect={() => runPinMoreRow(row)} />
+    {/each}
   </RowGroup>
 </Sheet>
 

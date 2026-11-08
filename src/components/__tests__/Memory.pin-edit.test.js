@@ -15,6 +15,9 @@ vi.mock("../../lib/api.js", () => ({
   getGroundData: vi.fn(() => Promise.resolve(null)),
   getLineages: vi.fn(() => Promise.resolve([])),
   getTrailPageCounts: vi.fn(() => Promise.resolve([])),
+  getTrailPinCounts: vi.fn(() => Promise.resolve([])),
+  updatePinAutoInsert: vi.fn(() => Promise.resolve(null)),
+  updatePinScope: vi.fn(() => Promise.resolve(null)),
   getSetting: vi.fn(() => Promise.resolve(null)),
   setSetting: vi.fn(() => Promise.resolve(null)),
   getPins: vi.fn(() => Promise.resolve(store.rows)),
@@ -55,8 +58,9 @@ const row = (content) => ({
 async function openPinsAndEdit(target, word) {
   await until(() => [...target.querySelectorAll("button")].some((b) => b.textContent.trim() === "pins"), "the pins tab");
   [...target.querySelectorAll("button")].find((b) => b.textContent.trim() === "pins").click();
-  await until(() => target.querySelector(".kind-chip"), "the pin row");
-  target.querySelector(".kind-chip").click();
+  // The row's title is its open control (PinRow layout="panel").
+  await until(() => target.querySelector(".p-title"), "the pin row");
+  target.querySelector(".p-title").click();
   await until(() => document.querySelector(".note-modal-text") || document.querySelector(".modal-editor .ProseMirror")?.editor, "a pin editor");
   const note = document.querySelector(".note-modal-text");
   if (note) {

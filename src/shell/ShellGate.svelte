@@ -82,6 +82,7 @@
   import { toolbarFor } from "./toolbar-model.js";
   import { gateStep, gateAdvance, ONBOARDING_SLIDES } from "./gate-model.js";
   import { markOnboardingComplete, unlock } from "../lib/api.js";
+  import { WRONG_PASSPHRASE } from "../lib/lock-copy.js";
 
   /** @type {{
     kind: "onboarding" | "lock",
@@ -199,7 +200,7 @@
                colour for "this one" beside a field the writer just used,
                rather than a red the shell does not have. The gate's own
                centring is inherited; the note adds no rule of its own. -->
-          <Note tone="warm">wrong passphrase</Note>
+          <Note tone="warm">{WRONG_PASSPHRASE}</Note>
         {/if}
       {:else if step.slide}
         <p class="shell-gate-title">{step.slide.title}</p>

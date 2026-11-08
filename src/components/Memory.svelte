@@ -5,7 +5,7 @@
   import ThreadCard from "./ThreadCard.svelte";
   import ThreadPageView from "./ThreadPageView.svelte";
   import TrailMap from "./TrailMap.svelte";
-  import { getTrailPageCounts, getThread, searchPages, getGroundData, getLineages, getSetting, setSetting, getPins, updatePinContent, deletePin, getPageForMention, loadPageContentForModal, savePageContentWithPinRefresh } from "../lib/api.js";
+  import { getTrailPageCounts, getTrailPinCounts, updatePinAutoInsert, updatePinScope, getThread, searchPages, getGroundData, getLineages, getSetting, setSetting, getPins, updatePinContent, deletePin, getPageForMention, loadPageContentForModal, savePageContentWithPinRefresh } from "../lib/api.js";
   import { writePinEdit, textIntoNode } from "../lib/pin-edit-route.js";
   import { pinTitleAuthority } from "../lib/pin-title-authority.js";
   import { buildTreeList } from "../lib/trail-utils.js";
@@ -36,12 +36,16 @@
   import PinNoteModal from "./pins/PinNoteModal.svelte";
   import { applyDateFilter, groupPinsByTrail, memoryPool, searchDateFilter } from "../lib/memory-filters.js";
   import { getLocalDateStr } from "../lib/utils.js";
+  import { trailSidebarModel, untrailedPageCount, trailCountText, memoryPinSourceLine } from "../lib/memory-trails.js";
+  import { activeFilterPills, memoryCountLine, trailPoolCap } from "../lib/memory-filter-bar.js";
 
   /** @type {{ onNavigatePage: () => void, onContinueFocus: (focus: any) => void }} */
   let { onNavigatePage, onContinueFocus = () => {} } = $props();
 
   // sentinel value used in the sidebar to mean "filter to untrailed pages"
   const UNTRAILED = "__untrailed__";
+  // How many pages memory reads. The untrailed count is only honest below it.
+  const THREAD_CAP = 100;
 
   // data
   let pages = $state([]);
@@ -124,11 +128,12 @@
   let unlistenPull = null;
   let alive = true;
   onMount(() => {
-    Promise.all([reloadThread(), loadLineages(), loadTrailPageCounts(), loadGroundData(), loadPrefs()]);
+    Promise.all([reloadThread(), loadLineages(), loadTrailPageCounts(), loadTrailPinCounts(), loadGroundData(), loadPrefs()]);
     listen("sync-pulled", () => {
       reloadThread({ quiet: true });
       loadLineages();
       loadTrailPageCounts();
+      loadTrailPinCounts();
     }).then((off) => { if (alive) unlistenPull = off; else off(); })
       .catch((err) => console.error("memory: could not listen for sync pulls", err));
   });
@@ -159,7 +164,7 @@
 
   async function reloadThread({ quiet = false } = {}) {
     if (!quiet) loading = true;
-    try { pages = await getThread(100, 0, sort); } catch {} finally { loading = false; }
+    try { pages = await getThread(THREAD_CAP, 0, sort); } catch {} finally { loading = false; }
   }
   async function loadLineages() { try { lineages = await getLineages(); } catch {} }
   async function loadGroundData() { try { groundData = await getGroundData(); } catch {} }
@@ -297,6 +302,29 @@
     }
   }
 
+  // Each trail's own pins (ruling 1), counted in SQL for the same reason as
+  // the pages: memory loads only the selected trail's subtree of pins, so a
+  // tally of what it holds would read 0 on every other row.
+  let trailPinCounts = $state(new Map());
+  async function loadTrailPinCounts() {
+    try {
+      trailPinCounts = new Map(await getTrailPinCounts());
+    } catch {
+      // Keep the previous counts rather than flashing every trail to 0.
+    }
+  }
+
+  // find a trail… — filters the tree by name, keeping a match's ancestors.
+  let trailQuery = $state("");
+  let trailModel = $derived(trailSidebarModel({
+    lineages,
+    pageCounts: trailPageCounts,
+    pinCounts: trailPinCounts,
+    untrailedPages: untrailedPageCount(pages, THREAD_CAP),
+    query: trailQuery,
+    collapsed: collapsedTrails,
+  }));
+
   // tree-ordered lineage list with depth, used for the sidebar
   let lineageTree = $derived(buildTreeList(lineages).map(l => ({
     id: l.id,
@@ -373,6 +401,8 @@
   function clearAllFilters() {
     filters = emptyFilters();
     dateFilter = null;
+    sort = "date";
+    onPageOnly = false;
     searchQuery = "";
     searchResults = null;
     matchingIds = null;
@@ -413,11 +443,61 @@
   let visiblePages = $derived(filteredPages);
   let activeFilters = $derived(activeFilterCount(filters));
   let visibleCount = $derived(filteredPages.length);
-  // Search filters the list now, so the "matching" count equals the visible
-  // count whenever a query is active.
-  let scopedMatchCount = $derived(
-    matchingIds && searchQuery.trim() ? filteredPages.length : 0
+
+  // ── what the filters hide (spec 2026-11-01 §2) ─────────────────────────
+  // The same lists without the filters a pill can name as hiding (date,
+  // pinned only), so the count line can say how many they hide. Trail and
+  // search stay applied: they are the question, not a filter on its answer.
+  let pagesSearching = $derived(!!(searchResults && searchQuery.trim()));
+  let pagesBeforeHiding = $derived.by(() => {
+    let r = applyScopeFilter(memoryPool(pages, pagesSearching ? searchResults : null, sort), effectiveScope);
+    const unhidden = { ...nonScopeFilters, pinned: false };
+    return r.filter((p) => pageMatches(p, unhidden, getLineageMode));
+  });
+  let pinsBeforeHiding = $derived.by(() => {
+    const r = applyScopeFilter(pins, effectiveScope);
+    return searchQuery.trim() ? r.filter((pin) => pinMatches(pin, searchQuery)) : r;
+  });
+  let dateInForce = $derived(
+    searchDateFilter(dateFilter, {
+      searching: mode === "pins" ? !!searchQuery.trim() : pagesSearching,
+      chosen: dateChosen,
+    }),
   );
+  let filterPills = $derived(activeFilterPills({
+    tab: mode,
+    trailLabel: effectiveLineageId === UNTRAILED
+      ? "untrailed"
+      : (effectiveLineageId ? (getLineageName(effectiveLineageId) || "trail") : null),
+    dateFilter: dateInForce,
+    sort,
+    pinnedOnly: filters.pinned,
+    onPage: onPageOnly,
+  }));
+  let countLine = $derived(
+    mode === "pins"
+      ? memoryCountLine({ tab: "pins", shown: visiblePins.length, total: pinsBeforeHiding.length, pills: filterPills })
+      : memoryCountLine({
+          tab: mode,
+          shown: visibleCount,
+          total: pagesBeforeHiding.length,
+          pills: filterPills,
+          capped: trailPoolCap({
+            poolSize: pages.length,
+            cap: THREAD_CAP,
+            searching: pagesSearching,
+            scope: effectiveScope,
+            pageCounts: trailPageCounts,
+          }),
+        }),
+  );
+  function removePill(id) {
+    if (id === "trail") setLineage(null);
+    else if (id === "date") { dateFilter = null; dateChosen = true; }
+    else if (id === "sort") sort = "date";
+    else if (id === "pinned") filters = { ...filters, pinned: false };
+    else if (id === "onPage") onPageOnly = false;
+  }
 
   // ── pins-mode helpers ──────────────────────────────────────────────────
   // Treat artifact/board/table as boards; everything else is a note.
@@ -579,6 +659,25 @@
     try { await deletePin(pinId); } catch (err) { console.error("Failed to delete pin:", err); }
     dropPin(pinId);
     pinModalState = null;
+    loadTrailPinCounts();
+  }
+
+  // The row's ⋯ actions (pin-row-actions.js), the same list the panel
+  // offers. Memory hosts no page, so `put on page` is not among them, and
+  // rename stays in the pin's own modal, which knows where the title lives.
+  async function toggleCarry(pin) {
+    const next = !pin.auto_insert;
+    patchPin(pin.id, { auto_insert: next });
+    try { await updatePinAutoInsert(pin.id, next); } catch (err) {
+      console.error("carry forward from memory:", err);
+      patchPin(pin.id, { auto_insert: pin.auto_insert });
+    }
+  }
+  async function movePinTo(pin, target) {
+    patchPin(pin.id, { lineage_id: target });
+    try { await updatePinScope(pin.id, target); } catch (err) { console.error("move pin from memory:", err); }
+    loadTrailPinCounts();
+    loadPins(effectiveLineageId && effectiveLineageId !== UNTRAILED ? effectiveLineageId : null, lineages);
   }
 
   // Jump from a pin to the page it was pinned from. The source page may not be
@@ -658,12 +757,6 @@
     }
   }
 
-  // ── filter summary (used by empty-state bodies) ───────────────────────────
-  function fmtFilterSummary(f) {
-    const parts = [];
-    if (f.pinned) parts.push("pinned");
-    return parts.length ? parts.join(", ") : "filters";
-  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -672,34 +765,66 @@
      as an EXPLICIT prop — a `{#snippet}` wrapped in `{#if}` becomes a *local*
      snippet in Svelte 5 and is NOT passed to the component (which silently
      dropped the whole sidebar). Conditional prop = no sidebar on phone. -->
+{#snippet trailCounts(c)}
+  {@const t = trailCountText(c)}
+  <span class="trail-counts" aria-hidden="true">{t.pages !== null ? `${t.pages} · ` : ""}<em>{t.pins}</em></span>
+{/snippet}
 {#snippet trailsSidebar()}
-  <SectionHeader label="trails" count={lineageTree.length} />
-        <SidebarNavRow active={activeLineageId === null} accent={activeLineageId === null} onClick={() => setLineage(null)}>all trails</SidebarNavRow>
-        {#each visibleLineageTree as trail (trail.id)}
-          <SidebarNavRow
-            active={activeLineageId === trail.id}
-            accent={activeLineageId === trail.id}
-            count={trail.pageCount}
-            indent={trail.depth * 1.125}
-            tag={trail.mode === "continuous" ? "continuous" : "discrete"}
-            onClick={() => setLineage(trail.id)}
-            expanded={trail.hasChildren ? !collapsedTrails.has(trail.id) : undefined}
-            onToggle={trail.hasChildren ? () => toggleTrailCollapse(trail.id) : undefined}
-          >
-            {#if trail.hasChildren}
-              <!-- The pointer's way to fold; the keyboard's is the row's own
-                   ArrowLeft / ArrowRight (SidebarNavRow `onToggle`). -->
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <span class="trail-chevron" aria-hidden="true" onclick={(e) => { e.stopPropagation(); toggleTrailCollapse(trail.id); }}>{collapsedTrails.has(trail.id) ? "▸" : "▾"}</span>
-            {:else if trail.depth > 0}
-              <span class="trail-chevron-spacer" aria-hidden="true"></span>
-            {/if}
-            {trail.name}
-          </SidebarNavRow>
-        {/each}
-        <SectionHeader label="untrailed" />
-        <SidebarNavRow active={activeLineageId === UNTRAILED} accent={activeLineageId === UNTRAILED} onClick={() => setLineage(UNTRAILED)}>untrailed</SidebarNavRow>
+  <div class="trail-find">
+    <Input
+      bind:value={trailQuery}
+      variant="search"
+      placeholder="find a trail…"
+      ariaLabel="find a trail"
+    />
+  </div>
+  <div class="trail-legend label" aria-hidden="true">trails<span>pages · <em>pins</em></span></div>
+  <SidebarNavRow
+      active={activeLineageId === null}
+      accent={activeLineageId === null}
+      onClick={() => setLineage(null)}
+      ariaLabel={`all trails, ${trailCountText(trailModel.all).label}`}
+    >
+      all trails
+      {#snippet trailing()}{@render trailCounts(trailModel.all)}{/snippet}
+    </SidebarNavRow>
+  {#each trailModel.rows as trail (trail.id)}
+    <SidebarNavRow
+      active={activeLineageId === trail.id}
+      accent={activeLineageId === trail.id}
+      indent={trail.depth * 1.125}
+      onClick={() => setLineage(trail.id)}
+      expanded={trail.expanded}
+      onToggle={trail.hasChildren && !trailModel.searching ? () => toggleTrailCollapse(trail.id) : undefined}
+      ariaLabel={`${trail.name}${trail.oneDoc ? ", one doc" : ""}, ${trailCountText(trail).label}`}
+    >
+      {#if trail.hasChildren}
+        <!-- The pointer's way to fold; the keyboard's is the row's own
+             ArrowLeft / ArrowRight (SidebarNavRow `onToggle`). -->
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <span class="trail-chevron" aria-hidden="true" onclick={(e) => { e.stopPropagation(); if (!trailModel.searching) toggleTrailCollapse(trail.id); }}>{trail.expanded ? "▾" : "▸"}</span>
+      {:else if trail.depth > 0}
+        <span class="trail-chevron-spacer" aria-hidden="true"></span>
+      {/if}
+      {trail.name}{#if trail.oneDoc}<span class="one-doc">{" · one doc"}</span>{/if}
+      {#snippet trailing()}{@render trailCounts(trail)}{/snippet}
+    </SidebarNavRow>
+  {/each}
+  {#if trailModel.noMatch}
+    <p class="trail-nomatch">no trail is named like that.</p>
+  {/if}
+  <div class="untrailed-rule">
+      <SidebarNavRow
+        active={activeLineageId === UNTRAILED}
+        accent={activeLineageId === UNTRAILED}
+        onClick={() => setLineage(UNTRAILED)}
+        ariaLabel={`untrailed, ${trailCountText(trailModel.untrailed).label}`}
+      >
+        untrailed
+        {#snippet trailing()}{@render trailCounts(trailModel.untrailed)}{/snippet}
+      </SidebarNavRow>
+    </div>
 {/snippet}
 
 <div class="memory">
@@ -741,24 +866,38 @@
           {/snippet}
         </TriggerChip>
       </span>
-      <span class="count-label">
-        {#if !loading}
-          {visibleCount} {visibleCount === 1 ? "page" : "pages"}
-          {#if searchResults}· {scopedMatchCount} matching{/if}
-        {/if}
-      </span>
     {/snippet}
+
+    <!-- What is filtered, where its results are (spec §2): one removable
+         pill per filter in force on this tab, then the count line, which
+         names what the pills hide. -->
+    {#if filterPills.length > 0}
+      <div class="active-filters" role="group" aria-label="active filters">
+        <span class="af-label label">showing</span>
+        {#each filterPills as pill (pill.id)}
+          <span class="af-pill">
+            {pill.label}
+            <button type="button" class="af-x" aria-label={pill.removeLabel} onclick={() => removePill(pill.id)}>×</button>
+          </span>
+        {/each}
+        <button type="button" class="af-all" onclick={clearAllFilters}>show everything</button>
+      </div>
+    {/if}
+    {#if !loading}
+      <p class="count-line label" aria-live="polite">{countLine}</p>
+    {/if}
 
     {#if loading}
       <p class="loading-line">loading…</p>
     {:else if mode === "pages"}
       {#if visibleCount === 0}
         {#if hasActiveFilters()}
+          <!-- The pills above name the filters and the count line what they
+               hide; the empty state only offers the way out. -->
           <Empty hasActiveFilters>
             {#snippet title()}nothing matches{/snippet}
-            {#snippet body()}{fmtFilterSummary(filters)}{/snippet}
             {#snippet actions()}
-              <Button variant="subtle" onClick={clearAllFilters}>clear all</Button>
+              <Button variant="subtle" onClick={clearAllFilters}>show everything</Button>
             {/snippet}
           </Empty>
         {:else}
@@ -819,11 +958,12 @@
     {:else if mode === "pins"}
       {#if visiblePins.length === 0}
         {#if hasActiveFilters()}
+          <!-- The pills above name the filters and the count line what they
+               hide; the empty state only offers the way out. -->
           <Empty hasActiveFilters>
             {#snippet title()}nothing matches{/snippet}
-            {#snippet body()}{fmtFilterSummary(filters)}{/snippet}
             {#snippet actions()}
-              <Button variant="subtle" onClick={clearAllFilters}>clear all</Button>
+              <Button variant="subtle" onClick={clearAllFilters}>show everything</Button>
             {/snippet}
           </Empty>
         {:else}
@@ -840,25 +980,28 @@
         {#if pinNotice}
           <p class="pin-notice label" role="status">{pinNotice}</p>
         {/if}
-        <div class="pin-rows">
-          {#each pinGroups as group (group.id)}
-            {#if group.label}
-              <h3 class="pin-group-heading">{group.label}</h3>
-            {/if}
+        {#each pinGroups as group (group.id)}
+          {#if group.label}
+            <h3 class="pin-group-heading">{group.label} · {group.pins.length}</h3>
+          {/if}
+          <div class="pin-grid">
             {#each group.pins as pin (pin.id)}
               <PinRow
                 pin={pin}
                 eff={pin}
                 isBoard={isPinBoard(pin)}
-                lineagePath={relativeLineagePath(getLineagePath(pin.lineage_id), effectiveLineageId === UNTRAILED ? null : effectiveLineageId, lineages)}
-                density="standard"
-                samePage={false}
-                showActions={false}
+                lineages={lineages}
+                sourceLine={memoryPinSourceLine(pin, lineages)}
+                canPutOnPage={false}
+                sortMode="none"
                 onClick={() => openPin(pin)}
+                onCarryForward={() => toggleCarry(pin)}
+                onMove={(target) => movePinTo(pin, target)}
+                onDelete={() => deletePinAndClose(pin.id)}
               />
             {/each}
-          {/each}
-        </div>
+          </div>
+        {/each}
       {/if}
     {/if}
   </SidebarShell>
@@ -983,14 +1126,113 @@
     align-items: center;
   }
 
-  .count-label {
-    margin-left: auto;
-    font-family: "DM Mono", monospace;
+  /* ── trails sidebar (spec 2026-11-01 §2) ─────────────────────────── */
+  .trail-find { padding: 0 0.25rem 0.5rem; }
+  .trail-legend {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.25rem 0.5rem 0.375rem;
     font-size: 0.6875rem;
     color: var(--ink-soft);
-    letter-spacing: 0.02em;
-    white-space: nowrap;
   }
+  .trail-legend em, .trail-counts em { font-style: normal; color: var(--accent-text); }
+  .trail-counts {
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-style: normal;
+    font-size: 0.6875rem;
+    color: var(--ink-soft);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .one-doc {
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-style: normal;
+    font-size: 0.625rem;
+    color: var(--ink-soft);
+  }
+  .trail-nomatch {
+    margin: 0.5rem;
+    font-family: "Lora", Georgia, serif;
+    font-style: italic;
+    font-size: 0.8125rem;
+    color: var(--ink-soft);
+  }
+  .untrailed-rule {
+    margin-top: 0.625rem;
+    padding-top: 0.625rem;
+    border-top: 1px solid var(--horizon);
+  }
+
+  /* ── active filters + count line ─────────────────────────────────── */
+  .active-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.375rem;
+    margin: 0 0 0.5rem;
+  }
+  .af-label { font-size: 0.75rem; color: var(--ink-soft); margin-right: 0.125rem; }
+  .af-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+    background: var(--warm-accent-soft);
+    color: var(--accent-text);
+    border-radius: 999px;
+    padding: 0.125rem 0.125rem 0.125rem 0.625rem;
+  }
+  .af-x {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    line-height: 1;
+    padding: 0.25rem 0.375rem;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .af-x:hover { background: color-mix(in srgb, var(--accent-text) 12%, transparent); }
+  .af-all {
+    appearance: none;
+    border: none;
+    background: transparent;
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: 0.75rem;
+    color: var(--ink-soft);
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+    cursor: pointer;
+    padding: 0.25rem;
+    margin-left: 0.125rem;
+  }
+  .af-all:hover { color: var(--ink); }
+  .count-line {
+    margin: 0 0 0.75rem;
+    font-size: 0.75rem;
+    color: var(--ink-soft);
+  }
+
+  /* Pins tab: the panel's row in a grid of cards at least 250px wide. */
+  .pin-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 0.625rem;
+    align-items: start;
+    margin-bottom: 0.5rem;
+  }
+  .pin-grid :global(.panel-row) {
+    margin-bottom: 0;
+    /* A card is narrower than the panel; the kind column gives back what
+       its labels never use. */
+    grid-template-columns: 2.75rem minmax(0, 1fr);
+    column-gap: 0.5rem;
+    height: 100%;
+    box-sizing: border-box;
+  }
+  .pin-grid { align-items: stretch; }
 
   .cards {
     display: flex;
@@ -1004,8 +1246,7 @@
      pages timeline and the pins list so the two views share one card style;
      the trail map's block surface (TrailMap.svelte) mirrors these values, so
      all three memory modes read as one card family. */
-  .cards :global(.card),
-  .pin-rows :global(.card) {
+  .cards :global(.card) {
     /* Warm-tinted surface + a barely-there lift so the borderless card reads
        as an intentional, warm panel rather than a flat grey smudge. Derived
        from tokens so it adapts across cream / white / dark tones. */
@@ -1017,9 +1258,7 @@
     transition: background-color var(--motion-fast), box-shadow var(--motion-fast);
   }
   .cards :global(.card.clickable:hover),
-  .cards :global(.card.focused),
-  .pin-rows :global(.card.clickable:hover),
-  .pin-rows :global(.card.focused) {
+  .cards :global(.card.focused) {
     background: color-mix(in srgb, var(--warm-accent) 6%, color-mix(in srgb, var(--ink) 6%, var(--canvas-bg)));
     box-shadow: 0 0.25rem 1rem var(--card-shadow-hover);
   }
@@ -1033,21 +1272,15 @@
     font-family: var(--font-ui);
     font-size: 0.72rem;
     font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    letter-spacing: 0.02em;
     color: var(--ink-soft, var(--ink));
-    margin: 1.25rem 0 0.35rem;
+    margin: 1.25rem 0 0.5rem;
   }
 
   .pin-group-heading:first-child {
     margin-top: 0;
   }
 
-  .pin-rows {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
 
   .loading-line {
     font-family: var(--font-ui);
@@ -1148,11 +1381,6 @@
   @media (max-width: 480px), (orientation: landscape) and (max-height: 480px) {
     .seg {
       flex-shrink: 0;
-    }
-    .count-label {
-      font-size: 0.75rem;
-      flex-basis: 100%;
-      text-align: right;
     }
     .search-slot {
       flex: 1 1 100%;

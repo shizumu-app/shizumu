@@ -1,6 +1,6 @@
 {
   "name": "shizumu",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "a private writing app. write to think, pin what matters, trail what continues.",
   "license": "Apache-2.0",
   "private": true,
@@ -21,6 +21,7 @@
     "seed:demo": "node scripts/seed-corpus.js --reset",
     "video:validate": "node scripts/validate-video-config.js marketing/videos/src/vbeta-release.json",
     "test:scripts": "node --test scripts/validate-video-config.test.mjs",
+    "test:loom": "node --test scripts/sync/*.test.mjs scripts/sync/loom-instance/*.test.mjs scripts/desktop/*.test.mjs && cd ../factory && node --test loom/*.test.mjs loom/*/*.test.mjs",
     "test:ios-patch": "node --test scripts/patch-ios-camera.test.mjs",
     "test:ios-snapshot": "node --test scripts/push-ios-snapshot.test.mjs",
     "test:android-softinput": "node --test scripts/patch-android-softinput.test.mjs",

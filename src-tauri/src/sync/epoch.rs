@@ -95,27 +95,29 @@ pub fn recovery_kex_pub_from_seed(seed: &[u8]) -> [u8; 32] {
     PublicKey::from(&recovery_kex_from_seed(seed)).to_bytes()
 }
 
-/// Derive the recovery X25519 secret from the locally-stored BIP-39 phrase.
+/// Derive the recovery X25519 secret from the locally-stored BIP-39 phrase
+/// (`keys::load_stored_phrase`: the secret store, else the `sync_keys` row).
 /// Present only on a device that holds the phrase (the primary device, or a
 /// device recovering from the phrase). Returns `Ok(None)` when no phrase is
 /// stored (e.g. a paired device — it relies on a phrase-holding device to
 /// publish the recovery pubkey).
-pub fn recovery_kex_from_stored_phrase() -> Result<Option<StaticSecret>, String> {
-    let Some(stored) = super::secret_store::load().map_err(|e| e.to_string())? else {
+pub fn recovery_kex_from_stored_phrase(
+    conn: &rusqlite::Connection,
+) -> Result<Option<StaticSecret>, String> {
+    let Some(phrase) = super::keys::load_stored_phrase(conn)? else {
         return Ok(None);
     };
-    let Some(phrase) = stored.phrase.as_deref() else {
-        return Ok(None);
-    };
-    let m = bip39::Mnemonic::parse_normalized(phrase)
+    let m = bip39::Mnemonic::parse_normalized(&phrase)
         .map_err(|e| format!("stored phrase is invalid: {e}"))?;
     Ok(Some(recovery_kex_from_seed(&m.to_seed(""))))
 }
 
 /// The recovery X25519 public key derived from the locally-stored phrase, or
 /// `None` if no phrase is stored on this device.
-pub fn recovery_kex_pub_from_stored_phrase() -> Result<Option<[u8; 32]>, String> {
-    Ok(recovery_kex_from_stored_phrase()?.map(|k| PublicKey::from(&k).to_bytes()))
+pub fn recovery_kex_pub_from_stored_phrase(
+    conn: &rusqlite::Connection,
+) -> Result<Option<[u8; 32]>, String> {
+    Ok(recovery_kex_from_stored_phrase(conn)?.map(|k| PublicKey::from(&k).to_bytes()))
 }
 
 /// Seal an epoch secret to an X25519 recipient pubkey (age). Recipient is a

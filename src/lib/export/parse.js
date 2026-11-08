@@ -8,6 +8,8 @@
 // general markdown parser. If `markdown.js` doesn't produce some construct,
 // this parser doesn't need to handle it.
 
+import { carriesState, stateOf } from "../block-state.js";
+
 export function parsePage(md) {
   const { frontmatter, body } = splitFrontmatter(md);
   const doc = parseBody(body);
@@ -162,13 +164,34 @@ function leadingSpaces(s) {
 
 const DAY_MARKER_RE = /^## (\d{4}-\d{2}-\d{2})(?:\s—\s(.+))?$/;
 const PIN_ANCHOR_RE = /^<!-- shizumu:pin:([^\s>]+) -->$/;
+// Format 2's block line (markdown.js, blockLine). Keys in any order, each
+// `key=value` with no spaces; unknown keys are ignored so a later format can
+// add one without breaking this reader.
+const BLOCK_LINE_RE = /^<!-- shizumu block((?: [a-z_]+=[^\s]+)*) -->$/;
 const CHART_SOURCE_RE = /^<!-- shizumu:chart-source:(.*) -->$/;
 const BOLD_LINE_RE = /^\*\*((?:[^*]|\*(?!\*))+?)\*\*$/;
+
+function freshPending() {
+  return { pinId: null, blockTitle: null, chartSource: null, blockId: null, blockState: null, blockStateAt: null };
+}
+
+/** The keys of a block line, or null when the line is not one. */
+export function parseBlockLine(line) {
+  const m = BLOCK_LINE_RE.exec(line);
+  if (!m) return null;
+  const out = {};
+  for (const part of m[1].trim().split(" ")) {
+    if (!part) continue;
+    const eq = part.indexOf("=");
+    out[part.slice(0, eq)] = part.slice(eq + 1);
+  }
+  return out;
+}
 
 export function parseBody(text) {
   const lines = text.replace(/\n+$/, "").split("\n");
   const blocks = [];
-  let pending = { pinId: null, blockTitle: null, chartSource: null };
+  let pending = freshPending();
 
   let i = 0;
   while (i < lines.length) {
@@ -180,6 +203,15 @@ export function parseBody(text) {
     // Block-level decorations that attach to the NEXT block.
     const pinM = line.match(PIN_ANCHOR_RE);
     if (pinM) { pending.pinId = pinM[1]; i++; continue; }
+    const blockKeys = parseBlockLine(line);
+    if (blockKeys) {
+      pending.blockId = blockKeys.id || null;
+      if (blockKeys.pin) pending.pinId = blockKeys.pin;
+      pending.blockState = blockKeys.state || null;
+      pending.blockStateAt = blockKeys.at || null;
+      i++;
+      continue;
+    }
     const chartM = line.match(CHART_SOURCE_RE);
     if (chartM) {
       try {
@@ -206,7 +238,7 @@ export function parseBody(text) {
       const j = findFenceClose(lines, i + 1);
       const node = makeChart(pending.chartSource);
       attachPending(node, pending);
-      pending = { pinId: null, blockTitle: null, chartSource: null };
+      pending = freshPending();
       blocks.push(node);
       i = j + 1;
       continue;
@@ -223,7 +255,7 @@ export function parseBody(text) {
         content: text ? [{ type: "text", text }] : [],
       };
       attachPending(node, pending);
-      pending = { pinId: null, blockTitle: null, chartSource: null };
+      pending = freshPending();
       blocks.push(node);
       i = j + 1;
       continue;
@@ -236,7 +268,7 @@ export function parseBody(text) {
         type: "dayMarker",
         attrs: { date: dm[1], whatMatters: unescapeMarkdown(dm[2] || "") },
       });
-      pending = { pinId: null, blockTitle: null, chartSource: null };
+      pending = freshPending();
       i++;
       continue;
     }
@@ -246,7 +278,7 @@ export function parseBody(text) {
     if (line === "### Given") {
       const [node, next] = parseRecipe(lines, i);
       attachPending(node, pending);
-      pending = { pinId: null, blockTitle: null, chartSource: null };
+      pending = freshPending();
       blocks.push(node);
       i = next;
       continue;
@@ -258,7 +290,7 @@ export function parseBody(text) {
     if (line === "### Considered") {
       const [node, next] = parseDecision(lines, i);
       attachPending(node, pending);
-      pending = { pinId: null, blockTitle: null, chartSource: null };
+      pending = freshPending();
       blocks.push(node);
       i = next;
       continue;
@@ -268,7 +300,7 @@ export function parseBody(text) {
     if (/^\*\*Q:\*\* /.test(line)) {
       const [node, next] = parseQA(lines, i);
       attachPending(node, pending);
-      pending = { pinId: null, blockTitle: null, chartSource: null };
+      pending = freshPending();
       blocks.push(node);
       i = next;
       continue;
@@ -284,7 +316,7 @@ export function parseBody(text) {
         content: parseInline(hM[2]),
       };
       attachPending(node, pending);
-      pending = { pinId: null, blockTitle: null, chartSource: null };
+      pending = freshPending();
       blocks.push(node);
       i++;
       continue;
@@ -293,7 +325,7 @@ export function parseBody(text) {
     // Horizontal rule.
     if (line === "---") {
       blocks.push({ type: "horizontalRule" });
-      pending = { pinId: null, blockTitle: null, chartSource: null };
+      pending = freshPending();
       i++;
       continue;
     }
@@ -302,7 +334,7 @@ export function parseBody(text) {
     if (line.startsWith("> ") || line === ">") {
       const [node, next] = parseBlockquote(lines, i);
       attachPending(node, pending);
-      pending = { pinId: null, blockTitle: null, chartSource: null };
+      pending = freshPending();
       blocks.push(node);
       i = next;
       continue;
@@ -312,7 +344,7 @@ export function parseBody(text) {
     if (isListLine(line)) {
       const [node, next] = parseList_(lines, i);
       attachPending(node, pending);
-      pending = { pinId: null, blockTitle: null, chartSource: null };
+      pending = freshPending();
       blocks.push(node);
       i = next;
       continue;
@@ -322,7 +354,7 @@ export function parseBody(text) {
     if (line.startsWith("| ") && i + 1 < lines.length && /^\|\s*[:\-]/.test(lines[i + 1])) {
       const [node, next] = parseTable(lines, i);
       attachPending(node, pending);
-      pending = { pinId: null, blockTitle: null, chartSource: null };
+      pending = freshPending();
       blocks.push(node);
       i = next;
       continue;
@@ -341,7 +373,7 @@ export function parseBody(text) {
       content: parseInline(buf.join("\n")),
     };
     attachPending(node, pending);
-    pending = { pinId: null, blockTitle: null, chartSource: null };
+    pending = freshPending();
     blocks.push(node);
   }
 
@@ -352,6 +384,13 @@ function attachPending(node, pending) {
   if (!node.attrs) node.attrs = {};
   if (pending.pinId) node.attrs.pinId = pending.pinId;
   if (pending.blockTitle) node.attrs.blockTitle = pending.blockTitle;
+  if (pending.blockId) node.attrs.blockId = pending.blockId;
+  // Only a stored state is read back. A qa block's `open` is computed from
+  // its answers, and the type that does not carry a state gets none.
+  if (pending.blockState && carriesState(node.type)) {
+    node.attrs.blockState = stateOf(node.type, pending.blockState);
+    if (pending.blockStateAt) node.attrs.blockStateAt = pending.blockStateAt;
+  }
 }
 
 function isBlockStart(line) {
@@ -365,6 +404,7 @@ function isBlockStart(line) {
     isListLine(line) ||
     line === "---" ||
     PIN_ANCHOR_RE.test(line) ||
+    BLOCK_LINE_RE.test(line) ||
     CHART_SOURCE_RE.test(line) ||
     (line.startsWith("| ") || line === "|")
   );
@@ -546,8 +586,12 @@ function parseQA(lines, start) {
     i++;
     while (i < lines.length && lines[i] === "") i++;
     let aText = "";
-    if (i < lines.length && /^\*\*A:\*\* /.test(lines[i])) {
-      aText = lines[i].slice("**A:** ".length);
+    // An unanswered question ends in "**A:**" with no space after it when it
+    // is the last thing on the page (the serializer trims the file's end),
+    // so the space is optional. Without that, the empty answer came back as
+    // a stray paragraph and an open question did not survive a file.
+    if (i < lines.length && /^\*\*A:\*\*(?: |$)/.test(lines[i])) {
+      aText = lines[i].slice("**A:**".length).replace(/^ /, "");
       i++;
     }
     pairs.push({

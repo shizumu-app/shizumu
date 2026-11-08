@@ -3,6 +3,8 @@ import { Plugin, PluginKey, TextSelection, NodeSelection } from "@tiptap/pm/stat
 import { nodeKind, nodeFamily } from "../pin-display.js";
 import { createBlockShell } from "./block-shell.js";
 import { bindTitleSlot } from "./title-slot.js";
+import { createStateChip } from "./block-state.js";
+import { carriesState } from "../block-state.js";
 
 // Boards that semantically benefit from a small title metadata header.
 // Paragraphs and headings are left out — they already serve as their own
@@ -516,6 +518,14 @@ function createBoardNodeView(node, view, getPos, ext) {
   // Initial render of the title text.
   titleApi.refresh(node);
 
+  // A decision's standing/superseded chip (extensions/block-state.js). Top
+  // level only, like the title and the type chip: a decision nested in a
+  // list item takes the nested branch above and carries neither.
+  const stateChip = carriesState(node.type.name)
+    ? createStateChip({ node, view, getPos, wrap })
+    : null;
+  if (stateChip) wrap.append(stateChip.el);
+
   // If the slash command set storage.pendingFocusPos to this node's pos,
   // enter edit mode on the next frame so the user types title → items.
   // Defer slightly so the NodeView is fully mounted before we try to focus.
@@ -528,6 +538,7 @@ function createBoardNodeView(node, view, getPos, ext) {
       if (updatedNode.type !== currentNode.type) return false;
       currentNode = updatedNode;
       titleApi.refresh(updatedNode);
+      stateChip?.refresh(updatedNode);
       // Intentionally NOT calling consumePendingFocus() here. The initial
       // mount above (rAF + one-frame retry) covers the slash-creates-new-
       // board race. Re-firing on every update() re-consumed stale arms:
@@ -544,10 +555,17 @@ function createBoardNodeView(node, view, getPos, ext) {
       return true;
     },
     stopEvent(event) {
+      // The state chip is a button: its press is its own, not a click
+      // ProseMirror should turn into a selection in the block.
+      if (stateChip?.el.contains(event.target)) return true;
       return titleSlot.contains(event.target);
     },
     ignoreMutation(mutation) {
       if (titleSlot.contains(mutation.target)) return true;
+      if (stateChip?.el.contains(mutation.target)) return true;
+      if (mutation.type === "attributes" && mutation.attributeName === "data-block-state" && mutation.target === wrap) {
+        return true;
+      }
       // Coordinator branch-review fix (item 2): TipTapEditor.svelte's touch
       // title-reveal stamps a `.block-active-touch` class directly onto
       // this NodeView's own root `wrap` element (not titleSlot) to reveal +

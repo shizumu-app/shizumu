@@ -75,6 +75,46 @@ describe("startSafeArea", () => {
     expect(win.__nativeInsets).toBeUndefined();
   });
 
+  // THE ACTIVITY TELLS EACH PAGE ONCE, by URL, and location.reload() keeps
+  // the URL: after the startup lock screen's unlock reloaded the app, the
+  // A16 drew the header under the status bar and the tab row in the
+  // navigation buttons' strip (2026-11-08). The insets do not change across
+  // a reload of the same activity, so the page keeps the last ones it was
+  // told for the next document in this session.
+  const memoryStorage = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; };
+
+  it("a reloaded page uses the insets the page before it was told", () => {
+    const storage = memoryStorage();
+    const first = fakeWindow();
+    first.win.sessionStorage = storage;
+    startSafeArea(first.win);
+    first.win.__nativeInsets({ top: 36, bottom: 48 });
+
+    const reloaded = fakeWindow();
+    reloaded.win.sessionStorage = storage;
+    const release = startSafeArea(reloaded.win);
+    expect(reloaded.get("--safe-top")).toBe("36px");
+    expect(reloaded.get("--safe-bottom")).toBe("48px");
+    release();
+  });
+
+  it("prefers what the activity says over what was kept, and survives storage that throws", () => {
+    const storage = memoryStorage();
+    storage.setItem("shizumu:native-insets", JSON.stringify({ bottom: 48 }));
+    const { win, get: css } = fakeWindow();
+    win.sessionStorage = storage;
+    win.__nativeInsetsState = { bottom: 0 };
+    startSafeArea(win)();
+    expect(css("--safe-bottom")).toBe("0px");
+
+    const broken = fakeWindow();
+    broken.win.sessionStorage = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } };
+    const release = startSafeArea(broken.win);
+    expect(() => broken.win.__nativeInsets({ bottom: 48 })).not.toThrow();
+    expect(broken.get("--safe-bottom")).toBe("48px");
+    release();
+  });
+
   it("does nothing at all without a window", () => {
     // Not an empty assertion for its own sake: this module is imported by
     // the app shell, which SSRs nothing but is evaluated in jsdom-less

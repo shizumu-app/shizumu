@@ -100,11 +100,16 @@ export function shouldDismissOnBlur({ pointerDownOnToolbar, coarsePointer }) {
  * bubble menu is the case that was in front of us the whole time and was
  * not swept with it.
  *
+ * `.block-state-chip` (a decision's standing/superseded button,
+ * extensions/block-state.js) joined in 0.8.2: a tap on it toggles the
+ * decision, and without it the same tap also revealed the board's title
+ * above it, so the chip moved down under the finger as it was pressed.
+ *
  * @param {EventTarget|null} target
  * @returns {boolean}
  */
 export function isAffordanceTarget(target) {
   if (!target || typeof (/** @type {any} */ (target).closest) !== "function") return false;
   const el = /** @type {Element} */ (target);
-  return !!el.closest(".block-handles, .block-type-chip, .touch-block-handle, .board-title-slot, .block-action-sheet, .bubble-menu");
+  return !!el.closest(".block-handles, .block-type-chip, .block-state-chip, .touch-block-handle, .board-title-slot, .block-action-sheet, .bubble-menu");
 }

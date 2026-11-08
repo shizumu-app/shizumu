@@ -47,7 +47,9 @@
   import { computeSnapshot, EMPTY_SNAPSHOT } from "./editor-snapshot.js";
   import { caretScrollDelta, isDegenerateCaretRect, CARET_SCROLL_MARGIN_PX } from "../../lib/editor/caret-scroll.js";
   import { blockAlreadyPinned } from "../../lib/editor/block-already-pinned.js";
-  import { pullReload, isEchoOfPull } from "../../lib/editor/pull-reload.js";
+  import { pullReload, isEchoOfPull, comparablePair } from "../../lib/editor/pull-reload.js";
+  import { setContentAsLoad } from "../../lib/extensions/block-id.js";
+  import { fillDerivedBlockIds, stripBlockIdsFromJSON } from "../../lib/block-id.js";
 
   let {
     pageId,
@@ -247,7 +249,12 @@
     // get rewritten before TipTap parses. algorithmBlock → recipeBlock,
     // legacy flat-paragraph qaBlock → qaBlock with qaPair children.
     // All migrations are idempotent on already-migrated docs.
-    const content = migrateQASchema(migrateRecipeSchema(migrateListSchema(rawContent)));
+    const migrated = migrateQASchema(migrateRecipeSchema(migrateListSchema(rawContent)));
+    // Blocks saved before 0.8.2 carry no id. They get the id derived from
+    // this page and their place in it — the same on every load, and the
+    // same an export computes — and nothing is saved for it: the baseline
+    // below is taken from the content WITH these ids (block-id.js).
+    const content = pageId ? fillDerivedBlockIds(migrated, pageId) : migrated;
 
     // Yjs binding gate: only continuous-trail pages, only when the
     // user has opted in via `enable_yjs`. Discrete pages and any
@@ -280,7 +287,7 @@
           // chrome off" asserts. Passing it anyway makes the two lists
           // agree BY CONSTRUCTION rather than by that accident, so the day
           // one of them grows a node they stay in step for free.
-          const schema = getSchema(buildEditingExtensions({ placeholder, floatingChrome }));
+          const schema = getSchema(buildEditingExtensions({ placeholder, floatingChrome, getPageId: () => pageId }));
           collaborationDoc = docFromTipTapJson(schema, content) ?? hydrateDoc(null);
         }
         yjsDoc = collaborationDoc;
@@ -306,6 +313,9 @@
         onChartOpen: (params) => onChartOpen(params || null),
         collaborationDoc,
         floatingChrome,
+        // Read at the moment of a load, so a page switch derives ids for
+        // the page arriving, not the one leaving.
+        getPageId: () => pageId,
       }),
       // Skip `content` when bound to a Y.Doc — Collaboration sources
       // the doc state from the YXmlFragment, and supplying `content`
@@ -428,8 +438,10 @@
           const embeddedBlockJson = parseBlockFromHtml(data.getData("text/html"));
           if (embeddedBlockJson && COPYABLE_BLOCK_TYPES.has(embeddedBlockJson.type)) {
             try {
-              // Strip pinId so the duplicate does not double-bind to the same pin row.
-              const nodeJson = stripPinIdsFromJSON(embeddedBlockJson);
+              // Strip pinId so the duplicate does not double-bind to the same pin row,
+              // and blockId so it is a new block here with an id of its own:
+              // the copied block may live on another page (block-id.js).
+              const nodeJson = stripBlockIdsFromJSON(stripPinIdsFromJSON(embeddedBlockJson));
               const node = view.state.schema.nodeFromJSON(nodeJson);
               const { tr, selection } = view.state;
               view.dispatch(tr.insert(selection.from, node));
@@ -599,7 +611,7 @@
         const content = initialContent
           ? (typeof initialContent === "string" ? JSON.parse(initialContent) : initialContent)
           : { type: "doc", content: [{ type: "paragraph" }] };
-        editor.commands.setContent(content);
+        setContentAsLoad(editor, content);
         // The new page as loaded is the baseline, not null: the setContent
         // above schedules a save, and a save of exactly this copy is an echo.
         pulledJson = JSON.stringify(editor.getJSON());
@@ -723,8 +735,8 @@
       const buf = await file.arrayBuffer();
       // Images go through the same content-addressed blob store as files, so
       // they get a blob_hash, an attachments row and a per-image sync
-      // decision. Default sync=false: nothing leaves the device unasked.
-      const att = await attachmentAddBytes(new Uint8Array(buf), imageFilename(file), file.type || null, false);
+      // decision, which starts where this device's sync is.
+      const att = await attachmentAddBytes(new Uint8Array(buf), imageFilename(file), file.type || null);
       editor.chain().focus().insertContent({
         type: "attachment",
         attrs: {
@@ -822,8 +834,10 @@
             if (node && node.type.spec.attrs && "pinId" in node.type.spec.attrs) {
               tr.setNodeAttribute(pos, "pinId", newPin.id);
             }
-            // Boards also receive the chosen title as their blockTitle metadata.
-            if (node && isBoardType(node.type.name) && title) {
+            // A board pinned on its own takes the chosen title as its
+            // blockTitle. One block of a longer range keeps its own: the
+            // title names the passage, and writing it there renamed the list.
+            if (node && isBoardType(node.type.name) && title && positions.length === 1) {
               tr.setNodeAttribute(pos, "blockTitle", title);
             }
           }
@@ -1046,8 +1060,12 @@
     try {
       const parsed = typeof newJson === "string" ? JSON.parse(newJson) : newJson;
       if (!parsed) return;
-      const current = JSON.stringify(editor.getJSON());
-      const incoming = JSON.stringify(parsed);
+      // Like with like: the stored copy as a load would leave it, with the
+      // derived ids an old page gets (pull-reload.js, comparablePair).
+      const { current, incoming } = comparablePair({
+        current: editor.getJSON(), incoming: parsed, pageId, fillIds: fillDerivedBlockIds,
+        normalise: (json) => editor.schema.nodeFromJSON(json).toJSON(),
+      });
       // Never over unsaved typing: a pull inside the save's one second used
       // to replace the newest words with the older stored copy (pull-reload.js).
       // "deferred" goes back to the host, which saves and reads again.
@@ -1058,7 +1076,7 @@
       // emitUpdate: false → don't fire onUpdate, so this load doesn't
       // trigger a save (which would echo the remote content right back
       // through the op_log and into another sync round-trip).
-      editor.commands.setContent(parsed, false);
+      setContentAsLoad(editor, parsed, false);
       pulledJson = JSON.stringify(editor.getJSON());
       // Restore cursor position if the doc is still long enough. Falls
       // back to end-of-doc if the new content is shorter.
@@ -1117,11 +1135,13 @@
   export function appendNodesToDoc(nodes) {
     if (!editor || !Array.isArray(nodes) || nodes.length === 0) return 0;
 
-    // Snapshot existing top-level nodes' shape (pinId-agnostic).
+    // Snapshot existing top-level nodes' shape (pinId- and blockId-agnostic:
+    // a block on the page has an id, the carried copy of it has none).
+    const shapeKey = (json) => JSON.stringify(stripBlockIdsFromJSON(stripPinIdsFromJSON(json)));
     const existingKeys = new Set();
     editor.state.doc.forEach((node) => {
       try {
-        existingKeys.add(JSON.stringify(stripPinIdsFromJSON(node.toJSON())));
+        existingKeys.add(shapeKey(node.toJSON()));
       } catch {}
     });
 
@@ -1134,8 +1154,7 @@
         // carried no link, so editing it changed the page and never the pin.
         // With the id intact, the save path's refresh_pin_caches recognises
         // the node and the page that holds it becomes the pin's owner.
-        const stripped = stripPinIdsFromJSON(json);
-        const key = JSON.stringify(stripped);
+        const key = shapeKey(json);
         if (existingKeys.has(key)) continue;
         built.push(editor.state.schema.nodeFromJSON(json));
         existingKeys.add(key);

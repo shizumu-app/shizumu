@@ -422,8 +422,8 @@ export const commandItems = [
     try {
       // Same blob store, same attachments row, same per-item sync decision
       // as /file — an image is an attachment that happens to render itself.
-      // Local-first: sync=false until the user authorizes it on the image.
-      const att = await attachmentAddBytes(picked.bytes, picked.name, picked.mime, false);
+      // Its switch starts where this device's sync is; one tap keeps it home.
+      const att = await attachmentAddBytes(picked.bytes, picked.name, picked.mime);
       // insertContentAt(insertPos, ...) — schemas that don't accept the node
       // (listItem) auto-escape; schemas that do nest naturally.
       editor.chain().focus()
@@ -468,9 +468,8 @@ export const commandItems = [
         return;
       }
       try {
-        // Local-first: attach without syncing. The user authorizes sync
-        // later from the attachment's hover action if they want it to roam.
-        const att = await attachmentAddBytes(picked.bytes, picked.name, picked.mime, false);
+        // Its switch starts where this device's sync is; one tap keeps it home.
+        const att = await attachmentAddBytes(picked.bytes, picked.name, picked.mime);
         editor.chain().focus()
           .insertContentAt(insertPos, {
             type: "attachment",

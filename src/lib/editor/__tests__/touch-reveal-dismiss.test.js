@@ -54,6 +54,13 @@ describe("isAffordanceTarget", () => {
     expect(isAffordanceTarget(el('<input class="board-title-slot" />'))).toBe(true);
   });
 
+  it("recognises a decision's state chip", () => {
+    // A tap on standing/superseded toggles the decision; it also revealed
+    // the board's title above it, which pushed the chip down under the
+    // finger mid-press (seen on Pixel 7 emulation, 0.8.2).
+    expect(isAffordanceTarget(el('<button class="block-state-chip">standing</button>'))).toBe(true);
+  });
+
   it("recognises the touch action sheet's own rows, not just the chip that opens it", () => {
     // Task 6 finding: a tap on a row INSIDE the already-open sheet (pin,
     // copy, delete, title, convert to..., or a convert-submenu target) is

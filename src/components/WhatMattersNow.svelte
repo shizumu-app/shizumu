@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from "svelte";
   import { updateWhatMattersNow } from "../lib/api.js";
+  import { focusPropChanged } from "../lib/focus-field-sync.js";
 
   /** @type {{ pageId: string, value: string | null, readonly: boolean, required: boolean, onValueChange: (text: string) => void, onInput: (text: string) => void, onEnter: () => void }} */
   let { pageId, value = null, readonly = false, required = false, onValueChange = () => {}, onInput: onInputCallback = () => {}, onEnter = () => {} } = $props();
@@ -24,13 +25,20 @@
     }
   });
 
+  // What the field last took from its props. Not $state: it is bookkeeping
+  // for the effect below, and reading it there must not re-run it.
+  let seenProp = null;
+
   $effect(() => {
-    // Only sync from prop when it's a genuine external change (page switch)
+    // Only a genuine external change: another page, or a value that really
+    // changed (the other device's edit). Not the same stale prop seen again
+    // when the parent replaces its page object (src/lib/focus-field-sync.js).
     const v = value || "";
-    if (v !== lastSyncedValue && v !== text) {
-      text = v;
-      lastSyncedValue = v;
-    }
+    const pid = pageId;
+    if (!focusPropChanged(seenProp, pid, v)) return;
+    seenProp = { pageId: pid, value: v };
+    if (v !== text) text = v;
+    lastSyncedValue = v;
   });
 
   function handleInput(e) {
